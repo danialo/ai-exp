@@ -26,6 +26,7 @@ class LLMService:
         temperature: float = 0.7,
         max_tokens: int = 500,
         base_url: str | None = None,
+        self_aware_prompt_builder=None,
     ):
         """Initialize LLM service.
 
@@ -35,17 +36,20 @@ class LLMService:
             temperature: Temperature for generation (0-2)
             max_tokens: Maximum tokens in response
             base_url: Optional base URL for API endpoint (e.g., Venice AI)
+            self_aware_prompt_builder: Optional builder for self-aware prompts
         """
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.self_aware_prompt_builder = self_aware_prompt_builder
 
     def generate_response(
         self,
         prompt: str,
         memories: List[Memory] | None = None,
         system_prompt: str | None = None,
+        include_self_awareness: bool = True,
     ) -> str:
         """Generate a response using the LLM with optional memory context.
 
@@ -53,6 +57,7 @@ class LLMService:
             prompt: User's current prompt
             memories: Retrieved relevant memories for context
             system_prompt: Optional system prompt to guide behavior
+            include_self_awareness: Whether to include self-concept in system prompt
 
         Returns:
             Generated response text
@@ -60,9 +65,13 @@ class LLMService:
         # Build messages
         messages = []
 
-        # Add system prompt
+        # Build self-aware system prompt if available
         if system_prompt is None:
-            system_prompt = self._build_default_system_prompt()
+            if self.self_aware_prompt_builder and include_self_awareness:
+                system_prompt = self.self_aware_prompt_builder.build_self_aware_system_prompt()
+            else:
+                system_prompt = self._build_default_system_prompt()
+
         messages.append({"role": "system", "content": system_prompt})
 
         # Add memory context if available
@@ -132,6 +141,7 @@ def create_llm_service(
     temperature: float = 0.7,
     max_tokens: int = 500,
     base_url: str | None = None,
+    self_aware_prompt_builder=None,
 ) -> LLMService:
     """Factory function to create an LLM service.
 
@@ -141,6 +151,7 @@ def create_llm_service(
         temperature: Temperature for generation
         max_tokens: Maximum tokens in response
         base_url: Optional base URL for API endpoint
+        self_aware_prompt_builder: Optional self-aware prompt builder
 
     Returns:
         LLMService instance
@@ -151,4 +162,5 @@ def create_llm_service(
         temperature=temperature,
         max_tokens=max_tokens,
         base_url=base_url,
+        self_aware_prompt_builder=self_aware_prompt_builder,
     )
