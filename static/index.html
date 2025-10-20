@@ -1,0 +1,912 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Experience Memory</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 900px;
+            width: 100%;
+            height: 90vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .stats {
+            display: flex;
+            gap: 20px;
+            font-size: 14px;
+        }
+
+        .stat {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .chat-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 30px;
+            background: #f8f9fa;
+        }
+
+        .message {
+            margin-bottom: 20px;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .user-icon, .bot-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+        }
+
+        .user-icon {
+            background: #667eea;
+            color: white;
+        }
+
+        .bot-icon {
+            background: #764ba2;
+            color: white;
+        }
+
+        .message-content {
+            background: white;
+            padding: 15px 20px;
+            border-radius: 12px;
+            margin-left: 42px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            line-height: 1.6;
+        }
+
+        .memories {
+            margin-top: 10px;
+            margin-left: 42px;
+            font-size: 13px;
+        }
+
+        .memory-item {
+            background: #fff9e6;
+            border-left: 3px solid #ffd700;
+            padding: 10px;
+            margin-top: 8px;
+            border-radius: 6px;
+            font-size: 12px;
+        }
+
+        .memory-item strong {
+            color: #764ba2;
+        }
+
+        .memory-meta {
+            color: #666;
+            font-size: 11px;
+            margin-top: 4px;
+        }
+
+        .input-area {
+            padding: 20px 30px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-area input {
+            flex: 1;
+            padding: 15px 20px;
+            border: 2px solid #e0e0e0;
+            border-radius: 25px;
+            font-size: 15px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .input-area input:focus {
+            border-color: #667eea;
+        }
+
+        .input-area button {
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .input-area button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .input-area button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .welcome {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .welcome h2 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .error-message {
+            background: #fee;
+            border-left: 3px solid #f33;
+            padding: 10px 15px;
+            margin: 10px 42px;
+            border-radius: 6px;
+            color: #c33;
+            font-size: 13px;
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* Mood Display Styles */
+        .mood-display {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            padding: 15px 30px;
+            border-bottom: 1px solid #dee2e6;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .mood-label {
+            font-weight: 600;
+            color: #495057;
+            font-size: 14px;
+        }
+
+        .mood-bar-container {
+            flex: 1;
+            max-width: 300px;
+            height: 20px;
+            background: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+            border: 1px solid #ced4da;
+        }
+
+        .mood-bar-fill {
+            height: 100%;
+            transition: all 0.5s ease;
+            border-radius: 10px;
+        }
+
+        .mood-bar-fill.positive {
+            background: linear-gradient(90deg, #51cf66 0%, #40c057 100%);
+        }
+
+        .mood-bar-fill.neutral {
+            background: linear-gradient(90deg, #74c0fc 0%, #4dabf7 100%);
+        }
+
+        .mood-bar-fill.frustrated {
+            background: linear-gradient(90deg, #ffd43b 0%, #fcc419 100%);
+        }
+
+        .mood-bar-fill.pissed {
+            background: linear-gradient(90deg, #ff8787 0%, #ff6b6b 100%);
+        }
+
+        .mood-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            font-size: 13px;
+        }
+
+        .mood-value {
+            font-weight: 600;
+            font-family: 'Courier New', monospace;
+            color: #495057;
+        }
+
+        .mood-description {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .mood-description.content {
+            background: #d3f9d8;
+            color: #2b8a3e;
+        }
+
+        .mood-description.neutral {
+            background: #d0ebff;
+            color: #1864ab;
+        }
+
+        .mood-description.frustrated {
+            background: #fff3bf;
+            color: #e67700;
+        }
+
+        .mood-description.pissed {
+            background: #ffe3e3;
+            color: #c92a2a;
+        }
+
+        .mood-status-icon {
+            font-size: 20px;
+        }
+
+        /* Memory Browser Styles */
+        .memory-browser-btn {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        .memory-browser-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal.open {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 800px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .modal-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 {
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .modal-close {
+            background: transparent;
+            border: none;
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            transition: background 0.2s;
+        }
+
+        .modal-close:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .modal-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 30px;
+        }
+
+        .memory-list-item {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 12px;
+            position: relative;
+        }
+
+        .memory-list-item:hover {
+            border-color: #667eea;
+        }
+
+        .memory-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 8px;
+        }
+
+        .memory-meta {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .memory-type {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-right: 8px;
+        }
+
+        .memory-type.interaction {
+            background: #d0ebff;
+            color: #1864ab;
+        }
+
+        .memory-type.observation {
+            background: #d3f9d8;
+            color: #2b8a3e;
+        }
+
+        .memory-valence {
+            font-family: 'Courier New', monospace;
+            font-weight: 600;
+        }
+
+        .memory-valence.positive {
+            color: #2b8a3e;
+        }
+
+        .memory-valence.negative {
+            color: #c92a2a;
+        }
+
+        .memory-text {
+            font-size: 13px;
+            line-height: 1.5;
+            margin-top: 8px;
+        }
+
+        .memory-prompt {
+            color: #495057;
+            margin-bottom: 4px;
+        }
+
+        .memory-response {
+            color: #764ba2;
+            font-weight: 500;
+        }
+
+        .delete-btn {
+            background: #ff6b6b;
+            color: white;
+            border: none;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .delete-btn:hover {
+            background: #ff5252;
+        }
+
+        .loading-spinner {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>AI Experience Memory</h1>
+            <div class="stats">
+                <div class="stat">
+                    <span>💾</span>
+                    <span id="experiences-count">0</span>
+                </div>
+                <div class="stat">
+                    <span>🤖</span>
+                    <span id="llm-status">Loading...</span>
+                </div>
+                <button class="memory-browser-btn" onclick="openMemoryBrowser()">
+                    📚 Browse Memories
+                </button>
+            </div>
+        </div>
+
+        <!-- Mood Display -->
+        <div class="mood-display">
+            <span class="mood-label">Agent Mood:</span>
+            <div class="mood-bar-container">
+                <div class="mood-bar-fill neutral" id="mood-bar" style="width: 50%;"></div>
+            </div>
+            <div class="mood-info">
+                <span class="mood-status-icon" id="mood-icon">😐</span>
+                <span class="mood-value" id="mood-value">0.00</span>
+                <span class="mood-description neutral" id="mood-description">neutral</span>
+            </div>
+        </div>
+
+        <div class="chat-area" id="chat-area">
+            <div class="welcome">
+                <h2>Welcome to AI Experience Memory</h2>
+                <p>Start a conversation, and I'll remember what we discuss!</p>
+            </div>
+        </div>
+
+        <div class="input-area">
+            <input
+                type="text"
+                id="message-input"
+                placeholder="Type your message..."
+                autocomplete="off"
+            />
+            <button id="send-button">Send</button>
+        </div>
+    </div>
+
+    <!-- Memory Browser Modal -->
+    <div class="modal" id="memory-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Memory Browser</h2>
+                <button class="modal-close" onclick="closeMemoryBrowser()">×</button>
+            </div>
+            <div class="modal-body" id="memory-list">
+                <div class="loading-spinner">Loading memories...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const chatArea = document.getElementById('chat-area');
+        const messageInput = document.getElementById('message-input');
+        const sendButton = document.getElementById('send-button');
+        const experiencesCount = document.getElementById('experiences-count');
+        const llmStatus = document.getElementById('llm-status');
+
+        let isProcessing = false;
+
+        // Load stats on page load
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const stats = await response.json();
+                experiencesCount.textContent = stats.total_experiences;
+                llmStatus.textContent = stats.llm_enabled ? stats.llm_model : 'Mock';
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            }
+        }
+
+        // Load and update mood display
+        async function updateMood() {
+            try {
+                const response = await fetch('/api/mood');
+                const mood = await response.json();
+
+                const moodValue = mood.current_mood;
+                const moodDesc = mood.mood_description;
+                const isPissed = mood.is_pissed;
+                const isFrustrated = mood.is_frustrated;
+                const isContent = mood.is_content;
+
+                // Update mood value
+                document.getElementById('mood-value').textContent = moodValue.toFixed(2);
+
+                // Update mood description
+                const descElement = document.getElementById('mood-description');
+                descElement.textContent = moodDesc;
+
+                // Remove all mood classes
+                descElement.classList.remove('content', 'neutral', 'frustrated', 'pissed');
+
+                // Add appropriate class
+                if (isPissed) {
+                    descElement.classList.add('pissed');
+                } else if (isFrustrated) {
+                    descElement.classList.add('frustrated');
+                } else if (isContent) {
+                    descElement.classList.add('content');
+                } else {
+                    descElement.classList.add('neutral');
+                }
+
+                // Update mood bar
+                const moodBar = document.getElementById('mood-bar');
+                // Map -1..1 to 0..100%
+                const barWidth = ((moodValue + 1) / 2) * 100;
+                moodBar.style.width = `${barWidth}%`;
+
+                // Update bar color
+                moodBar.classList.remove('positive', 'neutral', 'frustrated', 'pissed');
+                if (isPissed) {
+                    moodBar.classList.add('pissed');
+                } else if (isFrustrated) {
+                    moodBar.classList.add('frustrated');
+                } else if (moodValue > 0.2) {
+                    moodBar.classList.add('positive');
+                } else {
+                    moodBar.classList.add('neutral');
+                }
+
+                // Update icon
+                const iconElement = document.getElementById('mood-icon');
+                if (isPissed) {
+                    iconElement.textContent = '😤';
+                } else if (isFrustrated) {
+                    iconElement.textContent = '😟';
+                } else if (isContent) {
+                    iconElement.textContent = '😊';
+                } else if (moodValue > 0.5) {
+                    iconElement.textContent = '😄';
+                } else if (moodValue < -0.2) {
+                    iconElement.textContent = '😕';
+                } else {
+                    iconElement.textContent = '😐';
+                }
+
+            } catch (error) {
+                console.error('Failed to load mood:', error);
+            }
+        }
+
+        // Add message to chat
+        function addMessage(role, content, memories = []) {
+            // Remove welcome message if present
+            const welcome = chatArea.querySelector('.welcome');
+            if (welcome) welcome.remove();
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+
+            const isUser = role === 'user';
+            const icon = isUser ? '👤' : '🤖';
+            const iconClass = isUser ? 'user-icon' : 'bot-icon';
+            const label = isUser ? 'You' : 'Assistant';
+
+            messageDiv.innerHTML = `
+                <div class="message-header">
+                    <div class="${iconClass}">${icon}</div>
+                    <span>${label}</span>
+                </div>
+                <div class="message-content">${escapeHtml(content)}</div>
+            `;
+
+            // Add memories if present
+            if (memories && memories.length > 0) {
+                const memoriesDiv = document.createElement('div');
+                memoriesDiv.className = 'memories';
+                memoriesDiv.innerHTML = '<strong>📝 Context from memory:</strong>';
+
+                memories.forEach((mem, idx) => {
+                    const memDiv = document.createElement('div');
+                    memDiv.className = 'memory-item';
+                    memDiv.innerHTML = `
+                        <strong>Memory ${idx + 1}:</strong> "${truncate(mem.prompt, 60)}"
+                        <div class="memory-meta">
+                            Similarity: ${(mem.similarity_score * 100).toFixed(0)}% |
+                            Recency: ${(mem.recency_score * 100).toFixed(0)}%
+                        </div>
+                    `;
+                    memoriesDiv.appendChild(memDiv);
+                });
+
+                messageDiv.appendChild(memoriesDiv);
+            }
+
+            chatArea.appendChild(messageDiv);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        // Add error message
+        function addError(message) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error-message';
+            errorDiv.textContent = message;
+            chatArea.appendChild(errorDiv);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        // Send message
+        async function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message || isProcessing) return;
+
+            isProcessing = true;
+            sendButton.disabled = true;
+            sendButton.innerHTML = '<span class="loading"></span>';
+
+            // Add user message
+            addMessage('user', message);
+            messageInput.value = '';
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        retrieve_memories: true,
+                        top_k: 3,
+                    }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                // Add assistant response with memories
+                addMessage('assistant', data.response, data.memories);
+
+                // Update stats and mood
+                loadStats();
+                updateMood();
+
+            } catch (error) {
+                console.error('Error:', error);
+                addError(`Failed to send message: ${error.message}`);
+            } finally {
+                isProcessing = false;
+                sendButton.disabled = false;
+                sendButton.textContent = 'Send';
+                messageInput.focus();
+            }
+        }
+
+        // Utility functions
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML.replace(/\n/g, '<br>');
+        }
+
+        function truncate(text, length) {
+            return text.length > length ? text.substring(0, length) + '...' : text;
+        }
+
+        // Event listeners
+        sendButton.addEventListener('click', sendMessage);
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        // Load initial stats and mood
+        loadStats();
+        updateMood();
+
+        // Focus input on load
+        messageInput.focus();
+
+        // Memory Browser Functions
+        async function openMemoryBrowser() {
+            const modal = document.getElementById('memory-modal');
+            const memoryList = document.getElementById('memory-list');
+
+            // Show modal
+            modal.classList.add('open');
+
+            // Load memories
+            memoryList.innerHTML = '<div class="loading-spinner">Loading memories...</div>';
+
+            try {
+                const response = await fetch('/api/memories?limit=50');
+                const memories = await response.json();
+
+                if (memories.length === 0) {
+                    memoryList.innerHTML = '<div class="loading-spinner">No memories yet</div>';
+                    return;
+                }
+
+                // Render memories
+                memoryList.innerHTML = '';
+                memories.forEach(memory => {
+                    const item = document.createElement('div');
+                    item.className = 'memory-list-item';
+                    item.id = `memory-${memory.id}`;
+
+                    const valenceClass = memory.valence >= 0 ? 'positive' : 'negative';
+                    const valenceSign = memory.valence >= 0 ? '+' : '';
+
+                    let contentHtml = '';
+                    if (memory.type === 'interaction') {
+                        contentHtml = `
+                            <div class="memory-text">
+                                <div class="memory-prompt"><strong>User:</strong> ${escapeHtml(truncate(memory.prompt || '', 100))}</div>
+                                <div class="memory-response"><strong>Agent:</strong> ${escapeHtml(truncate(memory.response || '', 100))}</div>
+                            </div>
+                        `;
+                    } else if (memory.type === 'observation') {
+                        contentHtml = `
+                            <div class="memory-text">
+                                <div class="memory-prompt"><em>Reflection (${memory.parent_count} parents)</em></div>
+                            </div>
+                        `;
+                    }
+
+                    item.innerHTML = `
+                        <div class="memory-header">
+                            <div class="memory-meta">
+                                <span class="memory-type ${memory.type}">${memory.type}</span>
+                                <span class="memory-valence ${valenceClass}">${valenceSign}${memory.valence.toFixed(2)}</span>
+                                <span style="margin-left: 8px;">${new Date(memory.timestamp).toLocaleString()}</span>
+                            </div>
+                            <button class="delete-btn" onclick="deleteMemory('${memory.id}')">Delete</button>
+                        </div>
+                        ${contentHtml}
+                    `;
+
+                    memoryList.appendChild(item);
+                });
+
+            } catch (error) {
+                console.error('Failed to load memories:', error);
+                memoryList.innerHTML = '<div class="loading-spinner">Failed to load memories</div>';
+            }
+        }
+
+        function closeMemoryBrowser() {
+            const modal = document.getElementById('memory-modal');
+            modal.classList.remove('open');
+        }
+
+        async function deleteMemory(memoryId) {
+            if (!confirm('Are you sure you want to delete this memory?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/memories/${memoryId}`, {
+                    method: 'DELETE',
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                // Remove from UI
+                const item = document.getElementById(`memory-${memoryId}`);
+                if (item) {
+                    item.style.opacity = '0';
+                    setTimeout(() => item.remove(), 300);
+                }
+
+                // Update stats
+                loadStats();
+
+            } catch (error) {
+                console.error('Failed to delete memory:', error);
+                alert('Failed to delete memory: ' + error.message);
+            }
+        }
+
+        // Close modal on background click
+        document.getElementById('memory-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'memory-modal') {
+                closeMemoryBrowser();
+            }
+        });
+    </script>
+</body>
+</html>
