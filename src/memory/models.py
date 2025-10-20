@@ -29,6 +29,7 @@ class ExperienceType(str, Enum):
     OBSERVATION = "observation"
     INFERENCE = "inference"
     RECONCILIATION = "reconciliation"
+    SELF_DEFINITION = "self_definition"  # Emergent self-concept patterns
 
 
 class Actor(str, Enum):
@@ -72,6 +73,22 @@ class SessionStatus(str, Enum):
     ACTIVE = "active"
     ENDED = "ended"
     CONSOLIDATED = "consolidated"
+
+
+class TraitType(str, Enum):
+    """Type of self-definition trait."""
+
+    PERSONALITY = "personality"  # Behavioral patterns
+    PREFERENCE = "preference"  # Likes/dislikes
+    IDENTITY = "identity"  # Self-descriptive statements
+    RELATIONAL = "relational"  # Interaction patterns
+
+
+class TraitStability(str, Enum):
+    """Stability level of self-definition trait."""
+
+    CORE = "core"  # Stable, long-term traits
+    SURFACE = "surface"  # Fluid, adaptive traits
 
 
 # Pydantic models (for validation and API)
