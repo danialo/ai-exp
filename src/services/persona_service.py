@@ -32,7 +32,7 @@ class PersonaService:
         """
         self.llm = llm_service
         self.prompt_builder = PersonaPromptBuilder(persona_space_path)
-        self.reconciler = EmotionalReconciler(persona_space_path)
+        self.reconciler = EmotionalReconciler(llm_service, persona_space_path)
         self.file_manager = PersonaFileManager(persona_space_path)
 
     def generate_response(self, user_message: str) -> Tuple[str, Dict]:

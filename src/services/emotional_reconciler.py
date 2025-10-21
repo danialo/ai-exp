@@ -16,11 +16,11 @@ from src.services.llm import LLMService
 class EmotionalReconciler:
     """Reconciles internal emotional self-assessment with external interpretation."""
 
-    def __init__(self, persona_space_path: str = "persona_space"):
+    def __init__(self, llm_service: LLMService, persona_space_path: str = "persona_space"):
         self.persona_space = Path(persona_space_path)
         self.reconciliation_log_path = self.persona_space / "emotional_state" / "reconciliation_log.json"
         self.current_state_path = self.persona_space / "emotional_state" / "current.json"
-        self.llm = LLMService()
+        self.llm = llm_service
 
     def reconcile(
         self,

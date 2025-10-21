@@ -253,7 +253,8 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         temperature=settings.PERSONA_TEMPERATURE,
         max_tokens=1000,  # More tokens for persona responses
         base_url=base_url,
-        top_k=settings.PERSONA_TOP_K,
+        # top_k disabled for OpenAI compatibility
+        # top_k=settings.PERSONA_TOP_K,
     )
 
     persona_service = PersonaService(
