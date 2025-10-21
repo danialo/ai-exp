@@ -1,6 +1,6 @@
 """LLM service for generating responses with context from memories."""
 
-from typing import Protocol, List
+from typing import Protocol, List, Dict, Any, Optional
 from datetime import datetime
 
 from openai import OpenAI
@@ -178,6 +178,40 @@ class LLMService:
 
         response = self.client.chat.completions.create(**kwargs)
         return response.choices[0].message.content
+
+    def generate_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Dict[str, Any]:
+        """Generate response with OpenAI function calling / tools.
+
+        Args:
+            messages: List of message dicts (role, content)
+            tools: List of tool definitions in OpenAI format
+            temperature: Override default temperature
+            max_tokens: Override default max_tokens
+
+        Returns:
+            Dict with 'message' (full message object) and 'finish_reason'
+        """
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "temperature": temperature if temperature is not None else self.temperature,
+            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
+        }
+
+        response = self.client.chat.completions.create(**kwargs)
+        choice = response.choices[0]
+
+        return {
+            "message": choice.message,
+            "finish_reason": choice.finish_reason,
+        }
 
 
 def create_llm_service(
