@@ -95,11 +95,33 @@ class TraitStability(str, Enum):
 
 
 class ContentModel(BaseModel):
-    """Content of an experience."""
+    """Content of an experience.
+
+    The 'structured' field can contain:
+    - For SELF_DEFINITION: trait_type, stability, descriptor, confidence, etc.
+    - For OCCURRENCE with emotional extraction: emotional_state dict with:
+        - felt_emotions: List[str]
+        - relational_quality: str
+        - curiosity_level: float
+        - engagement_depth: float
+        - desires: List[str]
+        - overwhelm_indicators: List[str]
+        - tone_shifts: List[str]
+    """
 
     text: str
     media: list[str] = Field(default_factory=list)
     structured: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def raw_text(self) -> str:
+        """Alias for text field for backward compatibility."""
+        return self.text
+
+    @property
+    def emotional_state(self) -> Optional[dict[str, Any]]:
+        """Get emotional state if present in structured data."""
+        return self.structured.get("emotional_state")
 
 
 class ProvenanceSource(BaseModel):

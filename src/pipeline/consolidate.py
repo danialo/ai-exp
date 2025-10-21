@@ -26,6 +26,7 @@ from src.memory.models import (
 from src.services.session_tracker import SessionTracker
 from src.services.narrative_transformer import NarrativeTransformer
 from src.services.memory_decay import MemoryDecayCalculator
+from src.services.emotional_extractor import EmotionalExperienceExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ class ConsolidationPipeline:
         session_tracker: SessionTracker,
         narrative_transformer: NarrativeTransformer,
         decay_calculator: Optional[MemoryDecayCalculator] = None,
+        emotional_extractor: Optional[EmotionalExperienceExtractor] = None,
     ):
         """Initialize consolidation pipeline.
 
@@ -83,6 +85,7 @@ class ConsolidationPipeline:
             session_tracker: Session tracker service
             narrative_transformer: Narrative transformation service
             decay_calculator: Optional decay calculator
+            emotional_extractor: Optional emotional dimension extractor
         """
         self.raw_store = raw_store
         self.short_term_store = short_term_store
@@ -91,6 +94,7 @@ class ConsolidationPipeline:
         self.session_tracker = session_tracker
         self.narrative_transformer = narrative_transformer
         self.decay_calculator = decay_calculator
+        self.emotional_extractor = emotional_extractor
 
     def consolidate_session(self, session_id: str) -> ConsolidationResult:
         """Consolidate a session into a long-term narrative memory.
@@ -151,11 +155,33 @@ class ConsolidationPipeline:
 
             logger.info(f"Generated narrative: {narrative_text[:100]}...")
 
+            # 3.5. Extract emotional dimensions if extractor available
+            emotional_state = None
+            if self.emotional_extractor:
+                # Create a temporary narrative model for extraction
+                temp_narrative = ExperienceModel(
+                    id="temp_narrative",
+                    type=ExperienceType.OBSERVATION,
+                    content=ContentModel(text=narrative_text),
+                    provenance=ProvenanceModel(
+                        actor=Actor.AGENT,
+                        method=CaptureMethod.MODEL_INFER,
+                    ),
+                )
+
+                try:
+                    emotional_dims = self.emotional_extractor.extract_emotional_dimensions(temp_narrative)
+                    emotional_state = emotional_dims.to_dict()
+                    logger.info(f"Extracted emotional state: {emotional_state.get('felt_emotions', [])}")
+                except Exception as e:
+                    logger.warning(f"Failed to extract emotional dimensions: {e}")
+
             # 4. Create OBSERVATION experience for narrative
             narrative_id = self._create_narrative_experience(
                 session_id=session_id,
                 narrative_text=narrative_text,
                 parent_ids=[exp.id for exp in experiences],
+                emotional_state=emotional_state,
             )
 
             # 5. Index narrative in long-term vector store
@@ -210,6 +236,7 @@ class ConsolidationPipeline:
         session_id: str,
         narrative_text: str,
         parent_ids: List[str],
+        emotional_state: Optional[dict] = None,
     ) -> str:
         """Create an OBSERVATION experience for the narrative.
 
@@ -217,6 +244,7 @@ class ConsolidationPipeline:
             session_id: Session ID
             narrative_text: Generated narrative text
             parent_ids: IDs of parent experiences
+            emotional_state: Optional emotional dimensions extracted from narrative
 
         Returns:
             Created experience ID
@@ -224,12 +252,20 @@ class ConsolidationPipeline:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         narrative_id = f"narrative_{session_id}_{timestamp}"
 
+        # Build structured content with emotional state if available
+        structured_content = {
+            "session_id": session_id,
+            "type": "consolidated_narrative",
+        }
+        if emotional_state:
+            structured_content["emotional_state"] = emotional_state
+
         narrative_exp = ExperienceModel(
             id=narrative_id,
             type=ExperienceType.OBSERVATION,
             content=ContentModel(
                 text=narrative_text,
-                structured={"session_id": session_id, "type": "consolidated_narrative"},
+                structured=structured_content,
             ),
             provenance=ProvenanceModel(
                 actor=Actor.AGENT,
@@ -296,6 +332,7 @@ def create_consolidation_pipeline(
     session_tracker: SessionTracker,
     narrative_transformer: NarrativeTransformer,
     decay_calculator: Optional[MemoryDecayCalculator] = None,
+    emotional_extractor: Optional[EmotionalExperienceExtractor] = None,
 ) -> ConsolidationPipeline:
     """Factory function to create ConsolidationPipeline.
 
@@ -307,6 +344,7 @@ def create_consolidation_pipeline(
         session_tracker: Session tracker
         narrative_transformer: Narrative transformer
         decay_calculator: Optional decay calculator
+        emotional_extractor: Optional emotional dimension extractor
 
     Returns:
         Initialized ConsolidationPipeline instance
@@ -319,4 +357,5 @@ def create_consolidation_pipeline(
         session_tracker=session_tracker,
         narrative_transformer=narrative_transformer,
         decay_calculator=decay_calculator,
+        emotional_extractor=emotional_extractor,
     )

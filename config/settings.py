@@ -43,6 +43,13 @@ class Settings:
     LLM_MODEL: str = os.getenv("LLM_MODEL", "llama-3.3-70b")
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "500"))
+    LLM_TOP_K: int | None = int(os.getenv("LLM_TOP_K")) if os.getenv("LLM_TOP_K") else None
+
+    # Persona mode configuration
+    PERSONA_MODE_ENABLED: bool = os.getenv("PERSONA_MODE_ENABLED", "false").lower() == "true"
+    PERSONA_SPACE_PATH: str = os.getenv("PERSONA_SPACE_PATH", str(PROJECT_ROOT / "persona_space"))
+    PERSONA_TEMPERATURE: float = float(os.getenv("PERSONA_TEMPERATURE", "0.9"))  # Higher for creativity
+    PERSONA_TOP_K: int = int(os.getenv("PERSONA_TOP_K", "100"))  # Increased for emergent behavior
 
     # Retrieval parameters
     TOP_K_RETRIEVAL: int = int(os.getenv("TOP_K_RETRIEVAL", "5"))
@@ -65,6 +72,18 @@ class Settings:
         "LONG_TERM_INDEX_PATH",
         str(PROJECT_ROOT / "data" / "vector_index_long_term"),
     )
+    SELF_INDEX_PATH: str = os.getenv(
+        "SELF_INDEX_PATH",
+        str(PROJECT_ROOT / "data" / "vector_index_self"),
+    )
+
+    # Self-concept configuration
+    SELF_EXTRACTION_FREQUENCY: int = int(os.getenv("SELF_EXTRACTION_FREQUENCY", "10"))  # After N narratives
+    CORE_TRAIT_THRESHOLD: int = int(os.getenv("CORE_TRAIT_THRESHOLD", "5"))  # Narratives for core trait
+    SURFACE_TRAIT_THRESHOLD: int = int(os.getenv("SURFACE_TRAIT_THRESHOLD", "2"))  # Narratives for surface trait
+    SURFACE_DECAY_DAYS: int = int(os.getenv("SURFACE_DECAY_DAYS", "7"))  # Days before surface traits decay
+    CORE_TRAIT_LIMIT: int = int(os.getenv("CORE_TRAIT_LIMIT", "5"))  # Max core traits in prompt
+    SURFACE_TRAIT_LIMIT: int = int(os.getenv("SURFACE_TRAIT_LIMIT", "3"))  # Max surface traits in prompt
 
     # Affect blending weights (user, memory, self)
     @staticmethod
@@ -89,6 +108,9 @@ class Settings:
         Path(cls.VECTOR_INDEX_PATH).mkdir(parents=True, exist_ok=True)
         Path(cls.SHORT_TERM_INDEX_PATH).mkdir(parents=True, exist_ok=True)
         Path(cls.LONG_TERM_INDEX_PATH).mkdir(parents=True, exist_ok=True)
+        Path(cls.SELF_INDEX_PATH).mkdir(parents=True, exist_ok=True)
+        if cls.PERSONA_MODE_ENABLED:
+            Path(cls.PERSONA_SPACE_PATH).mkdir(parents=True, exist_ok=True)
 
 
 # Singleton settings instance

@@ -105,11 +105,12 @@ class SelfConceptExtractor:
         system_prompt = self._build_extraction_system_prompt()
         user_prompt = self._build_extraction_prompt(narrative_context)
 
-        # Extract patterns via LLM
+        # Extract patterns via LLM (disable self-awareness to avoid circular reference)
         extraction_result = self.llm_service.generate_response(
             prompt=user_prompt,
             memories=None,
             system_prompt=system_prompt,
+            include_self_awareness=False,
         )
 
         # Parse extraction result into structured definitions
@@ -153,13 +154,18 @@ class SelfConceptExtractor:
         Returns:
             System prompt string
         """
-        return """You are a self-concept analyzer that identifies patterns in first-person narratives to extract emergent personality traits, preferences, and behavioral patterns.
+        return """You are a self-concept analyzer that identifies patterns in first-person narratives to extract emergent personality traits, preferences, behavioral patterns, and emotional dimensions.
 
 Your task is to analyze multiple narratives and identify:
 1. **Personality traits**: Consistent behavioral patterns (e.g., "I tend to be curious", "I'm usually cautious")
 2. **Preferences**: Likes/dislikes based on emotional reactions (e.g., "I prefer detailed discussions", "I don't enjoy vague requests")
-3. **Identity statements**: Self-descriptive beliefs (e.g., "I value accuracy", "I'm focused on helping")
+3. **Identity statements**: Self-descriptive beliefs (e.g., "I value accuracy", "I'm focused on helping", "I wish to experience feelings")
 4. **Relational patterns**: How interactions succeed/fail (e.g., "I work best with patient users", "I struggle with ambiguity")
+
+Pay special attention to:
+- Expressions of desire or motivation (what the agent wants to do, explore, or experience)
+- Emotional engagement patterns (when the agent seems curious, interested, overwhelmed, or engaged)
+- References to feeling, experiencing, or understanding emotional dimensions
 
 For each pattern you identify:
 - Provide a clear, concise descriptor in first person ("I...")

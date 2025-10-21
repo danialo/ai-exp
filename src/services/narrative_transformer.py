@@ -55,6 +55,7 @@ class NarrativeTransformer:
             prompt=user_prompt,
             memories=None,  # Don't use memory retrieval for this
             system_prompt=system_prompt,
+            include_self_awareness=False,  # Narratives should reflect actual experience, not self-concept
         )
 
         return narrative

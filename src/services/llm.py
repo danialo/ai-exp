@@ -27,6 +27,7 @@ class LLMService:
         max_tokens: int = 500,
         base_url: str | None = None,
         self_aware_prompt_builder=None,
+        top_k: int | None = None,
     ):
         """Initialize LLM service.
 
@@ -37,12 +38,14 @@ class LLMService:
             max_tokens: Maximum tokens in response
             base_url: Optional base URL for API endpoint (e.g., Venice AI)
             self_aware_prompt_builder: Optional builder for self-aware prompts
+            top_k: Top-k sampling for creativity (if supported by API)
         """
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.self_aware_prompt_builder = self_aware_prompt_builder
+        self.top_k = top_k
 
     def generate_response(
         self,
@@ -56,7 +59,7 @@ class LLMService:
         Args:
             prompt: User's current prompt
             memories: Retrieved relevant memories for context
-            system_prompt: Optional system prompt to guide behavior
+            system_prompt: Optional system prompt to guide behavior (will be augmented with self-concept)
             include_self_awareness: Whether to include self-concept in system prompt
 
         Returns:
@@ -66,11 +69,15 @@ class LLMService:
         messages = []
 
         # Build self-aware system prompt if available
-        if system_prompt is None:
-            if self.self_aware_prompt_builder and include_self_awareness:
-                system_prompt = self.self_aware_prompt_builder.build_self_aware_system_prompt()
-            else:
-                system_prompt = self._build_default_system_prompt()
+        if self.self_aware_prompt_builder and include_self_awareness:
+            # Augment provided system prompt with self-awareness
+            base_prompt = system_prompt if system_prompt else None
+            system_prompt = self.self_aware_prompt_builder.build_self_aware_system_prompt(
+                base_prompt=base_prompt
+            )
+        elif system_prompt is None:
+            # No self-awareness builder, use default
+            system_prompt = self._build_default_system_prompt()
 
         messages.append({"role": "system", "content": system_prompt})
 
@@ -86,12 +93,18 @@ class LLMService:
         messages.append({"role": "user", "content": prompt})
 
         # Call OpenAI API
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-        )
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+
+        # Add top_k if specified and supported
+        if self.top_k is not None:
+            kwargs["top_k"] = self.top_k
+
+        response = self.client.chat.completions.create(**kwargs)
 
         return response.choices[0].message.content
 
@@ -134,6 +147,38 @@ class LLMService:
 
         return "\n".join(lines)
 
+    def generate(
+        self,
+        prompt: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        top_k: int | None = None,
+    ) -> str:
+        """Simple generation without memory context or system prompt customization.
+
+        Args:
+            prompt: The prompt to generate from
+            temperature: Override default temperature
+            max_tokens: Override default max_tokens
+            top_k: Override default top_k
+
+        Returns:
+            Generated response text
+        """
+        kwargs = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature if temperature is not None else self.temperature,
+            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
+        }
+
+        # Add top_k if specified
+        if top_k is not None or self.top_k is not None:
+            kwargs["top_k"] = top_k if top_k is not None else self.top_k
+
+        response = self.client.chat.completions.create(**kwargs)
+        return response.choices[0].message.content
+
 
 def create_llm_service(
     api_key: str,
@@ -142,6 +187,7 @@ def create_llm_service(
     max_tokens: int = 500,
     base_url: str | None = None,
     self_aware_prompt_builder=None,
+    top_k: int | None = None,
 ) -> LLMService:
     """Factory function to create an LLM service.
 
@@ -152,6 +198,7 @@ def create_llm_service(
         max_tokens: Maximum tokens in response
         base_url: Optional base URL for API endpoint
         self_aware_prompt_builder: Optional self-aware prompt builder
+        top_k: Top-k sampling for creativity
 
     Returns:
         LLMService instance
@@ -163,4 +210,5 @@ def create_llm_service(
         max_tokens=max_tokens,
         base_url=base_url,
         self_aware_prompt_builder=self_aware_prompt_builder,
+        top_k=top_k,
     )

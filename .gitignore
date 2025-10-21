@@ -43,6 +43,7 @@ data/*.db-wal
 data/vector_index/
 data/vector_index_short_term/
 data/vector_index_long_term/
+data/vector_index_self/
 
 # Testing
 .pytest_cache/
@@ -51,3 +52,6 @@ htmlcov/
 
 # Logs
 *.log
+
+# Persona's private space (self-modifying files)
+persona_space/

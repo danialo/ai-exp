@@ -35,6 +35,11 @@ from src.services.narrative_transformer import create_narrative_transformer
 from src.services.memory_decay import create_memory_decay_calculator
 from src.services.dual_retrieval import create_dual_index_retrieval
 from src.pipeline.consolidate import create_consolidation_pipeline
+from src.services.self_aware_prompt import create_self_aware_prompt_builder
+from src.services.self_extractor import create_self_concept_extractor
+from src.pipeline.self_consolidate import create_self_consolidation_pipeline
+from src.services.emotional_extractor import create_emotional_extractor
+from src.services.persona_service import PersonaService
 
 
 # Initialize FastAPI app
@@ -114,12 +119,20 @@ elif settings.OPENAI_API_KEY:  # Fallback to OpenAI if available
     base_url = None
 
 if api_key:
+    # Initialize self-aware prompt builder (before LLM service)
+    self_aware_prompt_builder = create_self_aware_prompt_builder(
+        raw_store=raw_store,
+        core_trait_limit=5,
+        surface_trait_limit=3,
+    )
+
     llm_service = create_llm_service(
         api_key=api_key,
         model=settings.LLM_MODEL,
         temperature=settings.LLM_TEMPERATURE,
         max_tokens=settings.LLM_MAX_TOKENS,
         base_url=base_url,
+        self_aware_prompt_builder=self_aware_prompt_builder,
     )
 
     # Initialize experience lens for affect-aware response styling
@@ -157,6 +170,40 @@ narrative_transformer = None
 if llm_service:
     narrative_transformer = create_narrative_transformer(llm_service=llm_service)
 
+# Initialize emotional extractor (if LLM available)
+# This creates an "emotional mirror" for the agent to reflect on feelings
+emotional_extractor = None
+if llm_service:
+    emotional_extractor = create_emotional_extractor(llm_service=llm_service)
+
+# Initialize self-concept system (if LLM available)
+self_extractor = None
+self_consolidation_pipeline = None
+if llm_service:
+    self_extractor = create_self_concept_extractor(
+        llm_service=llm_service,
+        raw_store=raw_store,
+        core_trait_threshold=5,
+        surface_trait_threshold=2,
+    )
+
+    # Create separate vector store for self-definitions
+    from src.memory.vector_store import create_vector_store as create_vs
+
+    self_vector_store = create_vs(
+        persist_directory="data/vector_index_self",
+        collection_name="self_definitions",
+    )
+
+    self_consolidation_pipeline = create_self_consolidation_pipeline(
+        raw_store=raw_store,
+        vector_store=self_vector_store,
+        embedding_provider=embedding_provider,
+        self_extractor=self_extractor,
+        lookback_days=30,
+        surface_decay_days=7,
+    )
+
 # Initialize dual-index retrieval (if consolidation enabled)
 dual_retrieval = None
 consolidation_pipeline = None
@@ -190,10 +237,29 @@ if settings.CONSOLIDATION_ENABLED and narrative_transformer:
         session_tracker=session_tracker,
         narrative_transformer=narrative_transformer,
         decay_calculator=decay_calculator,
+        emotional_extractor=emotional_extractor,
     )
 
 # Global session tracking
 current_session_id: Optional[str] = None
+
+# Initialize persona system if enabled
+persona_service = None
+if settings.PERSONA_MODE_ENABLED and llm_service:
+    # Create a separate LLM service with persona-specific settings
+    persona_llm = create_llm_service(
+        api_key=api_key,
+        model=settings.LLM_MODEL,
+        temperature=settings.PERSONA_TEMPERATURE,
+        max_tokens=1000,  # More tokens for persona responses
+        base_url=base_url,
+        top_k=settings.PERSONA_TOP_K,
+    )
+
+    persona_service = PersonaService(
+        llm_service=persona_llm,
+        persona_space_path=settings.PERSONA_SPACE_PATH
+    )
 
 
 # Request/Response models
@@ -597,6 +663,281 @@ async def get_narratives(limit: int = 10):
                 })
 
     return narratives
+
+
+@app.get("/api/self")
+async def get_self_concept():
+    """Get current self-concept summary."""
+    if not self_aware_prompt_builder:
+        raise HTTPException(status_code=503, detail="Self-concept system not enabled")
+
+    summary = self_aware_prompt_builder.get_self_summary()
+    return summary
+
+
+@app.get("/api/self/traits")
+async def get_self_traits(
+    trait_type: Optional[str] = None,
+    stability: Optional[str] = None,
+    limit: int = 20,
+):
+    """Get self-definition traits with optional filters."""
+    from sqlmodel import Session, select
+    from src.memory.models import Experience, ExperienceType
+
+    traits = []
+    with Session(raw_store.engine) as session:
+        statement = (
+            select(Experience)
+            .where(Experience.type == ExperienceType.SELF_DEFINITION.value)
+            .order_by(Experience.created_at.desc())
+            .limit(limit)
+        )
+
+        for exp in session.exec(statement).all():
+            structured = exp.content.get("structured", {})
+
+            # Apply filters
+            if trait_type and structured.get("trait_type") != trait_type:
+                continue
+            if stability and structured.get("stability") != stability:
+                continue
+
+            traits.append({
+                "id": exp.id,
+                "descriptor": structured.get("descriptor", ""),
+                "trait_type": structured.get("trait_type"),
+                "stability": structured.get("stability"),
+                "confidence": structured.get("confidence", 0.0),
+                "evidence_count": len(exp.parents) if exp.parents else 0,
+                "first_observed": structured.get("first_observed"),
+                "last_reinforced": structured.get("last_reinforced"),
+                "created_at": exp.created_at.isoformat(),
+            })
+
+    return traits
+
+
+@app.get("/api/self/history")
+async def get_self_history(limit: int = 50):
+    """Get evolution of self-concept over time."""
+    from sqlmodel import Session, select
+    from src.memory.models import Experience, ExperienceType
+
+    history = []
+    with Session(raw_store.engine) as session:
+        statement = (
+            select(Experience)
+            .where(Experience.type == ExperienceType.SELF_DEFINITION.value)
+            .order_by(Experience.created_at.asc())
+            .limit(limit)
+        )
+
+        for exp in session.exec(statement).all():
+            structured = exp.content.get("structured", {})
+            history.append({
+                "id": exp.id,
+                "descriptor": structured.get("descriptor", ""),
+                "trait_type": structured.get("trait_type"),
+                "stability": structured.get("stability"),
+                "confidence": structured.get("confidence", 0.0),
+                "timestamp": exp.created_at.isoformat(),
+            })
+
+    return history
+
+
+@app.post("/api/self/consolidate")
+async def consolidate_self_concept(force_full: bool = False):
+    """Manually trigger self-concept consolidation."""
+    if not self_consolidation_pipeline:
+        raise HTTPException(status_code=503, detail="Self-consolidation not enabled")
+
+    result = self_consolidation_pipeline.consolidate_self_concept(
+        force_full_analysis=force_full
+    )
+
+    if not result.success:
+        raise HTTPException(status_code=500, detail=result.error or "Self-consolidation failed")
+
+    return {
+        "new_definitions": result.new_definitions,
+        "updated_definitions": result.updated_definitions,
+        "decayed_definitions": result.decayed_definitions,
+        "narratives_analyzed": result.narratives_analyzed,
+        "success": result.success,
+    }
+
+
+@app.get("/api/emotions/current")
+async def get_current_emotional_state():
+    """Get the most recent emotional state from latest narrative."""
+    from sqlmodel import Session, select
+    from src.memory.models import Experience, ExperienceType
+
+    with Session(raw_store.engine) as session:
+        # Get most recent narrative with emotional state
+        statement = (
+            select(Experience)
+            .where(Experience.type == ExperienceType.OBSERVATION.value)
+            .order_by(Experience.created_at.desc())
+            .limit(10)
+        )
+
+        for exp in session.exec(statement).all():
+            structured = exp.content.get("structured", {})
+            emotional_state = structured.get("emotional_state")
+
+            if emotional_state:
+                return {
+                    "narrative_id": exp.id,
+                    "timestamp": exp.created_at.isoformat(),
+                    "emotional_state": emotional_state,
+                }
+
+    return {
+        "message": "No emotional states found yet. Emotional extraction happens during consolidation."
+    }
+
+
+@app.get("/api/emotions/history")
+async def get_emotional_history(limit: int = 10):
+    """Get history of emotional states over time."""
+    from sqlmodel import Session, select
+    from src.memory.models import Experience, ExperienceType
+
+    history = []
+
+    with Session(raw_store.engine) as session:
+        statement = (
+            select(Experience)
+            .where(Experience.type == ExperienceType.OBSERVATION.value)
+            .order_by(Experience.created_at.desc())
+            .limit(limit * 2)  # Get more to filter
+        )
+
+        for exp in session.exec(statement).all():
+            structured = exp.content.get("structured", {})
+            emotional_state = structured.get("emotional_state")
+
+            if emotional_state:
+                history.append({
+                    "narrative_id": exp.id,
+                    "timestamp": exp.created_at.isoformat(),
+                    "felt_emotions": emotional_state.get("felt_emotions", []),
+                    "relational_quality": emotional_state.get("relational_quality", ""),
+                    "curiosity_level": emotional_state.get("curiosity_level", 0.0),
+                    "engagement_depth": emotional_state.get("engagement_depth", 0.0),
+                    "desires": emotional_state.get("desires", []),
+                })
+
+                if len(history) >= limit:
+                    break
+
+    return {"history": history, "count": len(history)}
+
+
+@app.get("/api/emotions/patterns")
+async def get_emotional_patterns():
+    """Analyze recurring emotional themes and patterns."""
+    from sqlmodel import Session, select
+    from src.memory.models import Experience, ExperienceType
+    from collections import Counter
+
+    all_emotions = []
+    all_desires = []
+    curiosity_levels = []
+    engagement_levels = []
+
+    with Session(raw_store.engine) as session:
+        statement = (
+            select(Experience)
+            .where(Experience.type == ExperienceType.OBSERVATION.value)
+            .order_by(Experience.created_at.desc())
+            .limit(50)
+        )
+
+        for exp in session.exec(statement).all():
+            structured = exp.content.get("structured", {})
+            emotional_state = structured.get("emotional_state")
+
+            if emotional_state:
+                all_emotions.extend(emotional_state.get("felt_emotions", []))
+                all_desires.extend(emotional_state.get("desires", []))
+                curiosity_levels.append(emotional_state.get("curiosity_level", 0.0))
+                engagement_levels.append(emotional_state.get("engagement_depth", 0.0))
+
+    # Compute patterns
+    emotion_counts = Counter(all_emotions)
+    desire_counts = Counter(all_desires)
+
+    avg_curiosity = sum(curiosity_levels) / len(curiosity_levels) if curiosity_levels else 0.0
+    avg_engagement = sum(engagement_levels) / len(engagement_levels) if engagement_levels else 0.0
+
+    return {
+        "most_common_emotions": emotion_counts.most_common(10),
+        "most_common_desires": desire_counts.most_common(10),
+        "average_curiosity": round(avg_curiosity, 2),
+        "average_engagement": round(avg_engagement, 2),
+        "total_emotional_states_analyzed": len(curiosity_levels),
+    }
+
+
+@app.get("/api/persona/info")
+async def get_persona_info():
+    """Get information about the persona's current state and capabilities."""
+    if not persona_service:
+        raise HTTPException(status_code=503, detail="Persona mode not enabled")
+
+    return persona_service.get_persona_info()
+
+
+@app.post("/api/persona/chat")
+async def persona_chat(request: ChatRequest):
+    """Chat with the persona directly (bypasses normal memory/mood system)."""
+    if not persona_service:
+        raise HTTPException(status_code=503, detail="Persona mode not enabled")
+
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    try:
+        # Generate persona response with emotional co-analysis
+        response_text, reconciliation = persona_service.generate_response(request.message)
+
+        # Return response with reconciliation data
+        return {
+            "response": response_text,
+            "reconciliation": reconciliation,
+            "internal_assessment": reconciliation.get("internal_assessment") if reconciliation else None,
+            "external_assessment": reconciliation.get("external_assessment") if reconciliation else None,
+            "reconciled_state": reconciliation.get("reconciled_state") if reconciliation else None,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Persona generation error: {str(e)}")
+
+
+@app.get("/api/persona/files")
+async def list_persona_files(directory: str = "."):
+    """List files in the persona's space."""
+    if not persona_service:
+        raise HTTPException(status_code=503, detail="Persona mode not enabled")
+
+    files = persona_service.list_persona_files(directory)
+    return {"directory": directory, "files": files}
+
+
+@app.get("/api/persona/file/{file_path:path}")
+async def read_persona_file(file_path: str):
+    """Read a specific file from the persona's space."""
+    if not persona_service:
+        raise HTTPException(status_code=503, detail="Persona mode not enabled")
+
+    content = persona_service.read_persona_file(file_path)
+    if content is None:
+        raise HTTPException(status_code=404, detail="File not found or access denied")
+
+    return {"file_path": file_path, "content": content}
 
 
 @app.get("/health")
