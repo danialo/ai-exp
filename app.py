@@ -966,6 +966,8 @@ async def get_available_models():
                 "id": f"{provider}:{model_id}",
                 "name": model_info["name"],
                 "provider": provider,
+                "is_reasoning_model": model_info.get("is_reasoning_model", False),
+                "supports_logit_bias": model_info.get("supports_logit_bias", True),
             })
     return {"models": models}
 

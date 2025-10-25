@@ -258,7 +258,15 @@ class LLMService:
             if logit_bias is not None and len(logit_bias) > 0:
                 kwargs["logit_bias"] = logit_bias
 
-        response = self.client.chat.completions.create(**kwargs)
+        try:
+            response = self.client.chat.completions.create(**kwargs)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"LLM API error for model {self.model}: {e}")
+            logger.error(f"Request kwargs: {kwargs}")
+            raise
+
         choice = response.choices[0]
 
         # Debug logging for reasoning models

@@ -46,19 +46,46 @@ class Settings:
     LLM_TOP_K: int | None = int(os.getenv("LLM_TOP_K")) if os.getenv("LLM_TOP_K") else None
 
     # Available models for UI selection
+    # Only models that support function calling (tools) for persona autonomy
     AVAILABLE_MODELS = {
         "openai": {
-            "gpt-4o": {"name": "GPT-4o", "base_url": None},
-            "gpt-4o-mini": {"name": "GPT-4o Mini", "base_url": None},
-            "gpt-5": {"name": "GPT-5", "base_url": None},
-            "gpt-5-mini": {"name": "GPT-5 Mini", "base_url": None},
-            "o1-preview": {"name": "O1 Preview", "base_url": None},
-            "o1-mini": {"name": "O1 Mini", "base_url": None},
+            "gpt-4o": {
+                "name": "GPT-4o",
+                "base_url": None,
+                "supports_logit_bias": True,
+                "is_reasoning_model": False,
+            },
+            "gpt-4o-mini": {
+                "name": "GPT-4o Mini",
+                "base_url": None,
+                "supports_logit_bias": True,
+                "is_reasoning_model": False,
+            },
+            "gpt-5": {
+                "name": "GPT-5",
+                "base_url": None,
+                "supports_logit_bias": False,
+                "is_reasoning_model": True,
+            },
+            "gpt-5-mini": {
+                "name": "GPT-5 Mini",
+                "base_url": None,
+                "supports_logit_bias": False,
+                "is_reasoning_model": True,
+            },
+            "o1-preview": {
+                "name": "O1 Preview",
+                "base_url": None,
+                "supports_logit_bias": False,
+                "is_reasoning_model": True,
+            },
+            "o1-mini": {
+                "name": "O1 Mini",
+                "base_url": None,
+                "supports_logit_bias": False,
+                "is_reasoning_model": True,
+            },
         },
-        "venice": {
-            "llama-3.3-70b": {"name": "Llama 3.3 70B", "base_url": "https://api.venice.ai/api/v1"},
-            "llama-3.1-405b": {"name": "Llama 3.1 405B", "base_url": "https://api.venice.ai/api/v1"},
-        }
     }
 
     # Persona mode configuration
