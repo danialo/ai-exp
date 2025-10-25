@@ -28,6 +28,9 @@ class LLMService:
         base_url: str | None = None,
         self_aware_prompt_builder=None,
         top_k: int | None = None,
+        top_p: float | None = None,
+        presence_penalty: float | None = None,
+        frequency_penalty: float | None = None,
     ):
         """Initialize LLM service.
 
@@ -39,6 +42,9 @@ class LLMService:
             base_url: Optional base URL for API endpoint (e.g., Venice AI)
             self_aware_prompt_builder: Optional builder for self-aware prompts
             top_k: Top-k sampling for creativity (if supported by API)
+            top_p: Nucleus sampling parameter (0-1)
+            presence_penalty: Penalty for token presence (-2 to 2)
+            frequency_penalty: Penalty for token frequency (-2 to 2)
         """
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
@@ -46,6 +52,9 @@ class LLMService:
         self.max_tokens = max_tokens
         self.self_aware_prompt_builder = self_aware_prompt_builder
         self.top_k = top_k
+        self.top_p = top_p
+        self.presence_penalty = presence_penalty
+        self.frequency_penalty = frequency_penalty
 
     def generate_response(
         self,
@@ -185,6 +194,10 @@ class LLMService:
         tools: List[Dict[str, Any]],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        top_p: float | None = None,
+        presence_penalty: float | None = None,
+        frequency_penalty: float | None = None,
+        logit_bias: Dict[int, float] | None = None,
     ) -> Dict[str, Any]:
         """Generate response with OpenAI function calling / tools.
 
@@ -193,6 +206,10 @@ class LLMService:
             tools: List of tool definitions in OpenAI format
             temperature: Override default temperature
             max_tokens: Override default max_tokens
+            top_p: Override default top_p
+            presence_penalty: Override default presence_penalty
+            frequency_penalty: Override default frequency_penalty
+            logit_bias: Token ID to bias mapping for suppressing specific tokens
 
         Returns:
             Dict with 'message' (full message object) and 'finish_reason'
@@ -204,6 +221,19 @@ class LLMService:
             "temperature": temperature if temperature is not None else self.temperature,
             "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
         }
+
+        # Add optional parameters if specified
+        if top_p is not None or self.top_p is not None:
+            kwargs["top_p"] = top_p if top_p is not None else self.top_p
+
+        if presence_penalty is not None or self.presence_penalty is not None:
+            kwargs["presence_penalty"] = presence_penalty if presence_penalty is not None else self.presence_penalty
+
+        if frequency_penalty is not None or self.frequency_penalty is not None:
+            kwargs["frequency_penalty"] = frequency_penalty if frequency_penalty is not None else self.frequency_penalty
+
+        if logit_bias is not None and len(logit_bias) > 0:
+            kwargs["logit_bias"] = logit_bias
 
         response = self.client.chat.completions.create(**kwargs)
         choice = response.choices[0]
@@ -222,6 +252,9 @@ def create_llm_service(
     base_url: str | None = None,
     self_aware_prompt_builder=None,
     top_k: int | None = None,
+    top_p: float | None = None,
+    presence_penalty: float | None = None,
+    frequency_penalty: float | None = None,
 ) -> LLMService:
     """Factory function to create an LLM service.
 
@@ -233,6 +266,9 @@ def create_llm_service(
         base_url: Optional base URL for API endpoint
         self_aware_prompt_builder: Optional self-aware prompt builder
         top_k: Top-k sampling for creativity
+        top_p: Nucleus sampling parameter
+        presence_penalty: Penalty for token presence
+        frequency_penalty: Penalty for token frequency
 
     Returns:
         LLMService instance
@@ -245,4 +281,7 @@ def create_llm_service(
         base_url=base_url,
         self_aware_prompt_builder=self_aware_prompt_builder,
         top_k=top_k,
+        top_p=top_p,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
     )

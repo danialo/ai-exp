@@ -510,6 +510,121 @@
             padding: 40px;
             color: #666;
         }
+
+        /* File Browser Styles */
+        .file-item {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 12px 15px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .file-item:hover {
+            background: #e9ecef;
+            border-color: #667eea;
+        }
+
+        .file-icon {
+            font-size: 20px;
+            min-width: 24px;
+            text-align: center;
+        }
+
+        .file-info {
+            flex: 1;
+        }
+
+        .file-name {
+            font-weight: 500;
+            color: #333;
+        }
+
+        .file-meta {
+            font-size: 11px;
+            color: #666;
+            margin-top: 2px;
+        }
+
+        /* Memory Detail Styles */
+        .memory-detail-section {
+            margin-bottom: 20px;
+        }
+
+        .memory-detail-section h3 {
+            font-size: 14px;
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .memory-detail-text {
+            background: #f8f9fa;
+            border-left: 3px solid #667eea;
+            padding: 12px;
+            border-radius: 4px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+
+        .memory-detail-meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-top: 15px;
+        }
+
+        .memory-detail-stat {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 6px;
+            text-align: center;
+        }
+
+        .memory-detail-stat-label {
+            font-size: 11px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .memory-detail-stat-value {
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
+            margin-top: 4px;
+        }
+
+        /* File Content Styles */
+        .file-content-display {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+
+        .clickable-memory {
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .clickable-memory:hover {
+            background: #e9ecef;
+        }
     </style>
 </head>
 <body>
@@ -527,6 +642,9 @@
                 </div>
                 <button class="memory-browser-btn" onclick="openMemoryBrowser()">
                     📚 Browse Memories
+                </button>
+                <button class="memory-browser-btn" onclick="openFileBrowser()">
+                    📁 Browse Files
                 </button>
             </div>
         </div>
@@ -575,6 +693,45 @@
         </div>
     </div>
 
+    <!-- Memory Detail Modal -->
+    <div class="modal" id="memory-detail-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Memory Details</h2>
+                <button class="modal-close" onclick="closeMemoryDetail()">×</button>
+            </div>
+            <div class="modal-body" id="memory-detail-content">
+                <div class="loading-spinner">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- File Browser Modal -->
+    <div class="modal" id="file-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>File Browser: <span id="current-path">.</span></h2>
+                <button class="modal-close" onclick="closeFileBrowser()">×</button>
+            </div>
+            <div class="modal-body" id="file-list">
+                <div class="loading-spinner">Loading files...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- File Content Modal -->
+    <div class="modal" id="file-content-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="file-content-title">File Content</h2>
+                <button class="modal-close" onclick="closeFileContent()">×</button>
+            </div>
+            <div class="modal-body" id="file-content">
+                <div class="loading-spinner">Loading...</div>
+            </div>
+        </div>
+    </div>
+
     <script>
         const chatArea = document.getElementById('chat-area');
         const messageInput = document.getElementById('message-input');
@@ -583,6 +740,7 @@
         const llmStatus = document.getElementById('llm-status');
 
         let isProcessing = false;
+        let conversationHistory = [];  // Track conversation for context
 
         // Load stats on page load
         async function loadStats() {
@@ -739,7 +897,7 @@
             messageInput.value = '';
 
             try {
-                const response = await fetch('/api/chat', {
+                const response = await fetch('/api/persona/chat', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -747,7 +905,8 @@
                     body: JSON.stringify({
                         message: message,
                         retrieve_memories: true,
-                        top_k: 3,
+                        top_k: 5,
+                        conversation_history: conversationHistory,
                     }),
                 });
 
@@ -757,8 +916,17 @@
 
                 const data = await response.json();
 
-                // Add assistant response with memories
-                addMessage('assistant', data.response, data.memories);
+                // Add assistant response (persona endpoint doesn't return memories in same format)
+                addMessage('assistant', data.response, []);
+
+                // Update conversation history
+                conversationHistory.push({role: 'user', content: message});
+                conversationHistory.push({role: 'assistant', content: data.response});
+
+                // Keep only last 10 messages (5 exchanges) to avoid token overflow
+                if (conversationHistory.length > 10) {
+                    conversationHistory = conversationHistory.slice(-10);
+                }
 
                 // Update stats and mood
                 loadStats();
@@ -823,8 +991,13 @@
                 memoryList.innerHTML = '';
                 memories.forEach(memory => {
                     const item = document.createElement('div');
-                    item.className = 'memory-list-item';
+                    item.className = 'memory-list-item clickable-memory';
                     item.id = `memory-${memory.id}`;
+                    item.onclick = (e) => {
+                        // Don't trigger if delete button was clicked
+                        if (e.target.classList.contains('delete-btn')) return;
+                        viewMemoryDetails(memory.id);
+                    };
 
                     const valenceClass = memory.valence >= 0 ? 'positive' : 'negative';
                     const valenceSign = memory.valence >= 0 ? '+' : '';
@@ -852,7 +1025,7 @@
                                 <span class="memory-valence ${valenceClass}">${valenceSign}${memory.valence.toFixed(2)}</span>
                                 <span style="margin-left: 8px;">${new Date(memory.timestamp).toLocaleString()}</span>
                             </div>
-                            <button class="delete-btn" onclick="deleteMemory('${memory.id}')">Delete</button>
+                            <button class="delete-btn" onclick="event.stopPropagation(); deleteMemory('${memory.id}')">Delete</button>
                         </div>
                         ${contentHtml}
                     `;
@@ -907,6 +1080,206 @@
                 closeMemoryBrowser();
             }
         });
+
+        // Memory Detail Functions
+        async function viewMemoryDetails(memoryId) {
+            const modal = document.getElementById('memory-detail-modal');
+            const content = document.getElementById('memory-detail-content');
+
+            modal.classList.add('open');
+            content.innerHTML = '<div class="loading-spinner">Loading memory details...</div>';
+
+            try {
+                const response = await fetch(`/api/memory/${memoryId}`);
+                const memory = await response.json();
+
+                content.innerHTML = `
+                    <div class="memory-detail-section">
+                        <h3>User Prompt</h3>
+                        <div class="memory-detail-text">${escapeHtml(memory.prompt || 'N/A')}</div>
+                    </div>
+
+                    <div class="memory-detail-section">
+                        <h3>Agent Response</h3>
+                        <div class="memory-detail-text">${escapeHtml(memory.response || 'N/A')}</div>
+                    </div>
+
+                    <div class="memory-detail-meta">
+                        <div class="memory-detail-stat">
+                            <div class="memory-detail-stat-label">Type</div>
+                            <div class="memory-detail-stat-value">${memory.type}</div>
+                        </div>
+                        <div class="memory-detail-stat">
+                            <div class="memory-detail-stat-label">Valence</div>
+                            <div class="memory-detail-stat-value">${memory.valence.toFixed(2)}</div>
+                        </div>
+                        <div class="memory-detail-stat">
+                            <div class="memory-detail-stat-label">Arousal</div>
+                            <div class="memory-detail-stat-value">${memory.arousal.toFixed(2)}</div>
+                        </div>
+                        <div class="memory-detail-stat">
+                            <div class="memory-detail-stat-label">Dominance</div>
+                            <div class="memory-detail-stat-value">${memory.dominance.toFixed(2)}</div>
+                        </div>
+                        <div class="memory-detail-stat">
+                            <div class="memory-detail-stat-label">Created</div>
+                            <div class="memory-detail-stat-value" style="font-size: 12px;">${new Date(memory.created_at).toLocaleString()}</div>
+                        </div>
+                        <div class="memory-detail-stat">
+                            <div class="memory-detail-stat-label">ID</div>
+                            <div class="memory-detail-stat-value" style="font-size: 10px;">${memory.id}</div>
+                        </div>
+                    </div>
+                `;
+
+            } catch (error) {
+                console.error('Failed to load memory details:', error);
+                content.innerHTML = '<div class="loading-spinner">Failed to load memory details</div>';
+            }
+        }
+
+        function closeMemoryDetail() {
+            document.getElementById('memory-detail-modal').classList.remove('open');
+        }
+
+        document.getElementById('memory-detail-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'memory-detail-modal') {
+                closeMemoryDetail();
+            }
+        });
+
+        // File Browser Functions
+        let currentDirectory = '';
+
+        async function openFileBrowser(directory = '') {
+            currentDirectory = directory;
+            const modal = document.getElementById('file-modal');
+            const fileList = document.getElementById('file-list');
+            const currentPath = document.getElementById('current-path');
+
+            modal.classList.add('open');
+            fileList.innerHTML = '<div class="loading-spinner">Loading files...</div>';
+            currentPath.textContent = directory || '.';
+
+            try {
+                const url = directory ? `/api/persona/browse?directory=${encodeURIComponent(directory)}` : '/api/persona/browse';
+                const response = await fetch(url);
+                const data = await response.json();
+
+                fileList.innerHTML = '';
+
+                // Add back button if not in root
+                if (directory) {
+                    const backBtn = document.createElement('div');
+                    backBtn.className = 'file-item';
+                    backBtn.onclick = () => {
+                        const parentPath = directory.split('/').slice(0, -1).join('/');
+                        openFileBrowser(parentPath);
+                    };
+                    backBtn.innerHTML = `
+                        <div class="file-icon">⬆️</div>
+                        <div class="file-info">
+                            <div class="file-name">..</div>
+                            <div class="file-meta">Parent directory</div>
+                        </div>
+                    `;
+                    fileList.appendChild(backBtn);
+                }
+
+                // Sort: directories first, then files
+                const items = data.items.sort((a, b) => {
+                    if (a.type === b.type) return a.name.localeCompare(b.name);
+                    return a.type === 'directory' ? -1 : 1;
+                });
+
+                items.forEach(item => {
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'file-item';
+
+                    const icon = item.type === 'directory' ? '📁' : '📄';
+                    const sizeStr = item.size !== null ? formatBytes(item.size) : '';
+                    const dateStr = new Date(item.modified * 1000).toLocaleString();
+
+                    fileItem.onclick = () => {
+                        if (item.type === 'directory') {
+                            openFileBrowser(item.path);
+                        } else {
+                            viewFileContent(item.path, item.name);
+                        }
+                    };
+
+                    fileItem.innerHTML = `
+                        <div class="file-icon">${icon}</div>
+                        <div class="file-info">
+                            <div class="file-name">${escapeHtml(item.name)}</div>
+                            <div class="file-meta">${sizeStr} ${sizeStr && dateStr ? '•' : ''} ${dateStr}</div>
+                        </div>
+                    `;
+
+                    fileList.appendChild(fileItem);
+                });
+
+                if (items.length === 0 && !directory) {
+                    fileList.innerHTML = '<div class="loading-spinner">No files yet</div>';
+                }
+
+            } catch (error) {
+                console.error('Failed to load files:', error);
+                fileList.innerHTML = '<div class="loading-spinner">Failed to load files</div>';
+            }
+        }
+
+        function closeFileBrowser() {
+            document.getElementById('file-modal').classList.remove('open');
+        }
+
+        document.getElementById('file-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'file-modal') {
+                closeFileBrowser();
+            }
+        });
+
+        // File Content Functions
+        async function viewFileContent(filePath, fileName) {
+            const modal = document.getElementById('file-content-modal');
+            const content = document.getElementById('file-content');
+            const title = document.getElementById('file-content-title');
+
+            modal.classList.add('open');
+            content.innerHTML = '<div class="loading-spinner">Loading file content...</div>';
+            title.textContent = fileName;
+
+            try {
+                const response = await fetch(`/api/persona/file/${encodeURIComponent(filePath)}`);
+                const data = await response.json();
+
+                content.innerHTML = `<div class="file-content-display">${escapeHtml(data.content)}</div>`;
+
+            } catch (error) {
+                console.error('Failed to load file content:', error);
+                content.innerHTML = '<div class="loading-spinner">Failed to load file content</div>';
+            }
+        }
+
+        function closeFileContent() {
+            document.getElementById('file-content-modal').classList.remove('open');
+        }
+
+        document.getElementById('file-content-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'file-content-modal') {
+                closeFileContent();
+            }
+        });
+
+        // Utility function to format bytes
+        function formatBytes(bytes, decimals = 1) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
     </script>
 </body>
 </html>

@@ -6,6 +6,7 @@ This service coordinates:
 2. LLM generation (with emotional co-analysis)
 3. Emotional reconciliation (internal vs external)
 4. File system access for persona autonomy
+5. Anti-meta-talk filtering and rewriting
 """
 
 import json
@@ -17,6 +18,11 @@ from src.services.persona_prompt import PersonaPromptBuilder, extract_emotional_
 from src.services.emotional_reconciler import EmotionalReconciler
 from src.services.persona_file_manager import PersonaFileManager
 from src.services.llm import LLMService
+from src.services.anti_metatalk import (
+    create_logit_bias_builder,
+    create_metatalk_detector,
+    create_metatalk_rewriter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +33,11 @@ class PersonaService:
     def __init__(
         self,
         llm_service: LLMService,
-        persona_space_path: str = "persona_space"
+        persona_space_path: str = "persona_space",
+        retrieval_service=None,
+        enable_anti_metatalk: bool = True,
+        logit_bias_strength: float = -100,
+        auto_rewrite: bool = True,
     ):
         """
         Initialize persona service.
@@ -35,51 +45,115 @@ class PersonaService:
         Args:
             llm_service: LLM service for generation
             persona_space_path: Path to persona's file space
+            retrieval_service: Optional retrieval service for memory access
+            enable_anti_metatalk: Enable anti-meta-talk system
+            logit_bias_strength: Strength of logit bias for token suppression
+            auto_rewrite: Automatically rewrite responses containing meta-talk
         """
         self.llm = llm_service
         self.prompt_builder = PersonaPromptBuilder(persona_space_path)
         self.reconciler = EmotionalReconciler(llm_service, persona_space_path)
         self.file_manager = PersonaFileManager(persona_space_path)
+        self.retrieval_service = retrieval_service
         self.persona_space = Path(persona_space_path)
         self.action_log_path = self.persona_space / "meta" / "actions_log.json"
 
-    def generate_response(self, user_message: str) -> Tuple[str, Dict]:
+        # Anti-meta-talk system
+        self.enable_anti_metatalk = enable_anti_metatalk
+        self.auto_rewrite = auto_rewrite
+        self.logit_bias_strength = logit_bias_strength
+
+        if enable_anti_metatalk:
+            # Get model name from LLM service for tokenizer
+            model_name = llm_service.model
+            self.logit_bias_builder = create_logit_bias_builder(model=model_name)
+            self.logit_bias = self.logit_bias_builder.build_bias(strength=logit_bias_strength)
+            self.metatalk_detector = create_metatalk_detector()
+            self.metatalk_rewriter = create_metatalk_rewriter(llm_service)
+            logger.info(f"Anti-meta-talk enabled with {len(self.logit_bias)} suppressed tokens")
+        else:
+            self.logit_bias = {}
+            self.metatalk_detector = None
+            self.metatalk_rewriter = None
+
+    def generate_response(self, user_message: str, retrieve_memories: bool = True, top_k: int = 5, conversation_history: list = None) -> Tuple[str, Dict]:
         """
         Generate a persona response with emotional co-analysis and tool use.
 
         This is the main method that:
-        1. Builds persona-aware prompt
-        2. Generates response with tool calling enabled
-        3. Executes any tool calls (file operations)
-        4. Extracts and reconciles emotional perspectives
-        5. Returns cleaned response and reconciliation data
+        1. Retrieves relevant memories (if enabled)
+        2. Builds persona-aware prompt with memory context
+        3. Generates response with tool calling enabled
+        4. Executes any tool calls (file operations)
+        5. Extracts and reconciles emotional perspectives
+        6. Returns cleaned response and reconciliation data
 
         Args:
             user_message: The user's message
+            retrieve_memories: Whether to retrieve relevant memories
+            top_k: Number of memories to retrieve
+            conversation_history: Previous messages in the conversation [{"role": "user"|"assistant", "content": "..."}]
 
         Returns:
             Tuple of (response_text, reconciliation_data)
         """
-        # Build the persona prompt with current context
-        full_prompt = self.prompt_builder.build_prompt(user_message)
+        if conversation_history is None:
+            conversation_history = []
+        # Retrieve relevant memories if enabled
+        memories = []
+        if retrieve_memories and self.retrieval_service:
+            try:
+                memories = self.retrieval_service.retrieve_similar(
+                    prompt=user_message,
+                    top_k=top_k
+                )
+                logger.info(f"Retrieved {len(memories)} relevant memories for persona")
+                print(f"🧠 Retrieved {len(memories)} memories for context")
+            except Exception as e:
+                logger.error(f"Failed to retrieve memories: {e}")
+
+        # Build the persona prompt with current context and memories
+        full_prompt = self.prompt_builder.build_prompt(user_message, memories=memories)
+
+        # Log prompt stats for visibility (not full content to avoid clutter)
+        prompt_lines = full_prompt.count('\n')
+        prompt_chars = len(full_prompt)
+        logger.info(f"Built persona prompt: {prompt_lines} lines, {prompt_chars} chars")
+        print(f"📝 Persona prompt built: {prompt_lines} lines, {prompt_chars} chars")
 
         # Initialize messages for tool loop
-        messages = [{"role": "user", "content": full_prompt}]
+        # Start with system prompt, then conversation history, then current user message
+        messages = [{"role": "system", "content": full_prompt}]
+
+        # Add conversation history if provided
+        if conversation_history:
+            messages.extend(conversation_history)
+
+        # Add current user message
+        messages.append({"role": "user", "content": user_message})
+
         tools = self._get_tool_definitions()
 
         # Tool execution loop (max 5 iterations to prevent infinite loops)
         max_iterations = 5
+        assistant_responses = []  # Collect all assistant content
+
         for iteration in range(max_iterations):
-            # Generate response with tools
+            # Generate response with tools and anti-meta-talk bias
             result = self.llm.generate_with_tools(
                 messages=messages,
                 tools=tools,
                 temperature=0.9,
-                max_tokens=1000
+                max_tokens=1000,
+                logit_bias=self.logit_bias if self.enable_anti_metatalk else None,
             )
 
             message = result["message"]
             finish_reason = result["finish_reason"]
+
+            # Collect content from assistant
+            if message.content:
+                assistant_responses.append(message.content)
 
             # Add assistant message to history
             messages.append({
@@ -90,7 +164,6 @@ class PersonaService:
 
             # If no tool calls, we're done
             if not message.tool_calls:
-                raw_response = message.content or ""
                 break
 
             # Execute tool calls
@@ -100,6 +173,8 @@ class PersonaService:
                 arguments = json.loads(func.arguments)
 
                 logger.info(f"Persona calling tool: {tool_name} with args: {arguments}")
+                # Print to console for user visibility
+                print(f"🤖 AGENT ACTION: {tool_name}({', '.join(f'{k}={v[:50] if isinstance(v, str) else v}...' if isinstance(v, str) and len(v) > 50 else f'{k}={v}' for k, v in arguments.items())})")
 
                 # Execute the tool
                 tool_result = self._execute_tool(tool_name, arguments)
@@ -111,9 +186,11 @@ class PersonaService:
                     "content": tool_result
                 })
 
-        else:
-            # Max iterations reached, use last response
-            raw_response = messages[-1].get("content", "")
+        # Combine all assistant responses (use first substantive one, not meta-statements)
+        # Prefer the first response as it usually has the actual content
+        raw_response = assistant_responses[0] if assistant_responses else ""
+
+        if iteration >= max_iterations - 1:
             logger.warning(f"Tool loop reached max iterations ({max_iterations})")
 
         # Extract internal emotional assessment
@@ -121,6 +198,27 @@ class PersonaService:
 
         # Remove assessment from user-facing response
         clean_response = remove_emotional_assessment(raw_response)
+
+        # Layer 3: Detect and handle meta-talk
+        if self.enable_anti_metatalk and self.metatalk_detector:
+            has_metatalk = self.metatalk_detector.detect(clean_response)
+            if has_metatalk:
+                meta_phrases = self.metatalk_detector.find_all(clean_response)
+                logger.warning(f"Meta-talk detected in response: {meta_phrases}")
+                print(f"⚠️  Meta-talk detected: {meta_phrases}")
+
+                if self.auto_rewrite and self.metatalk_rewriter:
+                    print(f"🔄 Auto-rewriting response to remove meta-talk...")
+                    try:
+                        clean_response = self.metatalk_rewriter.rewrite(clean_response, user_message)
+                        print(f"✅ Response rewritten successfully")
+                    except Exception as e:
+                        logger.error(f"Rewrite failed: {e}, stripping meta-talk instead")
+                        print(f"❌ Rewrite failed, stripping meta-talk sentences instead")
+                        clean_response = self.metatalk_detector.strip(clean_response)
+                else:
+                    # Just strip the meta-talk
+                    clean_response = self.metatalk_detector.strip(clean_response)
 
         # Reconcile emotional perspectives if assessment was provided
         reconciliation_data = None
@@ -295,6 +393,10 @@ class PersonaService:
 
             # Log the action
             self._log_action(tool_name, arguments, result)
+
+            # Print result summary for user visibility
+            result_preview = result[:100] + "..." if len(result) > 100 else result
+            print(f"   ✓ Result: {result_preview}")
 
             return result
 

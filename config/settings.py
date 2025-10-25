@@ -48,8 +48,16 @@ class Settings:
     # Persona mode configuration
     PERSONA_MODE_ENABLED: bool = os.getenv("PERSONA_MODE_ENABLED", "false").lower() == "true"
     PERSONA_SPACE_PATH: str = os.getenv("PERSONA_SPACE_PATH", str(PROJECT_ROOT / "persona_space"))
-    PERSONA_TEMPERATURE: float = float(os.getenv("PERSONA_TEMPERATURE", "0.9"))  # Higher for creativity
+    PERSONA_TEMPERATURE: float = float(os.getenv("PERSONA_TEMPERATURE", "1.0"))  # High for creative, non-canned responses
     PERSONA_TOP_K: int = int(os.getenv("PERSONA_TOP_K", "100"))  # Increased for emergent behavior
+    PERSONA_TOP_P: float = float(os.getenv("PERSONA_TOP_P", "0.92"))  # Nucleus sampling
+    PERSONA_PRESENCE_PENALTY: float = float(os.getenv("PERSONA_PRESENCE_PENALTY", "0.6"))  # Reduce repetition across responses
+    PERSONA_FREQUENCY_PENALTY: float = float(os.getenv("PERSONA_FREQUENCY_PENALTY", "0.3"))  # Reduce within-response repetition
+
+    # Anti-meta-talk configuration
+    ANTI_METATALK_ENABLED: bool = os.getenv("ANTI_METATALK_ENABLED", "true").lower() == "true"
+    LOGIT_BIAS_STRENGTH: float = float(os.getenv("LOGIT_BIAS_STRENGTH", "-100"))  # Strong penalty for meta-talk tokens
+    AUTO_REWRITE_METATALK: bool = os.getenv("AUTO_REWRITE_METATALK", "true").lower() == "true"
 
     # Retrieval parameters
     TOP_K_RETRIEVAL: int = int(os.getenv("TOP_K_RETRIEVAL", "5"))

@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pathlib import Path
 import uvicorn
 
@@ -255,11 +255,18 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         base_url=base_url,
         # top_k disabled for OpenAI compatibility
         # top_k=settings.PERSONA_TOP_K,
+        top_p=settings.PERSONA_TOP_P,
+        presence_penalty=settings.PERSONA_PRESENCE_PENALTY,
+        frequency_penalty=settings.PERSONA_FREQUENCY_PENALTY,
     )
 
     persona_service = PersonaService(
         llm_service=persona_llm,
-        persona_space_path=settings.PERSONA_SPACE_PATH
+        persona_space_path=settings.PERSONA_SPACE_PATH,
+        retrieval_service=retrieval_service,  # Pass retrieval service for memory access
+        enable_anti_metatalk=settings.ANTI_METATALK_ENABLED,
+        logit_bias_strength=settings.LOGIT_BIAS_STRENGTH,
+        auto_rewrite=settings.AUTO_REWRITE_METATALK,
     )
 
 
@@ -269,6 +276,7 @@ class ChatRequest(BaseModel):
     message: str
     retrieve_memories: bool = True
     top_k: int = 3
+    conversation_history: List[Dict[str, str]] = []  # List of {"role": "user"|"assistant", "content": "..."}
 
 
 class Memory(BaseModel):
@@ -895,7 +903,7 @@ async def get_persona_info():
 
 @app.post("/api/persona/chat")
 async def persona_chat(request: ChatRequest):
-    """Chat with the persona directly (bypasses normal memory/mood system)."""
+    """Chat with the persona directly - includes memory storage for continuity."""
     if not persona_service:
         raise HTTPException(status_code=503, detail="Persona mode not enabled")
 
@@ -903,8 +911,30 @@ async def persona_chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:
-        # Generate persona response with emotional co-analysis
-        response_text, reconciliation = persona_service.generate_response(request.message)
+        # Generate persona response with emotional co-analysis and memory retrieval
+        response_text, reconciliation = persona_service.generate_response(
+            user_message=request.message,
+            retrieve_memories=request.retrieve_memories,
+            top_k=request.top_k,
+            conversation_history=request.conversation_history
+        )
+
+        # Store the interaction in memory so persona can learn from it
+        # Use reconciled emotional state if available, otherwise neutral
+        valence = 0.0
+        if reconciliation and reconciliation.get("reconciled_state"):
+            # Try to extract valence from reconciled state description
+            # For now, use neutral - could be enhanced to parse emotional state
+            valence = 0.0
+
+        interaction = InteractionPayload(
+            prompt=request.message,
+            response=response_text,
+            valence=valence,
+        )
+        result = ingestion_pipeline.ingest_interaction(interaction)
+
+        logger.info(f"Stored persona interaction: {result.experience_id}")
 
         # Return response with reconciliation data
         return {
@@ -913,6 +943,7 @@ async def persona_chat(request: ChatRequest):
             "internal_assessment": reconciliation.get("internal_assessment") if reconciliation else None,
             "external_assessment": reconciliation.get("external_assessment") if reconciliation else None,
             "reconciled_state": reconciliation.get("reconciled_state") if reconciliation else None,
+            "experience_id": result.experience_id,  # Include so user knows it was stored
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Persona generation error: {str(e)}")
@@ -939,6 +970,80 @@ async def read_persona_file(file_path: str):
         raise HTTPException(status_code=404, detail="File not found or access denied")
 
     return {"file_path": file_path, "content": content}
+
+
+@app.get("/api/persona/browse")
+async def browse_persona_space(directory: str = ""):
+    """Browse the persona's file space with a tree view."""
+    if not persona_service:
+        raise HTTPException(status_code=503, detail="Persona mode not enabled")
+
+    from pathlib import Path
+    import os
+
+    base_path = Path(settings.PERSONA_SPACE_PATH)
+    target_path = base_path / directory if directory else base_path
+
+    if not target_path.exists() or not target_path.is_relative_to(base_path):
+        raise HTTPException(status_code=404, detail="Directory not found or access denied")
+
+    # Build file tree
+    items = []
+    try:
+        for item in sorted(target_path.iterdir()):
+            relative_path = str(item.relative_to(base_path))
+            stat = item.stat()
+
+            items.append({
+                "name": item.name,
+                "path": relative_path,
+                "type": "directory" if item.is_dir() else "file",
+                "size": stat.st_size if item.is_file() else None,
+                "modified": stat.st_mtime,
+            })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading directory: {str(e)}")
+
+    return {
+        "current_directory": directory or ".",
+        "items": items,
+        "total": len(items),
+    }
+
+
+@app.get("/api/memory/{experience_id}")
+async def get_memory_detail(experience_id: str):
+    """Get full details of a specific memory."""
+    exp = raw_store.get_experience(experience_id)
+
+    if not exp:
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    # Extract structured content
+    prompt_text = None
+    response_text = None
+    full_content = {}
+
+    if exp.type == ExperienceType.OCCURRENCE:
+        if hasattr(exp.content, 'structured'):
+            structured = exp.content.structured
+            prompt_text = structured.get('prompt', '')
+            response_text = structured.get('response', '')
+            full_content = structured
+
+    return {
+        "id": exp.id,
+        "type": exp.type.value,
+        "created_at": exp.created_at.isoformat(),
+        "prompt": prompt_text,
+        "response": response_text,
+        "valence": exp.affect.vad.v if exp.affect else 0.0,
+        "arousal": exp.affect.vad.a if exp.affect else 0.0,
+        "dominance": exp.affect.vad.d if exp.affect else 0.0,
+        "parent_ids": exp.parents if exp.parents else [],
+        "session_id": exp.session_id,
+        "full_content": full_content,
+    }
 
 
 @app.get("/health")
