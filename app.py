@@ -277,6 +277,7 @@ class ChatRequest(BaseModel):
     retrieve_memories: bool = True
     top_k: int = 3
     conversation_history: List[Dict[str, str]] = []  # List of {"role": "user"|"assistant", "content": "..."}
+    model: Optional[str] = None  # Optional model override (format: "provider:model" e.g., "openai:gpt-4o")
 
 
 class Memory(BaseModel):
@@ -301,6 +302,69 @@ class StatsResponse(BaseModel):
     total_vectors: int
     llm_model: Optional[str]
     llm_enabled: bool
+
+
+# Helper function to create LLM service dynamically
+def create_llm_for_model(model_spec: Optional[str] = None):
+    """Create an LLM service instance for the specified model.
+
+    Args:
+        model_spec: Model specification in format "provider:model" (e.g., "openai:gpt-4o")
+                   If None, uses default from settings
+
+    Returns:
+        Tuple of (llm_service, persona_llm_service)
+    """
+    if model_spec:
+        try:
+            provider, model = model_spec.split(":", 1)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Model must be in format 'provider:model'")
+
+        if provider not in settings.AVAILABLE_MODELS:
+            raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+
+        if model not in settings.AVAILABLE_MODELS[provider]:
+            raise HTTPException(status_code=400, detail=f"Unknown model: {model} for provider {provider}")
+
+        model_config = settings.AVAILABLE_MODELS[provider][model]
+        base_url = model_config["base_url"]
+
+        # Get appropriate API key
+        api_key = settings.OPENAI_API_KEY if provider == "openai" else settings.VENICEAI_API_KEY
+        if not api_key:
+            raise HTTPException(status_code=500, detail=f"No API key configured for {provider}")
+    else:
+        # Use defaults from settings
+        provider = settings.LLM_PROVIDER
+        model = settings.LLM_MODEL
+        base_url = settings.LLM_BASE_URL
+        api_key = settings.OPENAI_API_KEY if provider == "openai" else settings.VENICEAI_API_KEY
+
+    # Create main LLM service
+    llm = create_llm_service(
+        api_key=api_key,
+        model=model,
+        temperature=settings.LLM_TEMPERATURE,
+        max_tokens=settings.LLM_MAX_TOKENS,
+        base_url=base_url,
+        self_aware_prompt_builder=self_aware_prompt_builder,
+        top_k=settings.LLM_TOP_K,
+    )
+
+    # Create persona LLM service with higher creativity settings
+    persona_llm = create_llm_service(
+        api_key=api_key,
+        model=model,
+        temperature=settings.PERSONA_TEMPERATURE,
+        max_tokens=1500,
+        base_url=base_url,
+        top_p=settings.PERSONA_TOP_P,
+        presence_penalty=settings.PERSONA_PRESENCE_PENALTY,
+        frequency_penalty=settings.PERSONA_FREQUENCY_PENALTY,
+    )
+
+    return llm, persona_llm
 
 
 # API Routes
@@ -892,6 +956,20 @@ async def get_emotional_patterns():
     }
 
 
+@app.get("/api/models")
+async def get_available_models():
+    """Get list of available models for UI selection."""
+    models = []
+    for provider, provider_models in settings.AVAILABLE_MODELS.items():
+        for model_id, model_info in provider_models.items():
+            models.append({
+                "id": f"{provider}:{model_id}",
+                "name": model_info["name"],
+                "provider": provider,
+            })
+    return {"models": models}
+
+
 @app.get("/api/persona/info")
 async def get_persona_info():
     """Get information about the persona's current state and capabilities."""
@@ -911,8 +989,21 @@ async def persona_chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:
+        # If model override specified, create temporary persona service with that model
+        active_persona_service = persona_service
+        if request.model:
+            _, persona_llm = create_llm_for_model(request.model)
+            active_persona_service = PersonaService(
+                llm_service=persona_llm,
+                persona_space_path=settings.PERSONA_SPACE_PATH,
+                retrieval_service=retrieval_service,
+                enable_anti_metatalk=settings.ANTI_METATALK_ENABLED,
+                logit_bias_strength=settings.LOGIT_BIAS_STRENGTH,
+                auto_rewrite=settings.AUTO_REWRITE_METATALK,
+            )
+
         # Generate persona response with emotional co-analysis and memory retrieval
-        response_text, reconciliation = persona_service.generate_response(
+        response_text, reconciliation = active_persona_service.generate_response(
             user_message=request.message,
             retrieve_memories=request.retrieve_memories,
             top_k=request.top_k,

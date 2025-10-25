@@ -45,6 +45,21 @@ class Settings:
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "500"))
     LLM_TOP_K: int | None = int(os.getenv("LLM_TOP_K")) if os.getenv("LLM_TOP_K") else None
 
+    # Available models for UI selection
+    AVAILABLE_MODELS = {
+        "openai": {
+            "gpt-4o": {"name": "GPT-4o", "base_url": None},
+            "gpt-4o-mini": {"name": "GPT-4o Mini", "base_url": None},
+            "gpt-5": {"name": "GPT-5", "base_url": None},
+            "o1": {"name": "O1", "base_url": None},
+            "o3-mini": {"name": "O3 Mini", "base_url": None},
+        },
+        "venice": {
+            "llama-3.3-70b": {"name": "Llama 3.3 70B", "base_url": "https://api.venice.ai/api/v1"},
+            "llama-3.1-405b": {"name": "Llama 3.1 405B", "base_url": "https://api.venice.ai/api/v1"},
+        }
+    }
+
     # Persona mode configuration
     PERSONA_MODE_ENABLED: bool = os.getenv("PERSONA_MODE_ENABLED", "false").lower() == "true"
     PERSONA_SPACE_PATH: str = os.getenv("PERSONA_SPACE_PATH", str(PROJECT_ROOT / "persona_space"))
