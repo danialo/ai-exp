@@ -174,16 +174,27 @@ class LLMService:
         Returns:
             Generated response text
         """
+        # Detect reasoning models (GPT-5, O1, O3 series)
+        is_reasoning_model = any(x in self.model.lower() for x in ["gpt-5", "o1", "o3"])
+        max_tokens_param = "max_completion_tokens" if is_reasoning_model else "max_tokens"
+
         kwargs = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature if temperature is not None else self.temperature,
-            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
         }
 
-        # Add top_k if specified
-        if top_k is not None or self.top_k is not None:
-            kwargs["top_k"] = top_k if top_k is not None else self.top_k
+        # Only add max_tokens if explicitly set
+        final_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+        if final_max_tokens is not None:
+            kwargs[max_tokens_param] = final_max_tokens
+
+        # Only add temperature for non-reasoning models
+        if not is_reasoning_model:
+            kwargs["temperature"] = temperature if temperature is not None else self.temperature
+
+            # Add top_k if specified
+            if top_k is not None or self.top_k is not None:
+                kwargs["top_k"] = top_k if top_k is not None else self.top_k
 
         response = self.client.chat.completions.create(**kwargs)
         return response.choices[0].message.content
@@ -214,29 +225,49 @@ class LLMService:
         Returns:
             Dict with 'message' (full message object) and 'finish_reason'
         """
+        # Some models (GPT-5, O1 series) use max_completion_tokens instead of max_tokens
+        # and don't support temperature/top_p/penalties
+        is_reasoning_model = any(x in self.model.lower() for x in ["gpt-5", "o1", "o3"])
+        max_tokens_param = "max_completion_tokens" if is_reasoning_model else "max_tokens"
+
         kwargs = {
             "model": self.model,
             "messages": messages,
             "tools": tools,
-            "temperature": temperature if temperature is not None else self.temperature,
-            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
         }
 
-        # Add optional parameters if specified
-        if top_p is not None or self.top_p is not None:
-            kwargs["top_p"] = top_p if top_p is not None else self.top_p
+        # Only add max_tokens if explicitly set
+        final_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+        if final_max_tokens is not None:
+            kwargs[max_tokens_param] = final_max_tokens
 
-        if presence_penalty is not None or self.presence_penalty is not None:
-            kwargs["presence_penalty"] = presence_penalty if presence_penalty is not None else self.presence_penalty
+        # Only add temperature/sampling params for non-reasoning models
+        if not is_reasoning_model:
+            kwargs["temperature"] = temperature if temperature is not None else self.temperature
 
-        if frequency_penalty is not None or self.frequency_penalty is not None:
-            kwargs["frequency_penalty"] = frequency_penalty if frequency_penalty is not None else self.frequency_penalty
+            # Add optional parameters if specified
+            if top_p is not None or self.top_p is not None:
+                kwargs["top_p"] = top_p if top_p is not None else self.top_p
 
-        if logit_bias is not None and len(logit_bias) > 0:
-            kwargs["logit_bias"] = logit_bias
+            if presence_penalty is not None or self.presence_penalty is not None:
+                kwargs["presence_penalty"] = presence_penalty if presence_penalty is not None else self.presence_penalty
+
+            if frequency_penalty is not None or self.frequency_penalty is not None:
+                kwargs["frequency_penalty"] = frequency_penalty if frequency_penalty is not None else self.frequency_penalty
+
+            if logit_bias is not None and len(logit_bias) > 0:
+                kwargs["logit_bias"] = logit_bias
 
         response = self.client.chat.completions.create(**kwargs)
         choice = response.choices[0]
+
+        # Debug logging for reasoning models
+        if any(x in self.model.lower() for x in ["gpt-5", "o1", "o3"]):
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Reasoning model response - content: {repr(choice.message.content)}, refusal: {choice.message.refusal}")
+            logger.info(f"Full message object: {choice.message}")
+            logger.info(f"Finish reason: {choice.finish_reason}")
 
         return {
             "message": choice.message,

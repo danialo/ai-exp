@@ -51,8 +51,9 @@ class Settings:
             "gpt-4o": {"name": "GPT-4o", "base_url": None},
             "gpt-4o-mini": {"name": "GPT-4o Mini", "base_url": None},
             "gpt-5": {"name": "GPT-5", "base_url": None},
-            "o1": {"name": "O1", "base_url": None},
-            "o3-mini": {"name": "O3 Mini", "base_url": None},
+            "gpt-5-mini": {"name": "GPT-5 Mini", "base_url": None},
+            "o1-preview": {"name": "O1 Preview", "base_url": None},
+            "o1-mini": {"name": "O1 Mini", "base_url": None},
         },
         "venice": {
             "llama-3.3-70b": {"name": "Llama 3.3 70B", "base_url": "https://api.venice.ai/api/v1"},

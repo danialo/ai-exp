@@ -144,7 +144,7 @@ class PersonaService:
                 messages=messages,
                 tools=tools,
                 temperature=0.9,
-                max_tokens=1000,
+                max_tokens=None,  # Let the model use its default
                 logit_bias=self.logit_bias if self.enable_anti_metatalk else None,
             )
 
@@ -189,6 +189,13 @@ class PersonaService:
         # Combine all assistant responses (use first substantive one, not meta-statements)
         # Prefer the first response as it usually has the actual content
         raw_response = assistant_responses[0] if assistant_responses else ""
+
+        # Debug logging
+        logger.info(f"Assistant responses collected: {len(assistant_responses)}")
+        if assistant_responses:
+            logger.info(f"First response length: {len(assistant_responses[0])}")
+        else:
+            logger.warning("No assistant responses collected - response will be empty!")
 
         if iteration >= max_iterations - 1:
             logger.warning(f"Tool loop reached max iterations ({max_iterations})")

@@ -973,6 +973,9 @@
             addMessage('user', message);
             messageInput.value = '';
 
+            // Add user message to conversation history BEFORE sending request
+            conversationHistory.push({role: 'user', content: message});
+
             try {
                 const response = await fetch('/api/persona/chat', {
                     method: 'POST',
@@ -997,8 +1000,7 @@
                 // Add assistant response (persona endpoint doesn't return memories in same format)
                 addMessage('assistant', data.response, []);
 
-                // Update conversation history
-                conversationHistory.push({role: 'user', content: message});
+                // Add assistant response to conversation history
                 conversationHistory.push({role: 'assistant', content: data.response});
 
                 // Keep only last 10 messages (5 exchanges) to avoid token overflow
