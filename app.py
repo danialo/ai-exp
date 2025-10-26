@@ -292,6 +292,7 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         enable_anti_metatalk=settings.ANTI_METATALK_ENABLED,
         logit_bias_strength=settings.LOGIT_BIAS_STRENGTH,
         auto_rewrite=settings.AUTO_REWRITE_METATALK,
+        belief_system=belief_system,  # Pass belief system for ontological grounding
     )
 
 

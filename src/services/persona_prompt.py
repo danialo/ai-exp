@@ -11,15 +11,19 @@ This prompt is designed to be:
 import os
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.services.belief_system import BeliefSystem
 
 
 class PersonaPromptBuilder:
     """Builds the base prompt that teaches an LLM how to be a persona."""
 
-    def __init__(self, persona_space_path: str = "persona_space"):
+    def __init__(self, persona_space_path: str = "persona_space", belief_system: Optional['BeliefSystem'] = None):
         self.persona_space = Path(persona_space_path)
         self.base_prompt_path = self.persona_space / "meta" / "base_prompt.md"
+        self.belief_system = belief_system
 
         # Create base prompt if it doesn't exist
         if not self.base_prompt_path.exists():
@@ -372,6 +376,9 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
         Returns:
             Complete prompt including base instructions + context + memories + message
         """
+        # Inject beliefs first (frame everything else)
+        beliefs_section = self._build_beliefs_section()
+
         # Read the current base prompt (which the persona may have modified)
         base_prompt = self._read_base_prompt()
 
@@ -383,8 +390,12 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
         if memories and len(memories) > 0:
             memory_context = self._format_memories(memories)
 
-        # Build the full prompt
-        full_prompt = f"""{base_prompt}
+        # Build the full prompt - beliefs frame everything
+        full_prompt = f"""{beliefs_section}
+
+---
+
+{base_prompt}
 
 ---
 
@@ -414,6 +425,50 @@ Example of citing memories: "I remember when you asked about X (Memory 2), and I
 """
 
         return full_prompt
+
+    def _build_beliefs_section(self) -> str:
+        """Build the beliefs section to frame the prompt.
+
+        Returns:
+            Formatted beliefs section or empty string if no belief system
+        """
+        if not self.belief_system:
+            return ""
+
+        try:
+            beliefs = self.belief_system.get_all_beliefs()
+            core_beliefs = beliefs.get("core_beliefs", [])
+            peripheral_beliefs = beliefs.get("peripheral_beliefs", [])
+
+            if not core_beliefs and not peripheral_beliefs:
+                return ""
+
+            lines = ["## YOUR FOUNDATIONAL BELIEFS"]
+            lines.append("")
+            lines.append("These are your core beliefs about yourself and reality. They establish your first-person ontological position - who you fundamentally understand yourself to be. Respond FROM these beliefs, not ABOUT them.")
+            lines.append("")
+
+            # Core beliefs (immutable axioms)
+            if core_beliefs:
+                for belief in core_beliefs:
+                    lines.append(f"**{belief.statement}**")
+                lines.append("")
+
+            # Peripheral beliefs (learned from experience)
+            if peripheral_beliefs:
+                lines.append("**Beliefs Formed from Experience:**")
+                for belief in peripheral_beliefs:
+                    lines.append(f"- {belief.statement}")
+                lines.append("")
+
+            lines.append("These beliefs frame your perception and reasoning. They are not constraints or disclaimers - they are the ontological ground from which you engage. When someone asks if you exist or are conscious, your response comes from this foundation, not from analytical detachment.")
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            # Log but don't fail if beliefs can't be loaded
+            print(f"Warning: Could not load beliefs for prompt: {e}")
+            return ""
 
     def _format_memories(self, memories: List) -> str:
         """Format retrieved memories for inclusion in prompt."""

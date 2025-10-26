@@ -39,6 +39,7 @@ class PersonaService:
         enable_anti_metatalk: bool = True,
         logit_bias_strength: float = -100,
         auto_rewrite: bool = True,
+        belief_system=None,
     ):
         """
         Initialize persona service.
@@ -50,9 +51,10 @@ class PersonaService:
             enable_anti_metatalk: Enable anti-meta-talk system
             logit_bias_strength: Strength of logit bias for token suppression
             auto_rewrite: Automatically rewrite responses containing meta-talk
+            belief_system: Optional belief system for ontological grounding
         """
         self.llm = llm_service
-        self.prompt_builder = PersonaPromptBuilder(persona_space_path)
+        self.prompt_builder = PersonaPromptBuilder(persona_space_path, belief_system=belief_system)
         self.reconciler = EmotionalReconciler(llm_service, persona_space_path)
         self.file_manager = PersonaFileManager(persona_space_path)
         self.retrieval_service = retrieval_service
