@@ -1190,6 +1190,36 @@ async def health():
     return {"status": "healthy"}
 
 
+@app.get("/api/debug/prompt")
+async def debug_prompt(message: str = "Do you exist?", retrieve_memories: bool = True):
+    """Debug endpoint to see the full prompt being sent to GPT-4."""
+    if not persona_service:
+        raise HTTPException(status_code=503, detail="Persona service not enabled")
+
+    try:
+        # Get memories if requested
+        memories = None
+        if retrieve_memories and retrieval_service:
+            memories = retrieval_service.get_relevant_experiences(message, top_k=5)
+
+        # Build the prompt (without actually calling GPT)
+        full_prompt = persona_service.prompt_builder.build_prompt(
+            user_message=message,
+            memories=memories
+        )
+
+        return {
+            "message": message,
+            "retrieve_memories": retrieve_memories,
+            "memories_count": len(memories) if memories else 0,
+            "prompt_lines": full_prompt.count('\n'),
+            "prompt_chars": len(full_prompt),
+            "full_prompt": full_prompt
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error building prompt: {str(e)}")
+
+
 # Belief System Endpoints
 @app.get("/api/beliefs")
 async def get_all_beliefs():
