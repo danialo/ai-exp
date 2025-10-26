@@ -42,6 +42,7 @@ from src.services.emotional_extractor import create_emotional_extractor
 from src.services.persona_service import PersonaService
 from src.services.task_scheduler import create_task_scheduler, TaskDefinition, TaskType, TaskSchedule
 from src.services.belief_system import create_belief_system
+from src.services.self_knowledge_index import create_self_knowledge_index
 
 
 # Initialize FastAPI app
@@ -71,6 +72,14 @@ embedding_provider = create_embedding_provider(
     use_mock=False,
 )
 
+# Initialize self-knowledge index early (needed by ingestion pipeline)
+self_knowledge_index = create_self_knowledge_index(
+    raw_store=raw_store,
+    index_path="data/self_knowledge_index.json",
+)
+
+# Note: ingestion_pipeline will be re-initialized after llm_service is available
+# to enable self-claim detection
 ingestion_pipeline = create_ingestion_pipeline(
     raw_store=raw_store,
     vector_store=vector_store,
@@ -83,6 +92,7 @@ retrieval_service = create_retrieval_service(
     embedding_provider=embedding_provider,
     semantic_weight=settings.SEMANTIC_WEIGHT,
     recency_weight=settings.RECENCY_WEIGHT,
+    self_knowledge_index=self_knowledge_index,  # Enable priority self-query retrieval
 )
 
 # Initialize agent mood tracker for emergent personality
@@ -136,6 +146,17 @@ if api_key:
         base_url=base_url,
         self_aware_prompt_builder=self_aware_prompt_builder,
     )
+
+    # Re-initialize ingestion pipeline with LLM service for self-claim detection
+    from src.pipeline.ingest import IngestionPipeline
+    ingestion_pipeline = IngestionPipeline(
+        raw_store=raw_store,
+        vector_store=vector_store,
+        embedding_provider=embedding_provider,
+        llm_service=llm_service,
+        self_knowledge_index=self_knowledge_index,
+    )
+    logger.info("Ingestion pipeline initialized with self-claim detection")
 
     # Initialize experience lens for affect-aware response styling
     # Pass agent_mood for emergent personality behavior

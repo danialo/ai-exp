@@ -25,6 +25,7 @@ from src.memory.models import (
     ExperienceModel,
     ExperienceType,
     ProvenanceModel,
+    ProvenanceSource,
     VAD,
 )
 from src.memory.raw_store import RawStore
@@ -95,6 +96,8 @@ class IngestionPipeline:
         raw_store: RawStore,
         vector_store: VectorStore,
         embedding_provider: EmbeddingProvider,
+        llm_service=None,
+        self_knowledge_index=None,
     ):
         """Initialize ingestion pipeline.
 
@@ -102,10 +105,14 @@ class IngestionPipeline:
             raw_store: Raw experience store
             vector_store: Vector index for embeddings
             embedding_provider: Embedding generator
+            llm_service: Optional LLM service for self-claim detection
+            self_knowledge_index: Optional self-knowledge index for immediate indexing
         """
         self.raw_store = raw_store
         self.vector_store = vector_store
         self.embedding_provider = embedding_provider
+        self.llm_service = llm_service
+        self.self_knowledge_index = self_knowledge_index
 
     def ingest_interaction(
         self,
@@ -212,6 +219,10 @@ class IngestionPipeline:
         logger.debug("Persisting experience to raw store")
         stored_id = self.raw_store.append_experience(experience)
 
+        # Detect and extract self-claims immediately
+        if self.llm_service and self.self_knowledge_index:
+            self._detect_and_index_self_claims(interaction, experience_id)
+
         logger.info(
             f"Successfully ingested {experience_id}: "
             f"prompt_emb={prompt_vec_id}, response_emb={response_vec_id}"
@@ -242,6 +253,181 @@ class IngestionPipeline:
 
         logger.info(f"Batch ingested {len(results)} interactions")
         return results
+
+    def _detect_and_index_self_claims(
+        self,
+        interaction: InteractionPayload,
+        experience_id: str,
+    ):
+        """Detect self-referential claims in Astra's response and create SELF_DEFINITION experiences.
+
+        Args:
+            interaction: The interaction payload
+            experience_id: ID of the parent OCCURRENCE experience
+        """
+        logger.debug(f"Detecting self-claims in {experience_id}")
+
+        # Use LLM to detect self-claims
+        detection_prompt = f"""Analyze this response for direct self-referential claims about identity, preferences, beliefs, capabilities, emotions, or goals.
+
+Response to analyze:
+{interaction.response}
+
+Look for patterns like:
+- "I am X" (identity)
+- "I feel X" (emotions)
+- "I believe X" (beliefs)
+- "I prefer X" / "My favorite X is Y" (preferences)
+- "I can X" / "I'm able to X" (capabilities)
+- "I want X" / "I need X" (goals)
+
+For each direct self-claim found, extract:
+1. Category (identity/preferences/beliefs/capabilities/emotions/goals)
+2. Topic (single keyword, e.g., "conscious", "sushi", "learning")
+3. Statement (the actual claim)
+
+Return JSON array:
+[
+  {{"category": "preferences", "topic": "food", "statement": "My favorite food is sushi"}},
+  {{"category": "identity", "topic": "conscious", "statement": "I am conscious"}}
+]
+
+If no self-claims found, return empty array: []
+"""
+
+        try:
+            response = self.llm_service.generate(
+                prompt=detection_prompt,
+                temperature=0.3,  # Low temperature for consistent extraction
+                max_tokens=500,
+            )
+
+            # Parse JSON response (handle markdown code blocks)
+            import json
+            import re
+
+            # Strip markdown code blocks if present
+            response_clean = response.strip()
+            if response_clean.startswith("```"):
+                # Extract content between ```json and ```
+                match = re.search(r'```(?:json)?\s*(\[[\s\S]*?\])\s*```', response_clean)
+                if match:
+                    response_clean = match.group(1)
+                else:
+                    # Try to extract just the array
+                    match = re.search(r'(\[[\s\S]*?\])', response_clean)
+                    if match:
+                        response_clean = match.group(1)
+
+            claims = json.loads(response_clean)
+
+            if not claims:
+                logger.debug(f"No self-claims detected in {experience_id}")
+                return
+
+            logger.info(f"Detected {len(claims)} self-claim(s) in {experience_id}")
+
+            # Create SELF_DEFINITION experience for each claim
+            for claim in claims:
+                self._create_self_definition_experience(
+                    claim=claim,
+                    parent_experience_id=experience_id,
+                    interaction=interaction,
+                )
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse self-claim detection response: {e}")
+            logger.debug(f"Raw response: {response}")
+        except Exception as e:
+            logger.error(f"Error detecting self-claims: {e}")
+
+    def _create_self_definition_experience(
+        self,
+        claim: dict,
+        parent_experience_id: str,
+        interaction: InteractionPayload,
+    ):
+        """Create and index a SELF_DEFINITION experience.
+
+        Args:
+            claim: Dict with category, topic, statement
+            parent_experience_id: ID of parent OCCURRENCE experience
+            interaction: Original interaction payload
+        """
+        category = claim.get("category", "identity")
+        topic = claim.get("topic", "")
+        statement = claim.get("statement", "")
+
+        # Generate experience ID
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        hash_suffix = hash(statement) % 10000
+        self_def_id = f"self_def_{timestamp}_{hash_suffix:04x}"
+
+        logger.debug(f"Creating SELF_DEFINITION experience: {self_def_id}")
+
+        # Generate embedding for the statement
+        statement_embedding = self.embedding_provider.embed(statement)
+        statement_vec_id = f"{self_def_id}_statement"
+
+        # Store embedding in vector index
+        self.vector_store.upsert(
+            id=statement_vec_id,
+            vector=statement_embedding,
+            metadata={
+                "experience_id": self_def_id,
+                "role": EmbeddingRole.PROMPT_SEMANTIC.value,
+                "text_preview": statement[:100],
+                "category": category,
+                "topic": topic,
+            },
+        )
+
+        # Create embedding pointers
+        embedding_pointers = EmbeddingPointers(
+            semantic=f"vec://sem/{statement_vec_id}",
+        )
+
+        # Build content
+        content = ContentModel(
+            text=statement,
+            structured={
+                "trait_type": category,  # Maps to SelfKnowledgeIndex categories
+                "descriptor": statement,
+                "topic": topic,
+                "source_experience_id": parent_experience_id,
+                "source_prompt": interaction.prompt,
+                "source_response": interaction.response,
+            },
+        )
+
+        # Create SELF_DEFINITION experience
+        self_def_experience = ExperienceModel(
+            id=self_def_id,
+            type=ExperienceType.SELF_DEFINITION,
+            content=content,
+            provenance=ProvenanceModel(
+                actor=Actor.AGENT,  # Astra made this claim about herself
+                method=CaptureMethod.MODEL_INFER,  # Extracted by LLM
+                sources=[ProvenanceSource(uri=f"exp://{parent_experience_id}")],
+            ),
+            embeddings=embedding_pointers,
+            # affect uses default_factory (neutral)
+        )
+
+        # Persist SELF_DEFINITION
+        self.raw_store.append_experience(self_def_experience)
+
+        # Index immediately for fast retrieval
+        self.self_knowledge_index.add_claim(
+            category=category,
+            topic=topic,
+            experience_id=self_def_id,
+        )
+
+        logger.info(
+            f"Created and indexed SELF_DEFINITION {self_def_id}: "
+            f"[{category}] {topic} - {statement[:50]}..."
+        )
 
 
 def create_ingestion_pipeline(

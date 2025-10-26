@@ -41,6 +41,7 @@ class RetrievalService:
         embedding_provider: EmbeddingProvider,
         semantic_weight: float = 0.8,
         recency_weight: float = 0.2,
+        self_knowledge_index=None,
     ):
         """Initialize retrieval service.
 
@@ -50,12 +51,14 @@ class RetrievalService:
             embedding_provider: Embedding generator
             semantic_weight: Weight for semantic similarity (default 0.8)
             recency_weight: Weight for recency (default 0.2)
+            self_knowledge_index: Optional self-knowledge index for priority self-query retrieval
         """
         self.raw_store = raw_store
         self.vector_store = vector_store
         self.embedding_provider = embedding_provider
         self.semantic_weight = semantic_weight
         self.recency_weight = recency_weight
+        self.self_knowledge_index = self_knowledge_index
 
         # Validate weights sum to 1.0
         total_weight = semantic_weight + recency_weight
@@ -68,6 +71,109 @@ class RetrievalService:
             self.semantic_weight = semantic_weight / total_weight
             self.recency_weight = recency_weight / total_weight
 
+    def _is_self_query(self, prompt: str) -> bool:
+        """Detect if the query is about Astra herself.
+
+        Args:
+            prompt: Query prompt
+
+        Returns:
+            True if query is about Astra's identity, preferences, beliefs, etc.
+        """
+        prompt_lower = prompt.lower()
+
+        # Second-person indicators (user asking about Astra)
+        second_person = ["you", "your", "yourself", "you're", "you are"]
+
+        # Self-referential questions
+        self_questions = [
+            "what do you", "what are you", "who are you",
+            "do you believe", "do you think", "do you feel",
+            "are you", "can you", "do you have",
+            "what's your", "what is your",
+            "tell me about yourself", "describe yourself",
+        ]
+
+        # Check for second-person pronouns or self-questions
+        for indicator in second_person + self_questions:
+            if indicator in prompt_lower:
+                logger.debug(f"Detected self-query: '{prompt}' contains '{indicator}'")
+                return True
+
+        return False
+
+    def _retrieve_self_claims(self, prompt: str, top_k: int = 3) -> list[RetrievalResult]:
+        """Retrieve self-claims from self-knowledge index.
+
+        Args:
+            prompt: Query prompt
+            top_k: Number of self-claims to retrieve
+
+        Returns:
+            List of RetrievalResults from SELF_DEFINITION experiences
+        """
+        if not self.self_knowledge_index:
+            return []
+
+        logger.info(f"Retrieving self-claims for: '{prompt}'")
+
+        # Search index for matching claims
+        claim_exp_ids = self.self_knowledge_index.search_claims(prompt)
+
+        if not claim_exp_ids:
+            logger.debug("No self-claims found in index")
+            return []
+
+        # Fetch SELF_DEFINITION experiences
+        results = []
+        now = datetime.now(timezone.utc)
+
+        for exp_id in claim_exp_ids[:top_k]:
+            experience = self.raw_store.get_experience(exp_id)
+            if experience is None:
+                continue
+
+            # Calculate recency score
+            age_seconds = (now - experience.created_at).total_seconds()
+            age_days = age_seconds / (24 * 3600)
+            recency_score = 2 ** (-age_days / 30)
+
+            # Self-claims get artificially high similarity (priority retrieval)
+            similarity = 1.0
+            combined_score = (self.semantic_weight * similarity) + (
+                self.recency_weight * recency_score
+            )
+
+            # Extract statement from structured content
+            structured = experience.content.structured
+            statement = structured.get("descriptor", "")
+            source_exp_id = structured.get("source_experience_id", "")
+
+            # Try to get original prompt/response if available
+            prompt_text = ""
+            response_text = statement
+            if source_exp_id:
+                source_exp = self.raw_store.get_experience(source_exp_id)
+                if source_exp:
+                    prompt_text = source_exp.content.structured.get("prompt", "")
+                    response_text = source_exp.content.structured.get("response", "")
+
+            results.append(
+                RetrievalResult(
+                    experience_id=exp_id,
+                    prompt_text=prompt_text,
+                    response_text=response_text,
+                    valence=0.0,  # SELF_DEFINITION experiences don't have affect
+                    similarity_score=similarity,
+                    recency_score=recency_score,
+                    combined_score=combined_score,
+                    created_at=experience.created_at,
+                )
+            )
+
+        logger.info(f"Retrieved {len(results)} self-claim(s) from index")
+        return results
+
     def retrieve_similar(
         self,
         prompt: str,
@@ -75,6 +181,9 @@ class RetrievalService:
         max_age_days: Optional[int] = None,
     ) -> list[RetrievalResult]:
         """Retrieve experiences similar to the given prompt.
+
+        For self-queries (questions about Astra herself), prioritizes SELF_DEFINITION
+        experiences from the self-knowledge index before semantic retrieval.
 
         Args:
             prompt: Query prompt
@@ -85,6 +194,50 @@ class RetrievalService:
             List of RetrievalResults, sorted by combined score (highest first)
         """
         logger.info(f"Retrieving similar experiences for prompt (top_k={top_k})")
+
+        # Check if this is a self-query
+        is_self_query = self._is_self_query(prompt)
+
+        # If self-query, prioritize self-claims
+        if is_self_query and self.self_knowledge_index:
+            logger.info("Self-query detected - retrieving self-claims first")
+            self_claims = self._retrieve_self_claims(prompt, top_k=min(3, top_k))
+
+            # If we got enough self-claims, return them prioritized
+            if self_claims:
+                # Get remaining slots for semantic retrieval
+                remaining_slots = max(0, top_k - len(self_claims))
+
+                if remaining_slots > 0:
+                    # Fill remaining slots with semantic retrieval
+                    semantic_results = self._semantic_retrieval(
+                        prompt, top_k=remaining_slots, max_age_days=max_age_days
+                    )
+                    # Combine: self-claims first, then semantic
+                    return self_claims + semantic_results
+                else:
+                    # Self-claims filled all slots
+                    return self_claims[:top_k]
+
+        # Fall back to standard semantic retrieval
+        return self._semantic_retrieval(prompt, top_k=top_k, max_age_days=max_age_days)
+
+    def _semantic_retrieval(
+        self,
+        prompt: str,
+        top_k: int = 5,
+        max_age_days: Optional[int] = None,
+    ) -> list[RetrievalResult]:
+        """Standard semantic retrieval (original retrieve_similar logic).
+
+        Args:
+            prompt: Query prompt
+            top_k: Number of results to return
+            max_age_days: Optional maximum age of experiences in days
+
+        Returns:
+            List of RetrievalResults, sorted by combined score (highest first)
+        """
 
         # Generate query embedding
         query_embedding = self.embedding_provider.embed(prompt)
@@ -197,6 +350,7 @@ def create_retrieval_service(
     embedding_provider: EmbeddingProvider,
     semantic_weight: float = 0.8,
     recency_weight: float = 0.2,
+    self_knowledge_index=None,
 ) -> RetrievalService:
     """Factory function to create retrieval service.
 
@@ -206,6 +360,7 @@ def create_retrieval_service(
         embedding_provider: Embedding provider instance
         semantic_weight: Weight for semantic similarity
         recency_weight: Weight for recency
+        self_knowledge_index: Optional self-knowledge index for priority self-query retrieval
 
     Returns:
         RetrievalService instance
@@ -216,4 +371,5 @@ def create_retrieval_service(
         embedding_provider=embedding_provider,
         semantic_weight=semantic_weight,
         recency_weight=recency_weight,
+        self_knowledge_index=self_knowledge_index,
     )
