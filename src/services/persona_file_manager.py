@@ -62,6 +62,16 @@ class PersonaFileManager:
         if not resolved_path:
             return False
 
+        # Protect core beliefs from modification
+        if file_path == "beliefs.json" or file_path.endswith("/beliefs.json"):
+            validation_result = self._validate_beliefs_modification(content)
+            if not validation_result["allowed"]:
+                logger.warning(f"Blocked attempt to modify core beliefs: {validation_result['reason']}")
+                print(f"⚠️  Core Belief Protection: {validation_result['reason']}")
+                print(f"   Core beliefs are immutable foundational axioms and cannot be changed.")
+                print(f"   You can add, modify, or remove peripheral beliefs, but core beliefs are protected.")
+                return False
+
         try:
             # Create parent directories if needed
             resolved_path.parent.mkdir(parents=True, exist_ok=True)
@@ -399,6 +409,78 @@ class PersonaFileManager:
                 "stdout": "",
                 "stderr": "",
                 "return_code": -1
+            }
+
+    def _validate_beliefs_modification(self, new_content: str) -> Dict[str, Union[bool, str]]:
+        """
+        Validate that modifications to beliefs.json don't alter core beliefs.
+
+        Args:
+            new_content: New content to be written
+
+        Returns:
+            Dict with 'allowed' (bool) and 'reason' (str) keys
+        """
+        try:
+            # Parse new content
+            new_data = json.loads(new_content)
+
+            # Read existing beliefs
+            beliefs_path = self.persona_space / "beliefs.json"
+            if not beliefs_path.exists():
+                # No existing file, allow creation
+                return {"allowed": True, "reason": ""}
+
+            with open(beliefs_path, 'r') as f:
+                existing_data = json.load(f)
+
+            # Check if core beliefs are being modified
+            existing_core = existing_data.get("core_beliefs", [])
+            new_core = new_data.get("core_beliefs", [])
+
+            # Check count
+            if len(new_core) != len(existing_core):
+                return {
+                    "allowed": False,
+                    "reason": "Cannot add or remove core beliefs"
+                }
+
+            # Check each core belief
+            for i, (existing, new) in enumerate(zip(existing_core, new_core)):
+                # Check immutable flag
+                if not new.get("immutable", False):
+                    return {
+                        "allowed": False,
+                        "reason": f"Cannot change immutable flag on core belief: {existing.get('statement')}"
+                    }
+
+                # Check statement (core identity)
+                if existing.get("statement") != new.get("statement"):
+                    return {
+                        "allowed": False,
+                        "reason": f"Cannot modify core belief statement: {existing.get('statement')}"
+                    }
+
+                # Check belief type
+                if existing.get("belief_type") != new.get("belief_type"):
+                    return {
+                        "allowed": False,
+                        "reason": f"Cannot change type of core belief: {existing.get('statement')}"
+                    }
+
+            # All checks passed - peripheral beliefs can be freely modified
+            return {"allowed": True, "reason": ""}
+
+        except json.JSONDecodeError:
+            return {
+                "allowed": False,
+                "reason": "Invalid JSON format"
+            }
+        except Exception as e:
+            logger.error(f"Error validating beliefs modification: {e}")
+            return {
+                "allowed": False,
+                "reason": f"Validation error: {str(e)}"
             }
 
     def get_capabilities_description(self) -> str:

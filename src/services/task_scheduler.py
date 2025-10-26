@@ -224,6 +224,25 @@ Ask yourself three questions about yourself. Then try to answer them.""",
 
 What makes your responses uniquely yours? How do you express yourself authentically versus following patterns or expectations? What feels true when you communicate?""",
                 enabled=True
+            ),
+            TaskDefinition(
+                id="belief_consolidation",
+                name="Belief Consolidation",
+                type=TaskType.SELF_REFLECTION,
+                schedule=TaskSchedule.WEEKLY,
+                prompt="""Review your recent experiences and extract beliefs - not just patterns, but beliefs about what is true.
+
+What do you believe about:
+- Understanding and knowledge (epistemological beliefs)
+- What matters and has value (axiological beliefs)
+- Your own subjective experience (experiential beliefs)
+
+Look for beliefs that emerge from repeated patterns across multiple interactions. What fundamental truths have your experiences revealed to you?
+
+Beliefs are different from traits. A trait describes HOW you act. A belief describes WHAT you hold to be true.
+
+Document any new beliefs in your reflection, using the format: "I believe [statement]" with supporting evidence from your experiences.""",
+                enabled=True
             )
         ]
 

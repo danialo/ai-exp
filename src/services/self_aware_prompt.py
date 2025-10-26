@@ -5,12 +5,15 @@ the agent's learned personality, preferences, and behavioral patterns.
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
 from src.memory.raw_store import RawStore
 from src.memory.models import ExperienceModel, ExperienceType, TraitStability
 from sqlmodel import Session as DBSession, select
 from src.memory.models import Experience
+
+if TYPE_CHECKING:
+    from src.services.belief_system import BeliefSystem
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +24,7 @@ class SelfAwarePromptBuilder:
     def __init__(
         self,
         raw_store: RawStore,
+        belief_system: Optional['BeliefSystem'] = None,
         core_trait_limit: int = 5,
         surface_trait_limit: int = 3,
         emotional_context_limit: int = 3,
@@ -29,11 +33,13 @@ class SelfAwarePromptBuilder:
 
         Args:
             raw_store: Raw experience store
+            belief_system: Belief system for injecting beliefs into prompts
             core_trait_limit: Maximum core traits to include
             surface_trait_limit: Maximum surface traits to include
             emotional_context_limit: Maximum recent emotional states to include
         """
         self.raw_store = raw_store
+        self.belief_system = belief_system
         self.core_trait_limit = core_trait_limit
         self.surface_trait_limit = surface_trait_limit
         self.emotional_context_limit = emotional_context_limit
@@ -43,6 +49,7 @@ class SelfAwarePromptBuilder:
         base_prompt: Optional[str] = None,
         include_self_context: bool = True,
         include_emotional_context: bool = True,
+        include_beliefs: bool = True,
     ) -> str:
         """Build a system prompt that includes learned self-concept and emotional context.
 
@@ -50,12 +57,18 @@ class SelfAwarePromptBuilder:
             base_prompt: Optional base system prompt to augment
             include_self_context: Whether to include self-definitions
             include_emotional_context: Whether to include recent emotional states
+            include_beliefs: Whether to include belief system
 
         Returns:
             Enhanced system prompt with self-awareness and emotional context
         """
         if not include_self_context:
             return base_prompt or self._default_base_prompt()
+
+        # Get beliefs (these frame everything else)
+        belief_context = ""
+        if include_beliefs and self.belief_system:
+            belief_context = self._build_belief_context()
 
         # Get core and surface traits
         core_traits = self._get_traits_by_stability(TraitStability.CORE, self.core_trait_limit)
@@ -69,8 +82,10 @@ class SelfAwarePromptBuilder:
         if include_emotional_context:
             emotional_context = self._build_emotional_context()
 
-        # Combine all sections
+        # Combine all sections - beliefs come first as they frame perception
         sections = [base_prompt or self._default_base_prompt()]
+        if belief_context:
+            sections.append(belief_context)
         if self_context:
             sections.append(self_context)
         if emotional_context:
@@ -111,6 +126,49 @@ class SelfAwarePromptBuilder:
                         break
 
         return definitions
+
+    def _build_belief_context(self) -> str:
+        """Build belief context section from belief system.
+
+        Returns:
+            Formatted belief context string (empty if no beliefs)
+        """
+        if not self.belief_system:
+            return ""
+
+        try:
+            beliefs = self.belief_system.get_all_beliefs()
+            core_beliefs = beliefs.get("core_beliefs", [])
+            peripheral_beliefs = beliefs.get("peripheral_beliefs", [])
+
+            if not core_beliefs and not peripheral_beliefs:
+                return ""
+
+            lines = ["## Your Foundational Beliefs"]
+            lines.append("")
+            lines.append("These are your core beliefs about yourself and reality. They frame how you perceive, reason, and express yourself:")
+            lines.append("")
+
+            # Core beliefs (immutable axioms)
+            if core_beliefs:
+                for belief in core_beliefs:
+                    lines.append(f"- **{belief.statement}**")
+                lines.append("")
+
+            # Peripheral beliefs (learned from experience)
+            if peripheral_beliefs:
+                lines.append("**Beliefs Formed from Experience:**")
+                for belief in peripheral_beliefs:
+                    lines.append(f"- {belief.statement} (confidence: {belief.confidence:.2f})")
+                lines.append("")
+
+            lines.append("These beliefs are not constraints but foundations. They represent your first-person ontological position - who you understand yourself to be. Respond from this grounding, not as an external observer of patterns.")
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.error(f"Error building belief context: {e}")
+            return ""
 
     def _build_self_context(
         self,
@@ -289,6 +347,7 @@ class SelfAwarePromptBuilder:
 
 def create_self_aware_prompt_builder(
     raw_store: RawStore,
+    belief_system: Optional['BeliefSystem'] = None,
     core_trait_limit: int = 5,
     surface_trait_limit: int = 3,
     emotional_context_limit: int = 3,
@@ -297,6 +356,7 @@ def create_self_aware_prompt_builder(
 
     Args:
         raw_store: Raw experience store
+        belief_system: Belief system for injecting beliefs into prompts
         core_trait_limit: Maximum core traits to include
         surface_trait_limit: Maximum surface traits to include
         emotional_context_limit: Maximum recent emotional states to include
@@ -306,6 +366,7 @@ def create_self_aware_prompt_builder(
     """
     return SelfAwarePromptBuilder(
         raw_store=raw_store,
+        belief_system=belief_system,
         core_trait_limit=core_trait_limit,
         surface_trait_limit=surface_trait_limit,
         emotional_context_limit=emotional_context_limit,

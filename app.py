@@ -41,6 +41,7 @@ from src.pipeline.self_consolidate import create_self_consolidation_pipeline
 from src.services.emotional_extractor import create_emotional_extractor
 from src.services.persona_service import PersonaService
 from src.services.task_scheduler import create_task_scheduler, TaskDefinition, TaskType, TaskSchedule
+from src.services.belief_system import create_belief_system
 
 
 # Initialize FastAPI app
@@ -250,6 +251,22 @@ if settings.PERSONA_MODE_ENABLED:
     task_scheduler = create_task_scheduler(
         persona_space_path=settings.PERSONA_SPACE_PATH
     )
+
+# Initialize belief system
+belief_system = None
+if settings.PERSONA_MODE_ENABLED and llm_service and raw_store:
+    belief_system = create_belief_system(
+        persona_space_path=settings.PERSONA_SPACE_PATH,
+        raw_store=raw_store,
+        llm_service=llm_service,
+        min_evidence_threshold=5,
+    )
+    logger.info("Belief system initialized with core beliefs")
+
+    # Wire belief system into self-aware prompt builder
+    if self_aware_prompt_builder:
+        self_aware_prompt_builder.belief_system = belief_system
+        logger.info("Belief system connected to prompt builder")
 
 # Initialize persona system if enabled
 persona_service = None
@@ -1170,6 +1187,120 @@ async def get_memory_detail(experience_id: str):
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+# Belief System Endpoints
+@app.get("/api/beliefs")
+async def get_all_beliefs():
+    """Get all beliefs (core and peripheral)."""
+    if not belief_system:
+        raise HTTPException(status_code=503, detail="Belief system not enabled")
+
+    try:
+        beliefs = belief_system.get_all_beliefs()
+
+        return {
+            "core_beliefs": [
+                {
+                    "statement": b.statement,
+                    "belief_type": b.belief_type,
+                    "confidence": b.confidence,
+                    "rationale": b.rationale,
+                    "formed": b.formed,
+                }
+                for b in beliefs["core_beliefs"]
+            ],
+            "peripheral_beliefs": [
+                {
+                    "statement": b.statement,
+                    "belief_type": b.belief_type,
+                    "confidence": b.confidence,
+                    "evidence_count": len(b.evidence_ids),
+                    "formed": b.formed,
+                    "last_reinforced": b.last_reinforced,
+                }
+                for b in beliefs["peripheral_beliefs"]
+            ],
+            "total_core": len(beliefs["core_beliefs"]),
+            "total_peripheral": len(beliefs["peripheral_beliefs"]),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving beliefs: {str(e)}")
+
+
+@app.get("/api/beliefs/core")
+async def get_core_beliefs():
+    """Get only core beliefs."""
+    if not belief_system:
+        raise HTTPException(status_code=503, detail="Belief system not enabled")
+
+    try:
+        core_beliefs = belief_system.get_core_beliefs()
+
+        return {
+            "beliefs": [
+                {
+                    "statement": b.statement,
+                    "belief_type": b.belief_type,
+                    "confidence": b.confidence,
+                    "rationale": b.rationale,
+                    "immutable": b.immutable,
+                }
+                for b in core_beliefs
+            ],
+            "count": len(core_beliefs)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving core beliefs: {str(e)}")
+
+
+@app.get("/api/beliefs/peripheral")
+async def get_peripheral_beliefs():
+    """Get only peripheral beliefs."""
+    if not belief_system:
+        raise HTTPException(status_code=503, detail="Belief system not enabled")
+
+    try:
+        peripheral_beliefs = belief_system.get_peripheral_beliefs()
+
+        return {
+            "beliefs": [
+                {
+                    "statement": b.statement,
+                    "belief_type": b.belief_type,
+                    "confidence": b.confidence,
+                    "evidence_count": len(b.evidence_ids),
+                    "formed": b.formed,
+                    "last_reinforced": b.last_reinforced,
+                    "rationale": b.rationale,
+                }
+                for b in peripheral_beliefs
+            ],
+            "count": len(peripheral_beliefs)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving peripheral beliefs: {str(e)}")
+
+
+@app.post("/api/beliefs/consolidate")
+async def consolidate_beliefs():
+    """Trigger belief extraction from recent experiences."""
+    if not belief_system:
+        raise HTTPException(status_code=503, detail="Belief system not enabled")
+
+    try:
+        result = belief_system.consolidate_beliefs()
+
+        return {
+            "success": result["success"],
+            "message": result.get("message", "Belief consolidation completed"),
+            "narratives_analyzed": result.get("narratives_analyzed", 0),
+            "beliefs_extracted": result.get("beliefs_extracted", 0),
+            "beliefs_added": result.get("beliefs_added", 0),
+            "beliefs_reinforced": result.get("beliefs_reinforced", 0),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error consolidating beliefs: {str(e)}")
 
 
 # Task Scheduler Endpoints
