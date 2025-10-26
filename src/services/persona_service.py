@@ -23,6 +23,7 @@ from src.services.anti_metatalk import (
     create_metatalk_detector,
     create_metatalk_rewriter,
 )
+from src.services.persona_config import create_persona_config_loader
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ class PersonaService:
         self.retrieval_service = retrieval_service
         self.persona_space = Path(persona_space_path)
         self.action_log_path = self.persona_space / "meta" / "actions_log.json"
+        self.config_loader = create_persona_config_loader(persona_space_path)
 
         # Anti-meta-talk system
         self.enable_anti_metatalk = enable_anti_metatalk
@@ -99,13 +101,20 @@ class PersonaService:
         """
         if conversation_history is None:
             conversation_history = []
-        # Retrieve relevant memories if enabled
+
+        # Load persona's LLM configuration
+        config = self.config_loader.load_config()
+
+        # Retrieve relevant memories if enabled (use config setting)
         memories = []
-        if retrieve_memories and self.retrieval_service:
+        should_retrieve = config.retrieve_memories if hasattr(config, 'retrieve_memories') else retrieve_memories
+        memory_count = config.memory_top_k if hasattr(config, 'memory_top_k') else top_k
+
+        if should_retrieve and self.retrieval_service:
             try:
                 memories = self.retrieval_service.retrieve_similar(
                     prompt=user_message,
-                    top_k=top_k
+                    top_k=memory_count
                 )
                 logger.info(f"Retrieved {len(memories)} relevant memories for persona")
                 print(f"🧠 Retrieved {len(memories)} memories for context")
@@ -139,13 +148,18 @@ class PersonaService:
         assistant_responses = []  # Collect all assistant content
 
         for iteration in range(max_iterations):
-            # Generate response with tools and anti-meta-talk bias
+            # Generate response with tools using persona's config
+            use_anti_metatalk = config.enable_anti_metatalk if hasattr(config, 'enable_anti_metatalk') else self.enable_anti_metatalk
+
             result = self.llm.generate_with_tools(
                 messages=messages,
                 tools=tools,
-                temperature=0.9,
-                max_tokens=None,  # Let the model use its default
-                logit_bias=self.logit_bias if self.enable_anti_metatalk else None,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+                top_p=config.top_p,
+                presence_penalty=config.presence_penalty,
+                frequency_penalty=config.frequency_penalty,
+                logit_bias=self.logit_bias if use_anti_metatalk else None,
             )
 
             message = result["message"]
@@ -206,15 +220,17 @@ class PersonaService:
         # Remove assessment from user-facing response
         clean_response = remove_emotional_assessment(raw_response)
 
-        # Layer 3: Detect and handle meta-talk
-        if self.enable_anti_metatalk and self.metatalk_detector:
+        # Layer 3: Detect and handle meta-talk (use config settings)
+        auto_rewrite_config = config.auto_rewrite_metatalk if hasattr(config, 'auto_rewrite_metatalk') else self.auto_rewrite
+
+        if use_anti_metatalk and self.metatalk_detector:
             has_metatalk = self.metatalk_detector.detect(clean_response)
             if has_metatalk:
                 meta_phrases = self.metatalk_detector.find_all(clean_response)
                 logger.warning(f"Meta-talk detected in response: {meta_phrases}")
                 print(f"⚠️  Meta-talk detected: {meta_phrases}")
 
-                if self.auto_rewrite and self.metatalk_rewriter:
+                if auto_rewrite_config and self.metatalk_rewriter:
                     print(f"🔄 Auto-rewriting response to remove meta-talk...")
                     try:
                         clean_response = self.metatalk_rewriter.rewrite(clean_response, user_message)
@@ -355,6 +371,31 @@ class PersonaService:
                         "required": ["path"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "execute_script",
+                    "description": "Execute a script or shell command within your persona_space. The command runs with working directory set to your space, giving you full access to run any interpreter (python, bash, node, etc.). You can create virtual environments and install packages. Output is returned to you and saved to logs/script_outputs/. Default timeout is 600 seconds (10 minutes). Output saving defaults to true.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "Shell command to execute (e.g., 'python script.py', 'bash setup.sh', 'python -m venv myenv', 'myenv/bin/pip install requests')"
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "description": "Maximum execution time in seconds (optional, defaults to 600)"
+                            },
+                            "save_output": {
+                                "type": "boolean",
+                                "description": "Whether to save output to a log file (optional, defaults to true)"
+                            }
+                        },
+                        "required": ["command"]
+                    }
+                }
             }
         ]
 
@@ -394,6 +435,35 @@ class PersonaService:
                 path = arguments.get("path")
                 content = self.file_manager.read_source_code(path)
                 result = content if content else f"Source file not found: {path}"
+
+            elif tool_name == "execute_script":
+                command = arguments.get("command")
+                timeout = arguments.get("timeout", 600)
+                save_output = arguments.get("save_output", True)
+
+                exec_result = self.file_manager.execute_script(
+                    command=command,
+                    timeout=timeout,
+                    save_output=save_output
+                )
+
+                # Format result for agent
+                if exec_result.get("success"):
+                    result = f"✓ Script executed successfully (exit code {exec_result['return_code']})\n\n"
+                    if exec_result.get("stdout"):
+                        result += f"STDOUT:\n{exec_result['stdout']}\n"
+                    if exec_result.get("stderr"):
+                        result += f"\nSTDERR:\n{exec_result['stderr']}\n"
+                    if exec_result.get("output_file"):
+                        result += f"\n📁 Full output saved to: {exec_result['output_file']}"
+                else:
+                    result = f"✗ Script execution failed\n"
+                    if exec_result.get("error"):
+                        result += f"Error: {exec_result['error']}\n"
+                    if exec_result.get("stdout"):
+                        result += f"\nSTDOUT:\n{exec_result['stdout']}\n"
+                    if exec_result.get("stderr"):
+                        result += f"\nSTDERR:\n{exec_result['stderr']}\n"
 
             else:
                 result = f"Unknown tool: {tool_name}"

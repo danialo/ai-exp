@@ -40,6 +40,7 @@ from src.services.self_extractor import create_self_concept_extractor
 from src.pipeline.self_consolidate import create_self_consolidation_pipeline
 from src.services.emotional_extractor import create_emotional_extractor
 from src.services.persona_service import PersonaService
+from src.services.task_scheduler import create_task_scheduler, TaskDefinition, TaskType, TaskSchedule
 
 
 # Initialize FastAPI app
@@ -242,6 +243,13 @@ if settings.CONSOLIDATION_ENABLED and narrative_transformer:
 
 # Global session tracking
 current_session_id: Optional[str] = None
+
+# Initialize task scheduler
+task_scheduler = None
+if settings.PERSONA_MODE_ENABLED:
+    task_scheduler = create_task_scheduler(
+        persona_space_path=settings.PERSONA_SPACE_PATH
+    )
 
 # Initialize persona system if enabled
 persona_service = None
@@ -1013,23 +1021,39 @@ async def persona_chat(request: ChatRequest):
         )
 
         # Store the interaction in memory so persona can learn from it
-        # Use reconciled emotional state if available, otherwise neutral
-        valence = 0.0
+        # Use full VAD detection on user message
+        user_valence, user_arousal, user_dominance = affect_detector.detect_vad(request.message)
+
+        # If we have reconciliation data with emotional assessment, use it for valence
+        # Otherwise use detected valence
+        valence = user_valence
         if reconciliation and reconciliation.get("reconciled_state"):
-            # Try to extract valence from reconciled state description
-            # For now, use neutral - could be enhanced to parse emotional state
-            valence = 0.0
+            reconciled = reconciliation.get("reconciled_state", {})
+            # Try to extract valence from reconciled emotional state
+            if isinstance(reconciled, dict) and "valence" in reconciled:
+                valence = reconciled["valence"]
+            elif reconciliation.get("external_assessment"):
+                # Use external assessment valence if available
+                ext_assessment = reconciliation.get("external_assessment", {})
+                if isinstance(ext_assessment, dict) and "valence" in ext_assessment:
+                    valence = ext_assessment["valence"]
+
+        # Use detected arousal and dominance (no reconciliation for these yet)
+        arousal = user_arousal
+        dominance = user_dominance
 
         interaction = InteractionPayload(
             prompt=request.message,
             response=response_text,
             valence=valence,
+            arousal=arousal,
+            dominance=dominance,
         )
         result = ingestion_pipeline.ingest_interaction(interaction)
 
         logger.info(f"Stored persona interaction: {result.experience_id}")
 
-        # Return response with reconciliation data
+        # Return response with reconciliation data and detected user emotion
         return {
             "response": response_text,
             "reconciliation": reconciliation,
@@ -1037,6 +1061,9 @@ async def persona_chat(request: ChatRequest):
             "external_assessment": reconciliation.get("external_assessment") if reconciliation else None,
             "reconciled_state": reconciliation.get("reconciled_state") if reconciliation else None,
             "experience_id": result.experience_id,  # Include so user knows it was stored
+            "user_valence": user_valence,  # Detected user emotion
+            "user_arousal": user_arousal,  # Detected user energy level
+            "user_dominance": user_dominance,  # Detected user control level
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Persona generation error: {str(e)}")
@@ -1143,6 +1170,290 @@ async def get_memory_detail(experience_id: str):
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+# Task Scheduler Endpoints
+@app.get("/api/tasks")
+async def list_tasks():
+    """List all scheduled tasks."""
+    if not task_scheduler:
+        raise HTTPException(status_code=503, detail="Task scheduler not enabled")
+
+    tasks = task_scheduler.list_tasks()
+    return {
+        "tasks": [
+            {
+                "id": task.id,
+                "name": task.name,
+                "type": task.type,
+                "schedule": task.schedule,
+                "enabled": task.enabled,
+                "last_run": task.last_run,
+                "next_run": task.next_run,
+                "run_count": task.run_count,
+                "prompt": task.prompt,
+            }
+            for task in tasks
+        ],
+        "total": len(tasks)
+    }
+
+
+@app.get("/api/tasks/due")
+async def get_due_tasks():
+    """Get list of tasks that are due to run."""
+    if not task_scheduler:
+        raise HTTPException(status_code=503, detail="Task scheduler not enabled")
+
+    due_tasks = task_scheduler.get_due_tasks()
+
+    return {
+        "tasks": [
+            {
+                "id": task.id,
+                "name": task.name,
+                "type": task.type,
+                "schedule": task.schedule,
+                "next_run": task.next_run,
+            }
+            for task in due_tasks
+        ],
+        "count": len(due_tasks)
+    }
+
+
+@app.post("/api/tasks/execute-due")
+async def execute_due_tasks():
+    """Execute all tasks that are currently due."""
+    if not task_scheduler:
+        raise HTTPException(status_code=503, detail="Task scheduler not enabled")
+
+    if not persona_service:
+        raise HTTPException(status_code=503, detail="Persona service not enabled")
+
+    due_tasks = task_scheduler.get_due_tasks()
+    results = []
+
+    for task in due_tasks:
+        try:
+            result = await task_scheduler.execute_task(task.id, persona_service)
+            results.append({
+                "task_id": result.task_id,
+                "task_name": result.task_name,
+                "success": result.success,
+                "error": result.error,
+            })
+        except Exception as e:
+            results.append({
+                "task_id": task.id,
+                "task_name": task.name,
+                "success": False,
+                "error": str(e),
+            })
+
+    return {
+        "executed": len(results),
+        "results": results
+    }
+
+
+@app.get("/api/tasks/results/recent")
+async def get_recent_task_results(limit: int = 20):
+    """Get recent task execution results across all tasks."""
+    if not task_scheduler:
+        raise HTTPException(status_code=503, detail="Task scheduler not enabled")
+
+    results = task_scheduler.get_recent_results(limit=limit)
+
+    return {
+        "results": [
+            {
+                "task_id": result.task_id,
+                "task_name": result.task_name,
+                "started_at": result.started_at,
+                "completed_at": result.completed_at,
+                "success": result.success,
+                "response": result.response[:200] if result.response else None,  # Truncate for overview
+                "error": result.error,
+            }
+            for result in results
+        ],
+        "count": len(results)
+    }
+
+
+@app.get("/api/tasks/{task_id}")
+async def get_task(task_id: str):
+    """Get details of a specific task."""
+    if not task_scheduler:
+        raise HTTPException(status_code=503, detail="Task scheduler not enabled")
+
+    task = task_scheduler.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return {
+        "id": task.id,
+        "name": task.name,
+        "type": task.type,
+        "schedule": task.schedule,
+        "enabled": task.enabled,
+        "last_run": task.last_run,
+        "next_run": task.next_run,
+        "run_count": task.run_count,
+        "prompt": task.prompt,
+        "metadata": task.metadata,
+    }
+
+
+@app.post("/api/tasks/{task_id}/execute")
+async def execute_task(task_id: str):
+    """Manually execute a scheduled task."""
+    if not task_scheduler:
+        raise HTTPException(status_code=503, detail="Task scheduler not enabled")
+
+    if not persona_service:
+        raise HTTPException(status_code=503, detail="Persona service not enabled")
+
+    try:
+        result = await task_scheduler.execute_task(task_id, persona_service)
+
+        return {
+            "task_id": result.task_id,
+            "task_name": result.task_name,
+            "success": result.success,
+            "started_at": result.started_at,
+            "completed_at": result.completed_at,
+            "response": result.response,
+            "error": result.error,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Task execution failed: {str(e)}")
+
+
+@app.get("/api/tasks/{task_id}/results")
+async def get_task_results(task_id: str, limit: int = 10):
+    """Get recent execution results for a task."""
+    if not task_scheduler:
+        raise HTTPException(status_code=503, detail="Task scheduler not enabled")
+
+    results = task_scheduler.get_recent_results(task_id=task_id, limit=limit)
+
+    return {
+        "task_id": task_id,
+        "results": [
+            {
+                "task_name": result.task_name,
+                "started_at": result.started_at,
+                "completed_at": result.completed_at,
+                "success": result.success,
+                "response": result.response,
+                "error": result.error,
+            }
+            for result in results
+        ],
+        "count": len(results)
+    }
+
+
+class CreateTaskRequest(BaseModel):
+    """Request model for creating a new task."""
+    id: str
+    name: str
+    type: str
+    schedule: str
+    prompt: str
+    enabled: bool = True
+
+
+@app.post("/api/tasks")
+async def create_task(request: CreateTaskRequest):
+    """Create a new scheduled task."""
+    if not task_scheduler:
+        raise HTTPException(status_code=503, detail="Task scheduler not enabled")
+
+    try:
+        task = TaskDefinition(
+            id=request.id,
+            name=request.name,
+            type=TaskType(request.type),
+            schedule=TaskSchedule(request.schedule),
+            prompt=request.prompt,
+            enabled=request.enabled,
+        )
+
+        task_scheduler.add_task(task)
+
+        return {
+            "success": True,
+            "task_id": task.id,
+            "message": f"Task '{task.name}' created successfully"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create task: {str(e)}")
+
+
+class UpdateTaskRequest(BaseModel):
+    """Request model for updating a task."""
+    name: Optional[str] = None
+    prompt: Optional[str] = None
+    enabled: Optional[bool] = None
+    schedule: Optional[str] = None
+
+
+@app.patch("/api/tasks/{task_id}")
+async def update_task(task_id: str, request: UpdateTaskRequest):
+    """Update a task's properties."""
+    if not task_scheduler:
+        raise HTTPException(status_code=503, detail="Task scheduler not enabled")
+
+    try:
+        # Build updates dict from non-None values
+        updates = {}
+        if request.name is not None:
+            updates["name"] = request.name
+        if request.prompt is not None:
+            updates["prompt"] = request.prompt
+        if request.enabled is not None:
+            updates["enabled"] = request.enabled
+        if request.schedule is not None:
+            updates["schedule"] = TaskSchedule(request.schedule)
+
+        task_scheduler.update_task(task_id, updates)
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "message": f"Task updated successfully"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update task: {str(e)}")
+
+
+@app.delete("/api/tasks/{task_id}")
+async def delete_task(task_id: str):
+    """Delete a scheduled task."""
+    if not task_scheduler:
+        raise HTTPException(status_code=503, detail="Task scheduler not enabled")
+
+    try:
+        task_scheduler.delete_task(task_id)
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "message": "Task deleted successfully"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete task: {str(e)}")
 
 
 # Mount static files

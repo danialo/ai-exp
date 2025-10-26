@@ -7,8 +7,13 @@ The persona can create, read, update, and delete files within its designated are
 
 import json
 import os
+import subprocess
+import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from datetime import datetime
+from typing import Dict, List, Optional, Union, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class PersonaFileManager:
@@ -299,6 +304,103 @@ class PersonaFileManager:
         except ValueError:
             return False
 
+    def execute_script(
+        self,
+        command: str,
+        timeout: int = 600,
+        save_output: bool = True
+    ) -> Dict[str, Union[str, int, bool]]:
+        """
+        Execute a script or command within the persona_space.
+
+        The command executes with cwd set to persona_space, so it's sandboxed
+        to the agent's own directory. The agent can run any interpreter available
+        on the system (python, bash, node, etc.) and can create venvs for packages.
+
+        Args:
+            command: Shell command to execute (e.g., "python script.py", "bash setup.sh")
+            timeout: Maximum execution time in seconds (default: 600 = 10min)
+            save_output: Whether to save output to logs/script_outputs/ (default: True)
+
+        Returns:
+            Dict with keys:
+                - success: bool
+                - stdout: str
+                - stderr: str
+                - return_code: int
+                - output_file: str (path to saved output, if save_output=True)
+                - error: str (if execution failed)
+        """
+        try:
+            logger.info(f"Executing script in persona_space: {command}")
+
+            # Execute with cwd set to persona_space for sandboxing
+            result = subprocess.run(
+                command,
+                shell=True,
+                cwd=str(self.persona_space),
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+
+            stdout = result.stdout
+            stderr = result.stderr
+            return_code = result.returncode
+            success = return_code == 0
+
+            # Prepare response
+            response = {
+                "success": success,
+                "stdout": stdout,
+                "stderr": stderr,
+                "return_code": return_code
+            }
+
+            # Save output to file if requested
+            if save_output:
+                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                # Create safe filename from command
+                cmd_safe = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in command[:50])
+                output_filename = f"{timestamp}_{cmd_safe}.log"
+                output_dir = self.persona_space / "logs" / "script_outputs"
+                output_dir.mkdir(parents=True, exist_ok=True)
+                output_path = output_dir / output_filename
+
+                # Write combined output
+                output_content = f"Command: {command}\n"
+                output_content += f"Executed: {datetime.utcnow().isoformat()}\n"
+                output_content += f"Return Code: {return_code}\n"
+                output_content += f"\n{'='*60}\nSTDOUT:\n{'='*60}\n{stdout}\n"
+                output_content += f"\n{'='*60}\nSTDERR:\n{'='*60}\n{stderr}\n"
+
+                output_path.write_text(output_content)
+                response["output_file"] = f"logs/script_outputs/{output_filename}"
+                logger.info(f"Script output saved to {response['output_file']}")
+
+            return response
+
+        except subprocess.TimeoutExpired:
+            error_msg = f"Script execution timed out after {timeout} seconds"
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "stdout": "",
+                "stderr": "",
+                "return_code": -1
+            }
+        except Exception as e:
+            error_msg = f"Error executing script: {str(e)}"
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "stdout": "",
+                "stderr": "",
+                "return_code": -1
+            }
+
     def get_capabilities_description(self) -> str:
         """Return a description of file operations the persona can perform."""
         return f"""File System Capabilities:
@@ -311,10 +413,12 @@ class PersonaFileManager:
 - create_directory(path) - Organize with new folders
 - read_json(path) / write_json(path, data) - Work with JSON files
 - get_file_tree() - See your entire file structure
+- execute_script(command, timeout, save_output) - Run scripts/commands in your space
 
 **Source Code** (read-only): {self.source_code_path}
 - read_source_code(path) - Read your own source code
 - list_source_files(pattern) - Find source files (e.g., "*.py")
 
 You have full control over your persona_space. Create, modify, reorganize as needed.
+Scripts execute with working directory set to your persona_space for sandboxing.
 """

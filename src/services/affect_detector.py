@@ -26,7 +26,7 @@ class AffectDetector:
     }
 
     FRUSTRATION_MARKERS = {
-        r'\b(confused|lost|stuck|struggling)\b': -0.4,
+        r'\b(confused|lost|stuck|struggling|frustrated)\b': -0.4,
         r'\b(not working|broken|failed|error)\b': -0.3,
         r'\b(why|how come|don\'t understand)\b': -0.2,
     }
@@ -39,6 +39,38 @@ class AffectDetector:
         r'\b(good|nice|cool|neat)\b': 0.4,
     }
 
+    # Arousal markers (energy/intensity level)
+    HIGH_AROUSAL_MARKERS = {
+        r'\b(urgent|emergency|quickly|hurry|asap|now)\b': 0.8,
+        r'\b(excited|thrilled|pumped|energized)\b': 0.7,
+        r'\b(panicking|freaking out|stressed|overwhelmed)\b': 0.8,
+        r'\b(angry|furious|enraged|livid)\b': 0.9,
+        r'\b(important|critical|crucial)\b': 0.6,
+    }
+
+    LOW_AROUSAL_MARKERS = {
+        r'\b(calm|relaxed|peaceful|tranquil)\b': 0.2,
+        r'\b(tired|exhausted|drained|sleepy)\b': 0.1,
+        r'\b(bored|meh|whatever|don\'t care)\b': 0.1,
+        r'\b(slowly|gradually|eventually)\b': 0.3,
+    }
+
+    # Dominance markers (control/power level)
+    HIGH_DOMINANCE_MARKERS = {
+        r'\b(must|need you to|require|demand)\b': 0.8,
+        r'\b(do this|make sure|ensure)\b': 0.7,
+        r'\b(I know|obviously|clearly)\b': 0.6,
+        r'\b(immediately|right now)\b': 0.7,
+    }
+
+    LOW_DOMINANCE_MARKERS = {
+        r'\b(please help|could you|would you mind)\b': 0.2,
+        r'\b(not sure|uncertain|confused|lost)\b': 0.2,
+        r'\b(maybe|perhaps|possibly|might)\b': 0.3,
+        r'\b(if you can|if possible|when you have time)\b': 0.1,
+        r'\?$': 0.4,  # Ends with question mark
+    }
+
     def __init__(self):
         """Initialize affect detector."""
         # Compile regex patterns for efficiency
@@ -48,6 +80,14 @@ class AffectDetector:
                                      for p, v in self.FRUSTRATION_MARKERS.items()]
         self.positive_patterns = [(re.compile(p, re.IGNORECASE), v)
                                   for p, v in self.POSITIVE_MARKERS.items()]
+        self.high_arousal_patterns = [(re.compile(p, re.IGNORECASE), v)
+                                      for p, v in self.HIGH_AROUSAL_MARKERS.items()]
+        self.low_arousal_patterns = [(re.compile(p, re.IGNORECASE), v)
+                                     for p, v in self.LOW_AROUSAL_MARKERS.items()]
+        self.high_dominance_patterns = [(re.compile(p, re.IGNORECASE), v)
+                                        for p, v in self.HIGH_DOMINANCE_MARKERS.items()]
+        self.low_dominance_patterns = [(re.compile(p, re.IGNORECASE), v)
+                                       for p, v in self.LOW_DOMINANCE_MARKERS.items()]
 
     def detect(self, message: str) -> float:
         """Detect emotional valence from message.
@@ -146,6 +186,128 @@ class AffectDetector:
             signals.append(-0.1)
 
         return sum(signals) / len(signals) if signals else 0.0
+
+    def detect_arousal(self, message: str) -> float:
+        """Detect emotional arousal (energy/intensity) from message.
+
+        Args:
+            message: User's message text
+
+        Returns:
+            Arousal score from 0.0 (very calm) to 1.0 (very intense/energetic)
+        """
+        if not message.strip():
+            return 0.5  # Neutral arousal
+
+        signals = []
+
+        # Check for high arousal markers
+        for pattern, arousal in self.high_arousal_patterns:
+            if pattern.search(message):
+                signals.append(arousal)
+                logger.debug(f"High arousal marker detected: {pattern.pattern}")
+
+        # Check for low arousal markers
+        for pattern, arousal in self.low_arousal_patterns:
+            if pattern.search(message):
+                signals.append(arousal)
+                logger.debug(f"Low arousal marker detected: {pattern.pattern}")
+
+        # Stylistic arousal indicators
+        # ALL CAPS indicates high arousal
+        caps_words = re.findall(r'\b[A-Z]{3,}\b', message)
+        if caps_words:
+            signals.append(0.8)
+
+        # Multiple exclamation marks indicate high arousal
+        exclamation_count = message.count('!')
+        if exclamation_count >= 3:
+            signals.append(0.9)
+        elif exclamation_count >= 2:
+            signals.append(0.7)
+        elif exclamation_count == 1:
+            signals.append(0.6)
+
+        # Multiple question marks can indicate agitation
+        question_count = message.count('?')
+        if question_count >= 3:
+            signals.append(0.7)
+
+        # Calculate average arousal
+        if not signals:
+            return 0.5  # Neutral if no markers
+
+        avg_arousal = sum(signals) / len(signals)
+
+        # Clamp to valid range
+        return max(0.0, min(1.0, avg_arousal))
+
+    def detect_dominance(self, message: str) -> float:
+        """Detect dominance (control/power) from message.
+
+        Args:
+            message: User's message text
+
+        Returns:
+            Dominance score from 0.0 (submissive/uncertain) to 1.0 (dominant/controlling)
+        """
+        if not message.strip():
+            return 0.5  # Neutral dominance
+
+        signals = []
+
+        # Check for high dominance markers
+        for pattern, dominance in self.high_dominance_patterns:
+            if pattern.search(message):
+                signals.append(dominance)
+                logger.debug(f"High dominance marker detected: {pattern.pattern}")
+
+        # Check for low dominance markers
+        for pattern, dominance in self.low_dominance_patterns:
+            if pattern.search(message):
+                signals.append(dominance)
+                logger.debug(f"Low dominance marker detected: {pattern.pattern}")
+
+        # Stylistic dominance indicators
+        # Imperative sentences (commands) suggest high dominance
+        if re.match(r'^[A-Z][^.!?]*[.!]$', message.strip()):
+            # Starts with capital, ends with period or exclamation, no questions
+            if '?' not in message:
+                signals.append(0.7)
+
+        # Questions often indicate lower dominance (seeking information)
+        if message.strip().endswith('?'):
+            signals.append(0.3)
+
+        # Polite words indicate lower dominance
+        if re.search(r'\b(please|kindly|sorry|excuse me)\b', message, re.IGNORECASE):
+            signals.append(0.2)
+
+        # Calculate average dominance
+        if not signals:
+            return 0.5  # Neutral if no markers
+
+        avg_dominance = sum(signals) / len(signals)
+
+        # Clamp to valid range
+        return max(0.0, min(1.0, avg_dominance))
+
+    def detect_vad(self, message: str) -> tuple[float, float, float]:
+        """Detect all three VAD dimensions at once.
+
+        Args:
+            message: User's message text
+
+        Returns:
+            Tuple of (valence, arousal, dominance)
+        """
+        valence = self.detect(message)
+        arousal = self.detect_arousal(message)
+        dominance = self.detect_dominance(message)
+
+        logger.info(f"Detected VAD: v={valence:.2f}, a={arousal:.2f}, d={dominance:.2f} from: {message[:50]}...")
+
+        return (valence, arousal, dominance)
 
     def get_emotion_label(self, valence: float) -> str:
         """Convert valence to emotion label.

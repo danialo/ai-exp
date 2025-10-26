@@ -298,6 +298,50 @@
             color: #495057;
         }
 
+        /* User Valence Indicator */
+        .user-valence-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+            font-size: 12px;
+        }
+
+        .valence-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            transition: all 0.3s ease;
+        }
+
+        .valence-dot.positive {
+            background: #51cf66;
+            box-shadow: 0 0 8px rgba(81, 207, 102, 0.5);
+        }
+
+        .valence-dot.neutral {
+            background: #74c0fc;
+        }
+
+        .valence-dot.negative {
+            background: #ff6b6b;
+            box-shadow: 0 0 8px rgba(255, 107, 107, 0.5);
+        }
+
+        .valence-label {
+            color: #868e96;
+            font-weight: 500;
+        }
+
+        .valence-value {
+            font-weight: 600;
+            font-family: 'Courier New', monospace;
+            color: #495057;
+        }
+
         .mood-description {
             padding: 4px 12px;
             border-radius: 12px;
@@ -698,6 +742,13 @@
                 <span class="mood-value" id="mood-value">0.00</span>
                 <span class="mood-description neutral" id="mood-description">neutral</span>
             </div>
+
+            <!-- User Valence Indicator -->
+            <div class="user-valence-indicator" id="user-valence-display" style="display: none;">
+                <span class="valence-label">Your tone:</span>
+                <div class="valence-dot neutral" id="valence-dot"></div>
+                <span class="valence-value" id="valence-value">0.00</span>
+            </div>
         </div>
 
         <!-- Model Selector -->
@@ -903,6 +954,32 @@
             }
         }
 
+        // Update user valence indicator
+        function updateUserValence(valence, arousal, dominance) {
+            const display = document.getElementById('user-valence-display');
+            const dot = document.getElementById('valence-dot');
+            const value = document.getElementById('valence-value');
+
+            // Show the indicator
+            display.style.display = 'inline-flex';
+
+            // Update value
+            value.textContent = valence.toFixed(2);
+
+            // Update dot color based on valence
+            dot.classList.remove('positive', 'neutral', 'negative');
+            if (valence > 0.2) {
+                dot.classList.add('positive');
+            } else if (valence < -0.2) {
+                dot.classList.add('negative');
+            } else {
+                dot.classList.add('neutral');
+            }
+
+            // Add tooltip with full VAD info
+            display.title = `Valence: ${valence.toFixed(2)}\nArousal: ${arousal.toFixed(2)}\nDominance: ${dominance.toFixed(2)}`;
+        }
+
         // Add message to chat
         function addMessage(role, content, memories = []) {
             // Remove welcome message if present
@@ -915,7 +992,7 @@
             const isUser = role === 'user';
             const icon = isUser ? '👤' : '🤖';
             const iconClass = isUser ? 'user-icon' : 'bot-icon';
-            const label = isUser ? 'You' : 'Assistant';
+            const label = isUser ? 'You' : 'Astra';
 
             messageDiv.innerHTML = `
                 <div class="message-header">
@@ -1006,6 +1083,15 @@
                 // Keep only last 10 messages (5 exchanges) to avoid token overflow
                 if (conversationHistory.length > 10) {
                     conversationHistory = conversationHistory.slice(-10);
+                }
+
+                // Update user valence indicator if VAD data is present
+                if (data.user_valence !== undefined) {
+                    updateUserValence(
+                        data.user_valence || 0,
+                        data.user_arousal || 0.5,
+                        data.user_dominance || 0.5
+                    );
                 }
 
                 // Update stats and mood

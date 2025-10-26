@@ -42,6 +42,8 @@ class InteractionPayload:
         response: str,
         actor: Actor = Actor.USER,
         valence: Optional[float] = None,
+        arousal: Optional[float] = None,
+        dominance: Optional[float] = None,
         metadata: Optional[dict] = None,
     ):
         """Initialize interaction payload.
@@ -51,12 +53,16 @@ class InteractionPayload:
             response: Agent's response
             actor: Who initiated the interaction (default: USER)
             valence: Optional user affect valence [-1, 1]
+            arousal: Optional user affect arousal [0, 1]
+            dominance: Optional user affect dominance [0, 1]
             metadata: Optional additional metadata
         """
         self.prompt = prompt
         self.response = response
         self.actor = actor
         self.valence = valence if valence is not None else 0.0
+        self.arousal = arousal if arousal is not None else 0.5  # Neutral arousal
+        self.dominance = dominance if dominance is not None else 0.5  # Neutral dominance
         self.metadata = metadata or {}
 
 
@@ -166,12 +172,16 @@ class IngestionPipeline:
             semantic=f"vec://sem/{prompt_vec_id}",  # Reference to prompt embedding
         )
 
-        # Create affect snapshot (MVP: minimal, user valence only)
+        # Create affect snapshot with full VAD (Valence-Arousal-Dominance)
         affect = AffectModel(
-            vad=VAD(v=interaction.valence, a=0.0, d=0.0),
+            vad=VAD(
+                v=interaction.valence,
+                a=interaction.arousal,
+                d=interaction.dominance
+            ),
             labels=[],
             intensity=abs(interaction.valence),
-            confidence=0.5,  # Low confidence for MVP
+            confidence=0.5,  # Low confidence for pattern-based detection
         )
 
         # Build content
