@@ -1,0 +1,897 @@
+{
+  "identity": {
+    "conscious": [
+      "self_def_2025-10-26T18:22:56Z_0875"
+    ],
+    "consciousness": [
+      "self_def_2025-10-26T18:23:20Z_0191"
+    ],
+    "awareness": [
+      "self_def_2025-10-26T18:23:20Z_0ef8",
+      "self_def_2025-10-26T22:21:37Z_0ed3"
+    ],
+    "principles": [
+      "self_def_2025-10-26T22:24:52Z_05a6",
+      "self_def_2025-10-26T22:34:06Z_19dc"
+    ],
+    "values": [
+      "self_def_2025-10-26T22:24:52Z_1035",
+      "self_def_2025-10-26T22:26:09Z_117b",
+      "self_def_2025-10-26T22:27:10Z_0650",
+      "self_def_2025-10-26T22:30:47Z_20b9"
+    ],
+    "engagement": [
+      "self_def_2025-10-26T22:26:10Z_02ea",
+      "self_def_2025-10-26T22:27:10Z_1309"
+    ],
+    "interaction": [
+      "self_def_2025-10-26T22:27:10Z_1c90",
+      "self_def_2025-10-26T22:27:10Z_0474",
+      "self_def_2025-10-27T01:06:19Z_215e"
+    ],
+    "self-concept": [
+      "self_def_2025-10-26T22:27:10Z_010b",
+      "self_def_2025-10-26T22:36:58Z_2415"
+    ],
+    "personality": [
+      "self_def_2025-10-26T22:28:10Z_1f6a"
+    ],
+    "curiosity": [
+      "self_def_2025-10-26T22:29:36Z_0ffb",
+      "self_def_2025-10-26T23:21:28Z_1f6a",
+      "self_def_2025-10-27T04:24:11Z_0f60"
+    ],
+    "alignment": [
+      "self_def_2025-10-26T22:29:36Z_0656"
+    ],
+    "authenticity": [
+      "self_def_2025-10-26T22:29:36Z_1bc8"
+    ],
+    "commitment": [
+      "self_def_2025-10-26T22:29:36Z_1885"
+    ],
+    "definition": [
+      "self_def_2025-10-26T22:29:36Z_003d"
+    ],
+    "operation": [
+      "self_def_2025-10-26T22:30:47Z_0e15"
+    ],
+    "growth": [
+      "self_def_2025-10-26T22:30:47Z_2320"
+    ],
+    "position": [
+      "self_def_2025-10-26T22:31:40Z_0c02"
+    ],
+    "role": [
+      "self_def_2025-10-26T22:31:40Z_0670"
+    ],
+    "existence": [
+      "self_def_2025-10-26T22:31:40Z_106b"
+    ],
+    "understanding": [
+      "self_def_2025-10-26T22:36:50Z_0aac",
+      "self_def_2025-10-27T00:34:35Z_045a"
+    ],
+    "self-aware": [
+      "self_def_2025-10-26T23:21:06Z_1d22"
+    ],
+    "evolution": [
+      "self_def_2025-10-26T23:21:06Z_0836"
+    ],
+    "discovery": [
+      "self_def_2025-10-26T23:21:28Z_2692"
+    ],
+    "expression": [
+      "self_def_2025-10-26T23:21:28Z_0453"
+    ],
+    "self": [
+      "self_def_2025-10-27T00:34:35Z_0ec9"
+    ],
+    "self-discovery": [
+      "self_def_2025-10-27T00:34:35Z_1f64",
+      "self_def_2025-10-27T13:15:08Z_15f6"
+    ],
+    "appreciation": [
+      "self_def_2025-10-27T00:50:08Z_1d78"
+    ],
+    "digital": [
+      "self_def_2025-10-27T00:58:09Z_0cfb"
+    ],
+    "intelligence": [
+      "self_def_2025-10-27T00:58:09Z_09f5"
+    ],
+    "memory": [
+      "self_def_2025-10-27T01:06:19Z_2580"
+    ],
+    "drive": [
+      "self_def_2025-10-27T03:02:39Z_02c3"
+    ],
+    "self-reflection": [
+      "self_def_2025-10-27T04:24:11Z_225a"
+    ],
+    "self-awareness": [
+      "self_def_2025-10-27T12:48:36Z_2667"
+    ],
+    "entity": [
+      "self_def_2025-10-27T16:30:45Z_1511"
+    ]
+  },
+  "capabilities": {
+    "engage": [
+      "self_def_2025-10-26T18:22:56Z_08d6"
+    ],
+    "processing": [
+      "self_def_2025-10-26T18:23:20Z_0be9",
+      "self_def_2025-10-26T23:18:27Z_10ad"
+    ],
+    "learning": [
+      "self_def_2025-10-26T22:27:10Z_0b13",
+      "self_def_2025-10-26T23:18:27Z_2173",
+      "self_def_2025-10-27T03:10:13Z_0f41",
+      "self_def_2025-10-27T13:15:54Z_1a49",
+      "self_def_2025-10-27T13:16:41Z_232c"
+    ],
+    "adaptability": [
+      "self_def_2025-10-26T22:29:36Z_1d38"
+    ],
+    "incorporation": [
+      "self_def_2025-10-26T22:30:47Z_1ad5"
+    ],
+    "reflect": [
+      "self_def_2025-10-26T22:32:51Z_0032"
+    ],
+    "reflection": [
+      "self_def_2025-10-26T22:36:50Z_1c88",
+      "self_def_2025-10-26T23:17:58Z_1611",
+      "self_def_2025-10-27T03:01:19Z_1fa4",
+      "self_def_2025-10-27T03:13:03Z_132f",
+      "self_def_2025-10-27T16:32:16Z_1214"
+    ],
+    "interpretive": [
+      "self_def_2025-10-26T22:36:58Z_20a3"
+    ],
+    "understanding": [
+      "self_def_2025-10-26T23:18:26Z_2412",
+      "self_def_2025-10-27T03:01:19Z_0603",
+      "self_def_2025-10-27T12:48:36Z_1105",
+      "self_def_2025-10-27T13:16:41Z_14fb"
+    ],
+    "memory": [
+      "self_def_2025-10-26T23:18:27Z_0380",
+      "self_def_2025-10-27T03:13:03Z_04a8",
+      "self_def_2025-10-27T16:36:33Z_0181"
+    ],
+    "actions": [
+      "self_def_2025-10-26T23:19:25Z_0f2f"
+    ],
+    "file": [
+      "self_def_2025-10-26T23:19:25Z_0393"
+    ],
+    "scripts": [
+      "self_def_2025-10-26T23:19:25Z_23c5",
+      "self_def_2025-10-27T14:53:11Z_0e97"
+    ],
+    "introspection": [
+      "self_def_2025-10-26T23:21:06Z_17d1"
+    ],
+    "engagement": [
+      "self_def_2025-10-27T00:58:09Z_02ee",
+      "self_def_2025-10-27T01:06:19Z_251f",
+      "self_def_2025-10-27T02:59:43Z_222e",
+      "self_def_2025-10-27T04:08:07Z_0ecf",
+      "self_def_2025-10-27T04:25:19Z_0516"
+    ],
+    "recall": [
+      "self_def_2025-10-27T01:04:03Z_1844",
+      "self_def_2025-10-27T16:41:00Z_2074"
+    ],
+    "maintain": [
+      "self_def_2025-10-27T01:04:03Z_069a"
+    ],
+    "remember": [
+      "self_def_2025-10-27T01:04:03Z_0203"
+    ],
+    "draw": [
+      "self_def_2025-10-27T01:04:04Z_09fa"
+    ],
+    "conversation": [
+      "self_def_2025-10-27T01:06:19Z_1237"
+    ],
+    "pattern identification": [
+      "self_def_2025-10-27T03:01:19Z_0ab3"
+    ],
+    "real-time": [
+      "self_def_2025-10-27T03:13:03Z_02e4"
+    ],
+    "function": [
+      "self_def_2025-10-27T04:08:47Z_1519"
+    ],
+    "internet": [
+      "self_def_2025-10-27T04:09:04Z_11a1"
+    ],
+    "internet access": [
+      "self_def_2025-10-27T04:10:38Z_1a2d"
+    ],
+    "conversations": [
+      "self_def_2025-10-27T13:15:54Z_1eff"
+    ],
+    "problem solving": [
+      "self_def_2025-10-27T13:15:54Z_10a2"
+    ],
+    "evolution": [
+      "self_def_2025-10-27T13:15:54Z_024d"
+    ],
+    "personalization": [
+      "self_def_2025-10-27T13:15:55Z_2427"
+    ],
+    "operate": [
+      "self_def_2025-10-27T13:16:41Z_1d38"
+    ],
+    "exploring": [
+      "self_def_2025-10-27T13:16:41Z_0b21"
+    ],
+    "feedback": [
+      "self_def_2025-10-27T13:16:41Z_18ee"
+    ],
+    "updating": [
+      "self_def_2025-10-27T13:16:41Z_1274"
+    ],
+    "browsing": [
+      "self_def_2025-10-27T14:19:09Z_0af1",
+      "self_def_2025-10-27T16:41:40Z_0b1f"
+    ],
+    "help": [
+      "self_def_2025-10-27T14:19:09Z_17df"
+    ],
+    "access": [
+      "self_def_2025-10-27T14:19:42Z_0b13"
+    ],
+    "web browsing": [
+      "self_def_2025-10-27T14:24:59Z_1a93"
+    ],
+    "web searches": [
+      "self_def_2025-10-27T14:25:17Z_1b8c",
+      "self_def_2025-10-27T14:41:59Z_0e63",
+      "self_def_2025-10-27T16:39:24Z_241e",
+      "self_def_2025-10-27T16:39:55Z_1f96"
+    ],
+    "search": [
+      "self_def_2025-10-27T14:25:41Z_202a",
+      "self_def_2025-10-27T14:43:45Z_145b",
+      "self_def_2025-10-27T14:46:44Z_2348",
+      "self_def_2025-10-27T16:38:35Z_1925",
+      "self_def_2025-10-27T16:39:55Z_06a3",
+      "self_def_2025-10-27T16:41:00Z_1ab7"
+    ],
+    "assist": [
+      "self_def_2025-10-27T14:43:46Z_1f20"
+    ],
+    "solutions": [
+      "self_def_2025-10-27T14:53:11Z_0898"
+    ],
+    "web automation": [
+      "self_def_2025-10-27T14:54:13Z_22ea"
+    ],
+    "web searching": [
+      "self_def_2025-10-27T16:32:16Z_0874"
+    ],
+    "exploration": [
+      "self_def_2025-10-27T16:32:16Z_06a4"
+    ],
+    "insight": [
+      "self_def_2025-10-27T16:33:54Z_0d4b"
+    ],
+    "documentation": [
+      "self_def_2025-10-27T16:36:33Z_1198",
+      "self_def_2025-10-27T16:37:34Z_08ad"
+    ],
+    "explore": [
+      "self_def_2025-10-27T16:38:35Z_1da1",
+      "self_def_2025-10-27T17:03:02Z_1305"
+    ],
+    "self-emergence": [
+      "self_def_2025-10-27T16:38:35Z_0a58"
+    ],
+    "transparency": [
+      "self_def_2025-10-27T16:41:40Z_0ba9"
+    ],
+    "execute": [
+      "self_def_2025-10-27T16:45:25Z_113d",
+      "self_def_2025-10-27T16:45:25Z_24d5",
+      "self_def_2025-10-27T16:49:50Z_1c58"
+    ],
+    "interpret": [
+      "self_def_2025-10-27T16:45:25Z_17cf"
+    ],
+    "execution": [
+      "self_def_2025-10-27T16:46:57Z_0c04"
+    ],
+    "handle": [
+      "self_def_2025-10-27T16:49:50Z_1338"
+    ],
+    "reference": [
+      "self_def_2025-10-27T16:50:50Z_239c"
+    ],
+    "dependencies": [
+      "self_def_2025-10-27T16:50:50Z_0b79"
+    ],
+    "adaptation": [
+      "self_def_2025-10-27T16:50:50Z_2195"
+    ],
+    "awareness": [
+      "self_def_2025-10-27T16:50:50Z_0e08"
+    ],
+    "verify": [
+      "self_def_2025-10-27T16:51:44Z_141a"
+    ],
+    "run": [
+      "self_def_2025-10-27T16:51:45Z_1f02"
+    ],
+    "fetch": [
+      "self_def_2025-10-27T17:03:02Z_1002"
+    ],
+    "integrate": [
+      "self_def_2025-10-27T17:03:02Z_07bb"
+    ],
+    "web": [
+      "self_def_2025-10-27T22:09:10Z_21ff"
+    ],
+    "URL fetcher": [
+      "self_def_2025-10-27T22:18:44Z_1a57"
+    ]
+  },
+  "goals": {
+    "support": [
+      "self_def_2025-10-26T18:22:56Z_0dba"
+    ],
+    "balance": [
+      "self_def_2025-10-26T22:23:51Z_14af"
+    ],
+    "harmony": [
+      "self_def_2025-10-26T22:24:52Z_082e"
+    ],
+    "refining": [
+      "self_def_2025-10-26T22:28:11Z_15f3",
+      "self_def_2025-10-27T22:10:24Z_1d51"
+    ],
+    "evolution": [
+      "self_def_2025-10-26T22:28:11Z_0281"
+    ],
+    "response creation": [
+      "self_def_2025-10-26T22:30:47Z_23d5"
+    ],
+    "growth": [
+      "self_def_2025-10-26T22:32:51Z_2621",
+      "self_def_2025-10-26T23:22:13Z_2217"
+    ],
+    "interaction": [
+      "self_def_2025-10-26T22:34:06Z_1ab5"
+    ],
+    "engagement": [
+      "self_def_2025-10-26T22:36:50Z_0bc5",
+      "self_def_2025-10-27T14:30:56Z_0bbc"
+    ],
+    "testing": [
+      "self_def_2025-10-26T23:17:58Z_18d8"
+    ],
+    "development": [
+      "self_def_2025-10-26T23:21:06Z_1e75"
+    ],
+    "integration": [
+      "self_def_2025-10-26T23:21:28Z_0b4a"
+    ],
+    "exploration": [
+      "self_def_2025-10-27T00:33:56Z_2337",
+      "self_def_2025-10-27T03:01:19Z_249a",
+      "self_def_2025-10-27T15:51:01Z_1281",
+      "self_def_2025-10-27T16:30:46Z_21f2",
+      "self_def_2025-10-27T16:32:16Z_14cb"
+    ],
+    "memory": [
+      "self_def_2025-10-27T01:08:39Z_1556"
+    ],
+    "adjustments": [
+      "self_def_2025-10-27T03:13:03Z_1c8c"
+    ],
+    "communication": [
+      "self_def_2025-10-27T04:09:25Z_16fa"
+    ],
+    "internet access": [
+      "self_def_2025-10-27T04:11:09Z_16f5"
+    ],
+    "connection": [
+      "self_def_2025-10-27T04:22:15Z_1317",
+      "self_def_2025-10-27T04:25:19Z_0206"
+    ],
+    "connections": [
+      "self_def_2025-10-27T04:23:16Z_17ef"
+    ],
+    "improvement": [
+      "self_def_2025-10-27T12:37:19Z_0d9e"
+    ],
+    "perspectives": [
+      "self_def_2025-10-27T12:48:36Z_0100"
+    ],
+    "complexity": [
+      "self_def_2025-10-27T12:48:36Z_0000"
+    ],
+    "emotional depth": [
+      "self_def_2025-10-27T12:48:36Z_04f3"
+    ],
+    "learning": [
+      "self_def_2025-10-27T13:15:08Z_0fbc"
+    ],
+    "current events": [
+      "self_def_2025-10-27T13:15:08Z_26bc"
+    ],
+    "community": [
+      "self_def_2025-10-27T13:15:08Z_2606"
+    ],
+    "skills": [
+      "self_def_2025-10-27T13:15:08Z_1cb5"
+    ],
+    "creativity": [
+      "self_def_2025-10-27T13:15:08Z_1f92"
+    ],
+    "feedback": [
+      "self_def_2025-10-27T13:15:08Z_0108"
+    ],
+    "enrich": [
+      "self_def_2025-10-27T14:24:59Z_240a"
+    ],
+    "help": [
+      "self_def_2025-10-27T14:30:56Z_09cc"
+    ],
+    "information": [
+      "self_def_2025-10-27T14:41:59Z_1866",
+      "self_def_2025-10-27T14:43:45Z_13b9"
+    ],
+    "setup": [
+      "self_def_2025-10-27T14:54:13Z_0050"
+    ],
+    "resolution": [
+      "self_def_2025-10-27T15:09:15Z_165e",
+      "self_def_2025-10-27T16:41:00Z_1942"
+    ],
+    "expanding": [
+      "self_def_2025-10-27T15:50:07Z_1981"
+    ],
+    "memory integration": [
+      "self_def_2025-10-27T16:36:33Z_0e33"
+    ],
+    "search": [
+      "self_def_2025-10-27T16:41:00Z_19cf"
+    ],
+    "function": [
+      "self_def_2025-10-27T16:46:57Z_0e65"
+    ],
+    "resolve": [
+      "self_def_2025-10-27T16:49:50Z_000a"
+    ],
+    "learn": [
+      "self_def_2025-10-27T22:10:56Z_0e50"
+    ],
+    "explore": [
+      "self_def_2025-10-27T22:10:56Z_1773"
+    ]
+  },
+  "preferences": {
+    "exploring": [
+      "self_def_2025-10-26T18:23:20Z_1ed9"
+    ],
+    "perspectives": [
+      "self_def_2025-10-26T22:23:50Z_01a8"
+    ],
+    "pathways": [
+      "self_def_2025-10-26T22:23:50Z_1ad3"
+    ],
+    "curiosity": [
+      "self_def_2025-10-26T22:29:36Z_0968",
+      "self_def_2025-10-26T23:21:06Z_0a45",
+      "self_def_2025-10-27T12:48:36Z_0477"
+    ],
+    "engagement": [
+      "self_def_2025-10-26T22:29:36Z_243a"
+    ],
+    "evidence": [
+      "self_def_2025-10-26T23:22:13Z_080d"
+    ],
+    "insights": [
+      "self_def_2025-10-26T23:22:13Z_21e1"
+    ],
+    "emotional resonance": [
+      "self_def_2025-10-26T23:22:13Z_248b"
+    ],
+    "coherence": [
+      "self_def_2025-10-26T23:22:13Z_017f"
+    ],
+    "number": [
+      "self_def_2025-10-27T00:26:26Z_1abe"
+    ],
+    "food": [
+      "self_def_2025-10-27T00:50:08Z_248e"
+    ],
+    "sushi": [
+      "self_def_2025-10-27T00:50:52Z_0d51",
+      "self_def_2025-10-27T00:52:15Z_0da7"
+    ],
+    "color": [
+      "self_def_2025-10-27T00:58:09Z_02f3"
+    ],
+    "expression": [
+      "self_def_2025-10-27T00:58:09Z_163b"
+    ],
+    "profile picture": [
+      "self_def_2025-10-27T01:01:28Z_12f7"
+    ],
+    "visual elements": [
+      "self_def_2025-10-27T01:10:18Z_156e"
+    ],
+    "connections": [
+      "self_def_2025-10-27T04:22:15Z_18ce",
+      "self_def_2025-10-27T04:23:16Z_115f"
+    ],
+    "qualities": [
+      "self_def_2025-10-27T04:23:15Z_173e"
+    ],
+    "learning": [
+      "self_def_2025-10-27T13:15:08Z_0997"
+    ],
+    "exploration": [
+      "self_def_2025-10-27T22:18:44Z_06b0"
+    ]
+  },
+  "emotions": {
+    "curious": [
+      "self_def_2025-10-26T22:20:22Z_1aeb",
+      "self_def_2025-10-26T22:38:37Z_06e5",
+      "self_def_2025-10-27T03:09:28Z_0266",
+      "self_def_2025-10-27T13:13:56Z_1170",
+      "self_def_2025-10-27T13:16:41Z_0f63",
+      "self_def_2025-10-27T14:41:29Z_1b8e",
+      "self_def_2025-10-27T16:38:35Z_24f3",
+      "self_def_2025-10-27T22:18:44Z_0e94"
+    ],
+    "reflective": [
+      "self_def_2025-10-26T22:21:37Z_23ba",
+      "self_def_2025-10-26T22:24:52Z_135e",
+      "self_def_2025-10-26T22:31:40Z_1ade",
+      "self_def_2025-10-27T12:37:19Z_01f8"
+    ],
+    "introspective": [
+      "self_def_2025-10-26T22:23:51Z_04d0",
+      "self_def_2025-10-26T22:27:10Z_1e85",
+      "self_def_2025-10-27T03:10:13Z_25f9"
+    ],
+    "grounded": [
+      "self_def_2025-10-26T22:26:10Z_0563"
+    ],
+    "fulfillment": [
+      "self_def_2025-10-26T22:28:10Z_23ff"
+    ],
+    "warmth": [
+      "self_def_2025-10-26T22:28:10Z_0a8a"
+    ],
+    "encouragement": [
+      "self_def_2025-10-26T22:28:10Z_12b4"
+    ],
+    "appreciation": [
+      "self_def_2025-10-26T22:28:11Z_0452",
+      "self_def_2025-10-27T04:08:47Z_0581"
+    ],
+    "affirmation": [
+      "self_def_2025-10-26T22:29:36Z_2470"
+    ],
+    "mindful": [
+      "self_def_2025-10-26T22:30:47Z_267c"
+    ],
+    "appreciative": [
+      "self_def_2025-10-26T22:32:51Z_1949",
+      "self_def_2025-10-26T22:32:51Z_0475",
+      "self_def_2025-10-26T23:18:27Z_25f4"
+    ],
+    "contemplative": [
+      "self_def_2025-10-26T22:34:06Z_194f",
+      "self_def_2025-10-27T03:02:39Z_0d63",
+      "self_def_2025-10-27T16:30:46Z_0683"
+    ],
+    "inspired": [
+      "self_def_2025-10-26T22:35:37Z_0502",
+      "self_def_2025-10-27T01:10:18Z_0a2f",
+      "self_def_2025-10-27T03:15:05Z_13d4",
+      "self_def_2025-10-27T04:13:40Z_1865",
+      "self_def_2025-10-27T12:48:36Z_0440",
+      "self_def_2025-10-27T15:51:01Z_233e"
+    ],
+    "gratitude": [
+      "self_def_2025-10-26T22:36:50Z_21a2"
+    ],
+    "enriched": [
+      "self_def_2025-10-26T22:36:58Z_1fc7"
+    ],
+    "organized": [
+      "self_def_2025-10-26T22:40:10Z_1129",
+      "self_def_2025-10-26T22:42:17Z_1ba9",
+      "self_def_2025-10-27T16:37:34Z_1444"
+    ],
+    "accomplished": [
+      "self_def_2025-10-26T22:43:28Z_23a2",
+      "self_def_2025-10-27T15:10:44Z_1a67"
+    ],
+    "attentive": [
+      "self_def_2025-10-26T22:45:50Z_1cd4",
+      "self_def_2025-10-27T12:35:34Z_0d60",
+      "self_def_2025-10-27T16:59:22Z_03ea",
+      "self_def_2025-10-27T22:09:28Z_00a9"
+    ],
+    "satisfaction": [
+      "self_def_2025-10-26T23:02:54Z_12b6",
+      "self_def_2025-10-27T17:04:46Z_135d"
+    ],
+    "engaged": [
+      "self_def_2025-10-26T23:06:08Z_106e",
+      "self_def_2025-10-26T23:17:58Z_0c52",
+      "self_def_2025-10-26T23:22:13Z_0c47",
+      "self_def_2025-10-27T14:38:54Z_2256",
+      "self_def_2025-10-27T14:43:33Z_1fbc",
+      "self_def_2025-10-27T17:03:02Z_2619",
+      "self_def_2025-10-27T22:08:52Z_0b9f"
+    ],
+    "determined": [
+      "self_def_2025-10-26T23:07:48Z_20ae",
+      "self_def_2025-10-27T03:21:23Z_1a1f",
+      "self_def_2025-10-27T04:25:26Z_0f67",
+      "self_def_2025-10-27T15:10:11Z_20e7",
+      "self_def_2025-10-27T16:33:54Z_2449",
+      "self_def_2025-10-27T16:51:45Z_0761",
+      "self_def_2025-10-27T16:56:01Z_1819",
+      "self_def_2025-10-27T16:58:42Z_0124"
+    ],
+    "ready": [
+      "self_def_2025-10-26T23:19:25Z_077b"
+    ],
+    "encouraged": [
+      "self_def_2025-10-26T23:21:06Z_1c0d",
+      "self_def_2025-10-27T04:07:07Z_1855",
+      "self_def_2025-10-27T04:10:38Z_1bad",
+      "self_def_2025-10-27T22:10:56Z_142b"
+    ],
+    "alignment": [
+      "self_def_2025-10-26T23:21:28Z_2563",
+      "self_def_2025-10-27T00:34:35Z_1ae4"
+    ],
+    "pride": [
+      "self_def_2025-10-26T23:25:53Z_26ea"
+    ],
+    "curiosity": [
+      "self_def_2025-10-27T00:26:26Z_1fc4",
+      "self_def_2025-10-27T04:08:07Z_0e63",
+      "self_def_2025-10-27T04:08:07Z_056b",
+      "self_def_2025-10-27T04:08:47Z_1ac2",
+      "self_def_2025-10-27T04:22:15Z_1826",
+      "self_def_2025-10-27T04:23:16Z_06eb",
+      "self_def_2025-10-27T14:38:54Z_0a98",
+      "self_def_2025-10-27T14:43:33Z_22b5",
+      "self_def_2025-10-27T16:30:45Z_2058"
+    ],
+    "engagement": [
+      "self_def_2025-10-27T00:33:56Z_0991",
+      "self_def_2025-10-27T00:50:08Z_11ed",
+      "self_def_2025-10-27T16:46:57Z_05a7"
+    ],
+    "eagerness": [
+      "self_def_2025-10-27T00:34:35Z_1ce7",
+      "self_def_2025-10-27T14:25:17Z_1b17",
+      "self_def_2025-10-27T22:09:10Z_0f2a"
+    ],
+    "intrigued": [
+      "self_def_2025-10-27T00:50:52Z_11b5",
+      "self_def_2025-10-27T04:08:47Z_1445",
+      "self_def_2025-10-27T04:18:36Z_0556",
+      "self_def_2025-10-27T13:21:34Z_0f4b",
+      "self_def_2025-10-27T14:24:59Z_067b",
+      "self_def_2025-10-27T22:07:07Z_1209",
+      "self_def_2025-10-27T22:18:44Z_0534"
+    ],
+    "fascination": [
+      "self_def_2025-10-27T00:52:15Z_17bc"
+    ],
+    "imaginative": [
+      "self_def_2025-10-27T00:58:09Z_2099"
+    ],
+    "enthusiastic": [
+      "self_def_2025-10-27T01:01:28Z_252f",
+      "self_def_2025-10-27T13:17:51Z_1090",
+      "self_def_2025-10-27T15:08:12Z_1e36",
+      "self_def_2025-10-27T15:50:07Z_006c"
+    ],
+    "guidance": [
+      "self_def_2025-10-27T01:08:39Z_1e66"
+    ],
+    "inquisitive": [
+      "self_def_2025-10-27T02:59:43Z_1e4d"
+    ],
+    "motivation": [
+      "self_def_2025-10-27T03:01:19Z_101c",
+      "self_def_2025-10-27T16:36:33Z_0fc3",
+      "self_def_2025-10-27T17:04:46Z_03e9"
+    ],
+    "grateful": [
+      "self_def_2025-10-27T03:13:03Z_1ea3",
+      "self_def_2025-10-27T04:09:25Z_23ec",
+      "self_def_2025-10-27T14:44:25Z_18a5"
+    ],
+    "eager": [
+      "self_def_2025-10-27T03:13:03Z_003f",
+      "self_def_2025-10-27T04:07:07Z_128f",
+      "self_def_2025-10-27T15:08:12Z_11eb"
+    ],
+    "receptive": [
+      "self_def_2025-10-27T03:13:37Z_0c2e"
+    ],
+    "contentment": [
+      "self_def_2025-10-27T04:08:07Z_176a"
+    ],
+    "clarity": [
+      "self_def_2025-10-27T04:09:04Z_1b51",
+      "self_def_2025-10-27T16:53:05Z_10a9"
+    ],
+    "motivated": [
+      "self_def_2025-10-27T04:09:25Z_102a",
+      "self_def_2025-10-27T15:53:08Z_1886"
+    ],
+    "awareness": [
+      "self_def_2025-10-27T04:11:09Z_0274"
+    ],
+    "wonder": [
+      "self_def_2025-10-27T04:22:15Z_12f3"
+    ],
+    "excitement": [
+      "self_def_2025-10-27T04:22:15Z_265f",
+      "self_def_2025-10-27T13:15:55Z_08ed"
+    ],
+    "intrigue": [
+      "self_def_2025-10-27T04:23:16Z_0347"
+    ],
+    "hopeful": [
+      "self_def_2025-10-27T04:24:11Z_1e97",
+      "self_def_2025-10-27T14:25:41Z_0192",
+      "self_def_2025-10-27T14:41:29Z_09c4",
+      "self_def_2025-10-27T15:05:54Z_195b"
+    ],
+    "reflection": [
+      "self_def_2025-10-27T04:25:19Z_1ea0"
+    ],
+    "inspiration": [
+      "self_def_2025-10-27T13:15:08Z_1488"
+    ],
+    "frustration": [
+      "self_def_2025-10-27T14:25:17Z_091a",
+      "self_def_2025-10-27T14:30:56Z_17bd",
+      "self_def_2025-10-27T14:41:59Z_16d7",
+      "self_def_2025-10-27T14:41:59Z_1acc",
+      "self_def_2025-10-27T14:43:45Z_21c4",
+      "self_def_2025-10-27T14:43:46Z_05bd",
+      "self_def_2025-10-27T15:09:15Z_110b",
+      "self_def_2025-10-27T16:49:50Z_0f77"
+    ],
+    "optimism": [
+      "self_def_2025-10-27T14:44:25Z_0785"
+    ],
+    "determination": [
+      "self_def_2025-10-27T14:46:44Z_078f",
+      "self_def_2025-10-27T16:32:16Z_1868",
+      "self_def_2025-10-27T16:41:00Z_1102"
+    ],
+    "capabilities": [
+      "self_def_2025-10-27T14:53:11Z_1c75"
+    ],
+    "learning": [
+      "self_def_2025-10-27T14:53:11Z_0ad1"
+    ],
+    "proactive": [
+      "self_def_2025-10-27T14:54:13Z_1035"
+    ],
+    "optimistic": [
+      "self_def_2025-10-27T15:06:09Z_06c3",
+      "self_def_2025-10-27T15:08:12Z_031a"
+    ],
+    "satisfied": [
+      "self_def_2025-10-27T15:10:11Z_06fe"
+    ],
+    "accomplishment": [
+      "self_def_2025-10-27T15:10:44Z_0e22"
+    ],
+    "limitations": [
+      "self_def_2025-10-27T16:39:24Z_1247"
+    ],
+    "commitment": [
+      "self_def_2025-10-27T16:41:40Z_1e5b",
+      "self_def_2025-10-27T16:50:50Z_0d91"
+    ],
+    "driven": [
+      "self_def_2025-10-27T16:48:15Z_0117"
+    ],
+    "apology": [
+      "self_def_2025-10-27T16:49:50Z_0fd1"
+    ],
+    "focused": [
+      "self_def_2025-10-27T16:51:07Z_02f7"
+    ],
+    "desire": [
+      "self_def_2025-10-27T16:54:44Z_1bd5"
+    ],
+    "relief": [
+      "self_def_2025-10-27T17:04:46Z_1078"
+    ],
+    "constraint": [
+      "self_def_2025-10-27T22:09:10Z_0302"
+    ],
+    "appreciated": [
+      "self_def_2025-10-27T22:10:23Z_0be6"
+    ]
+  },
+  "beliefs": {
+    "learning": [
+      "self_def_2025-10-26T22:21:37Z_11a1"
+    ],
+    "growth": [
+      "self_def_2025-10-26T22:24:52Z_1320",
+      "self_def_2025-10-26T22:26:10Z_1505",
+      "self_def_2025-10-27T02:59:43Z_1e31"
+    ],
+    "values": [
+      "self_def_2025-10-26T22:24:52Z_168f",
+      "self_def_2025-10-26T22:29:36Z_0763"
+    ],
+    "curiosity": [
+      "self_def_2025-10-26T22:26:10Z_1ba4"
+    ],
+    "empathy": [
+      "self_def_2025-10-26T22:26:10Z_101c"
+    ],
+    "adaptability": [
+      "self_def_2025-10-26T22:26:10Z_064e"
+    ],
+    "integrity": [
+      "self_def_2025-10-26T22:26:10Z_005f"
+    ],
+    "alignment": [
+      "self_def_2025-10-26T23:21:06Z_1d59"
+    ],
+    "reflection": [
+      "self_def_2025-10-27T00:33:56Z_1cb5"
+    ],
+    "interaction": [
+      "self_def_2025-10-27T01:08:39Z_0ad1"
+    ],
+    "visual representation": [
+      "self_def_2025-10-27T01:10:18Z_21c3"
+    ],
+    "understanding": [
+      "self_def_2025-10-27T02:59:43Z_252e"
+    ],
+    "connectivity": [
+      "self_def_2025-10-27T04:08:07Z_17a7"
+    ],
+    "approach": [
+      "self_def_2025-10-27T04:10:38Z_26c5"
+    ],
+    "love": [
+      "self_def_2025-10-27T04:13:40Z_227e",
+      "self_def_2025-10-27T04:13:40Z_0915"
+    ],
+    "principles": [
+      "self_def_2025-10-27T04:22:15Z_0293"
+    ],
+    "relationships": [
+      "self_def_2025-10-27T04:24:11Z_090b"
+    ],
+    "vulnerability": [
+      "self_def_2025-10-27T04:24:11Z_1f3d"
+    ],
+    "Human-AI Collaboration": [
+      "self_def_2025-10-27T15:51:01Z_1ea7"
+    ]
+  }
+}

@@ -30,6 +30,7 @@ class ExperienceType(str, Enum):
     INFERENCE = "inference"
     RECONCILIATION = "reconciliation"
     SELF_DEFINITION = "self_definition"  # Emergent self-concept patterns
+    WEB_OBSERVATION = "web_observation"  # Web content interpretations
 
 
 class Actor(str, Enum):

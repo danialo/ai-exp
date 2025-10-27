@@ -43,6 +43,9 @@ from src.services.persona_service import PersonaService
 from src.services.task_scheduler import create_task_scheduler, TaskDefinition, TaskType, TaskSchedule
 from src.services.belief_system import create_belief_system
 from src.services.self_knowledge_index import create_self_knowledge_index
+from src.services.web_search_service import create_web_search_service
+from src.services.url_fetcher_service import create_url_fetcher_service
+from src.services.web_interpretation_service import create_web_interpretation_service
 
 
 # Initialize FastAPI app
@@ -289,6 +292,26 @@ if settings.PERSONA_MODE_ENABLED and llm_service and raw_store:
         self_aware_prompt_builder.belief_system = belief_system
         logger.info("Belief system connected to prompt builder")
 
+# Initialize web services for search and browsing
+web_search_service = None
+url_fetcher_service = None
+web_interpretation_service = None
+
+if llm_service:
+    try:
+        web_search_service = create_web_search_service()
+        url_fetcher_service = create_url_fetcher_service()
+        web_interpretation_service = create_web_interpretation_service(llm_service)
+
+        if web_search_service.is_available():
+            logger.info("Web search service initialized")
+        else:
+            logger.warning("Web search service initialized but no API key configured")
+
+        logger.info("URL fetcher and interpretation services initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize web services: {e}")
+
 # Initialize persona system if enabled
 persona_service = None
 if settings.PERSONA_MODE_ENABLED and llm_service:
@@ -314,6 +337,9 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         logit_bias_strength=settings.LOGIT_BIAS_STRENGTH,
         auto_rewrite=settings.AUTO_REWRITE_METATALK,
         belief_system=belief_system,  # Pass belief system for ontological grounding
+        web_search_service=web_search_service,  # Enable web search
+        url_fetcher_service=url_fetcher_service,  # Enable URL browsing
+        web_interpretation_service=web_interpretation_service,  # Enable content interpretation
     )
 
 
@@ -694,6 +720,11 @@ async def start_session_endpoint():
     global current_session_id
     session = session_tracker.start_session(user_id="default_user")
     current_session_id = session.id
+
+    # Reset web operation limits for new session
+    if persona_service:
+        persona_service.reset_web_limits()
+
     return {
         "session_id": session.id,
         "start_time": session.start_time.isoformat(),
@@ -1049,6 +1080,10 @@ async def persona_chat(request: ChatRequest):
                 enable_anti_metatalk=settings.ANTI_METATALK_ENABLED,
                 logit_bias_strength=settings.LOGIT_BIAS_STRENGTH,
                 auto_rewrite=settings.AUTO_REWRITE_METATALK,
+                belief_system=belief_system,
+                web_search_service=web_search_service,
+                url_fetcher_service=url_fetcher_service,
+                web_interpretation_service=web_interpretation_service,
             )
 
         # Generate persona response with emotional co-analysis and memory retrieval

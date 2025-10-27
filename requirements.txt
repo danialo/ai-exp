@@ -15,6 +15,13 @@ numpy==2.2.0
 # LLM providers
 openai==1.58.1
 
+# Web search and browsing
+google-search-results==2.4.2
+playwright==1.49.0
+beautifulsoup4==4.12.3
+httpx==0.28.1
+requests==2.32.3
+
 # Testing
 pytest==8.3.4
 pytest-asyncio==0.24.0

@@ -24,6 +24,7 @@ from src.services.anti_metatalk import (
     create_metatalk_rewriter,
 )
 from src.services.persona_config import create_persona_config_loader
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,9 @@ class PersonaService:
         logit_bias_strength: float = -100,
         auto_rewrite: bool = True,
         belief_system=None,
+        web_search_service=None,
+        url_fetcher_service=None,
+        web_interpretation_service=None,
     ):
         """
         Initialize persona service.
@@ -52,6 +56,9 @@ class PersonaService:
             logit_bias_strength: Strength of logit bias for token suppression
             auto_rewrite: Automatically rewrite responses containing meta-talk
             belief_system: Optional belief system for ontological grounding
+            web_search_service: Optional web search service
+            url_fetcher_service: Optional URL fetcher service
+            web_interpretation_service: Optional web interpretation service
         """
         self.llm = llm_service
         self.prompt_builder = PersonaPromptBuilder(persona_space_path, belief_system=belief_system)
@@ -61,6 +68,15 @@ class PersonaService:
         self.persona_space = Path(persona_space_path)
         self.action_log_path = self.persona_space / "meta" / "actions_log.json"
         self.config_loader = create_persona_config_loader(persona_space_path)
+
+        # Web services
+        self.web_search_service = web_search_service
+        self.url_fetcher_service = url_fetcher_service
+        self.web_interpretation_service = web_interpretation_service
+
+        # Rate limiting for web operations (per conversation)
+        self.search_count = 0
+        self.url_fetch_count = 0
 
         # Anti-meta-talk system
         self.enable_anti_metatalk = enable_anti_metatalk
@@ -278,6 +294,12 @@ class PersonaService:
         """Allow external access to list persona files."""
         return self.file_manager.list_files(directory)
 
+    def reset_web_limits(self):
+        """Reset web operation counters for a new conversation."""
+        self.search_count = 0
+        self.url_fetch_count = 0
+        logger.info("Web operation limits reset")
+
     def _get_tool_definitions(self) -> List[Dict[str, Any]]:
         """Get OpenAI tool definitions for persona file operations.
 
@@ -398,6 +420,49 @@ class PersonaService:
                         "required": ["command"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_web",
+                    "description": "Search the web for current information, facts, or knowledge you don't have. Use this when you need up-to-date information, news, specific facts, or when your knowledge might be outdated. Returns search results with titles, URLs, and snippets.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query (e.g., 'latest AI breakthroughs 2025', 'what is quantum computing')"
+                            },
+                            "num_results": {
+                                "type": "integer",
+                                "description": "Number of results to return (default: 5, max: 10)",
+                                "default": 5
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "browse_url",
+                    "description": "Visit a URL and read its content with full understanding. The content will be interpreted from your perspective and stored in your memory. Use this to deeply understand a web page, article, or resource.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "URL to visit and read"
+                            },
+                            "context": {
+                                "type": "string",
+                                "description": "Optional context about why you're visiting this URL (helps with interpretation)"
+                            }
+                        },
+                        "required": ["url"]
+                    }
+                }
             }
         ]
 
@@ -466,6 +531,79 @@ class PersonaService:
                         result += f"\nSTDOUT:\n{exec_result['stdout']}\n"
                     if exec_result.get("stderr"):
                         result += f"\nSTDERR:\n{exec_result['stderr']}\n"
+
+            elif tool_name == "search_web":
+                if not self.web_search_service:
+                    result = "Search functionality not available (web_search_service not configured)"
+                elif self.search_count >= settings.MAX_SEARCHES_PER_CONVERSATION:
+                    result = f"Search limit reached ({settings.MAX_SEARCHES_PER_CONVERSATION} searches per conversation)"
+                else:
+                    query = arguments.get("query")
+                    num_results = min(arguments.get("num_results", 5), 10)  # Cap at 10
+
+                    try:
+                        search_results = self.web_search_service.search(query, num_results)
+                        self.search_count += 1
+
+                        # Format results for persona
+                        result = f"Found {len(search_results)} results for '{query}':\n\n"
+                        for sr in search_results:
+                            result += f"{sr.position}. {sr.title}\n"
+                            result += f"   URL: {sr.url}\n"
+                            result += f"   {sr.snippet}\n\n"
+
+                        result += f"(Search {self.search_count}/{settings.MAX_SEARCHES_PER_CONVERSATION})"
+
+                    except Exception as e:
+                        result = f"Search failed: {str(e)}"
+                        logger.error(f"Search error: {e}")
+
+            elif tool_name == "browse_url":
+                if not self.url_fetcher_service or not self.web_interpretation_service:
+                    result = "URL browsing not available (services not configured)"
+                elif self.url_fetch_count >= settings.MAX_URL_FETCHES_PER_CONVERSATION:
+                    result = f"URL fetch limit reached ({settings.MAX_URL_FETCHES_PER_CONVERSATION} fetches per conversation)"
+                else:
+                    url = arguments.get("url")
+                    context = arguments.get("context", "")
+
+                    try:
+                        # Fetch the URL
+                        fetched = self.url_fetcher_service.fetch_url(url)
+                        self.url_fetch_count += 1
+
+                        if not fetched.success:
+                            result = f"Failed to fetch {url}: {fetched.error_message}"
+                        else:
+                            # Interpret the content
+                            interpretation = self.web_interpretation_service.interpret_content(
+                                url=url,
+                                title=fetched.title,
+                                content=fetched.main_content or fetched.text_content,
+                                user_context=context,
+                                query_context=None,
+                            )
+
+                            # Format interpretation for persona
+                            result = f"Content from: {fetched.title}\n"
+                            result += f"URL: {url}\n\n"
+                            result += f"YOUR INTERPRETATION:\n{interpretation.interpretation}\n\n"
+
+                            if interpretation.key_facts:
+                                result += "KEY FACTS:\n"
+                                for fact in interpretation.key_facts:
+                                    result += f"• {fact}\n"
+                                result += "\n"
+
+                            result += f"Emotional salience: {interpretation.emotional_salience}\n"
+                            result += f"Relevance: {interpretation.relevance_to_query}\n\n"
+                            result += f"(Fetch {self.url_fetch_count}/{settings.MAX_URL_FETCHES_PER_CONVERSATION})"
+
+                            # TODO: Store interpretation in memory as WEB_OBSERVATION
+
+                    except Exception as e:
+                        result = f"Error browsing {url}: {str(e)}"
+                        logger.error(f"Browse error: {e}")
 
             else:
                 result = f"Unknown tool: {tool_name}"

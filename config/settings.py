@@ -37,6 +37,14 @@ class Settings:
     OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY")
     VENICEAI_API_KEY: str | None = os.getenv("VENICEAI_API_KEY")
 
+    # Web search and browsing configuration
+    SERP_API_KEY: str | None = os.getenv("SERPAPI_API_KEY")
+    BROWSER_HEADLESS: bool = os.getenv("BROWSER_HEADLESS", "true").lower() == "true"
+    BROWSER_TIMEOUT_MS: int = int(os.getenv("BROWSER_TIMEOUT_MS", "30000"))  # 30 seconds
+    MAX_SEARCHES_PER_CONVERSATION: int = int(os.getenv("MAX_SEARCHES_PER_CONVERSATION", "5"))
+    MAX_URL_FETCHES_PER_CONVERSATION: int = int(os.getenv("MAX_URL_FETCHES_PER_CONVERSATION", "3"))
+    WEB_CONTENT_MAX_LENGTH: int = int(os.getenv("WEB_CONTENT_MAX_LENGTH", "10000"))  # chars for interpretation
+
     # LLM configuration
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "venice")  # "openai" or "venice"
     LLM_BASE_URL: str | None = os.getenv("LLM_BASE_URL", "https://api.venice.ai/api/v1")
