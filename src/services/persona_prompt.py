@@ -390,6 +390,11 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
         if memories and len(memories) > 0:
             memory_context = self._format_memories(memories)
 
+        # Format conversation history if provided
+        conversation_context = ""
+        if conversation_history and len(conversation_history) > 0:
+            conversation_context = self._format_conversation_history(conversation_history)
+
         # Build the full prompt - beliefs frame everything
         full_prompt = f"""{beliefs_section}
 
@@ -404,7 +409,7 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
 {context}
 
 ---
-{memory_context}
+{memory_context}{conversation_context}
 ## Current Interaction
 
 User: {user_message}
@@ -485,6 +490,36 @@ Example of citing memories: "I remember when you asked about X (Memory 2), and I
             lines.append(f"\n### Memory {i} ({timestamp} - {relevance} relevant)")
             lines.append(f"**What the user said**: {mem.prompt_text}")
             lines.append(f"**How you responded**: {mem.response_text}")
+
+        lines.append("\n---\n")
+        return "\n".join(lines)
+
+    def _format_conversation_history(self, conversation_history: List[Dict]) -> str:
+        """Format recent conversation history for immediate context.
+
+        This provides the last few exchanges in the current conversation session,
+        giving immediate context that complements the retrieved memories.
+
+        Args:
+            conversation_history: List of {"role": "user"|"assistant", "content": "..."}
+
+        Returns:
+            Formatted conversation history section
+        """
+        if not conversation_history:
+            return ""
+
+        lines = ["## RECENT CONVERSATION HISTORY\n"]
+        lines.append("**This is your immediate conversation context** - the last few exchanges in this session:\n")
+
+        for exchange in conversation_history:
+            role = exchange.get("role", "unknown")
+            content = exchange.get("content", "")
+
+            if role == "user":
+                lines.append(f"\n**User**: {content}")
+            elif role == "assistant":
+                lines.append(f"**You**: {content}")
 
         lines.append("\n---\n")
         return "\n".join(lines)
