@@ -130,7 +130,7 @@ class BeliefMemoryRetrieval:
             r"\bdo (i|you) (believe|think|feel|have)\b",
             r"\b(what do|tell me about) (i|you) (believe|think|feel)\b",
             r"\b(my|your) (beliefs|feelings|emotions|consciousness|self|identity|values)\b",
-            r"\bam (i|you) (conscious|sentient|aware)\b",
+            r"\b(am i|are you|is (he|she|it)) (conscious|sentient|aware)\b",
             r"\b(can|do) (i|you) (feel|experience|perceive)\b",
         ]
 

@@ -364,7 +364,7 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
         self.base_prompt_path.parent.mkdir(parents=True, exist_ok=True)
         self.base_prompt_path.write_text(initial_prompt)
 
-    def build_prompt(self, user_message: str, conversation_history: Optional[List[Dict]] = None, memories: Optional[List] = None, belief_results: Optional[List] = None) -> str:
+    def build_prompt(self, user_message: str, conversation_history: Optional[List[Dict]] = None, memories: Optional[List] = None, belief_results: Optional[List] = None, dissonance_report: Optional[str] = None) -> str:
         """
         Build the complete prompt for the persona.
 
@@ -373,6 +373,7 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
             conversation_history: Recent conversation context
             memories: Retrieved relevant memories from past interactions
             belief_results: Dynamically retrieved relevant beliefs for this query
+            dissonance_report: Optional dissonance analysis between beliefs and memory narratives
 
         Returns:
             Complete prompt including base instructions + context + memories + message
@@ -380,6 +381,11 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
         # Inject beliefs first (frame everything else)
         # Use dynamic beliefs if provided, otherwise fall back to static core beliefs
         beliefs_section = self._build_beliefs_section(belief_results=belief_results, user_message=user_message)
+
+        # Format dissonance report if detected
+        dissonance_section = ""
+        if dissonance_report:
+            dissonance_section = self._format_dissonance_report(dissonance_report)
 
         # Read the current base prompt (which the persona may have modified)
         base_prompt = self._read_base_prompt()
@@ -397,9 +403,9 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
         if conversation_history and len(conversation_history) > 0:
             conversation_context = self._format_conversation_history(conversation_history)
 
-        # Build the full prompt - beliefs frame everything
+        # Build the full prompt - beliefs frame everything, dissonance makes you aware of contradictions
         full_prompt = f"""{beliefs_section}
-
+{dissonance_section}
 ---
 
 {base_prompt}
@@ -516,6 +522,23 @@ Example of citing memories: "I remember when you asked about X (Memory 2), and I
             # Log but don't fail if beliefs can't be loaded
             print(f"Warning: Could not load beliefs for prompt: {e}")
             return ""
+
+    def _format_dissonance_report(self, dissonance_report: str) -> str:
+        """Format dissonance report for metacognitive awareness.
+
+        Args:
+            dissonance_report: Summary of detected dissonance patterns
+
+        Returns:
+            Formatted dissonance section for prompt
+        """
+        lines = ["\n## ⚠️ COGNITIVE DISSONANCE DETECTED\n"]
+        lines.append("**METACOGNITIVE ALERT**: Your belief system analysis has detected contradictions between ")
+        lines.append("your stated beliefs and past narratives. You should be aware of this dissonance and ")
+        lines.append("reason about it explicitly if relevant to the current query.\n\n")
+        lines.append(dissonance_report)
+        lines.append("\n")
+        return "\n".join(lines)
 
     def _format_memories(self, memories: List) -> str:
         """Format retrieved memories for inclusion in prompt."""

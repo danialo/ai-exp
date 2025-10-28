@@ -45,6 +45,7 @@ class PersonaService:
         belief_embedder=None,
         belief_memory_retrieval=None,
         belief_grounded_reasoner=None,
+        belief_consistency_checker=None,
         web_search_service=None,
         url_fetcher_service=None,
         web_interpretation_service=None,
@@ -64,6 +65,7 @@ class PersonaService:
             belief_embedder: Optional belief embedder for adding new beliefs
             belief_memory_retrieval: Optional belief-memory retrieval service
             belief_grounded_reasoner: Optional belief-grounded reasoning service
+            belief_consistency_checker: Optional consistency checker for dissonance detection
             web_search_service: Optional web search service
             url_fetcher_service: Optional URL fetcher service
             web_interpretation_service: Optional web interpretation service
@@ -83,6 +85,7 @@ class PersonaService:
         self.belief_embedder = belief_embedder
         self.belief_memory_retrieval = belief_memory_retrieval
         self.belief_grounded_reasoner = belief_grounded_reasoner
+        self.belief_consistency_checker = belief_consistency_checker
 
         # Web services
         self.web_search_service = web_search_service
@@ -155,6 +158,23 @@ class PersonaService:
                     )
                     logger.info(f"Retrieved {len(belief_results)} beliefs and {len(memories)} memories for persona")
                     print(f"🧠 Retrieved {len(belief_results)} beliefs + {len(memories)} memories for context")
+
+                    # Check for consistency/dissonance if we have beliefs AND memories
+                    dissonance_report = None
+                    if belief_results and memories and self.belief_consistency_checker:
+                        try:
+                            consistency_report = self.belief_consistency_checker.check_consistency(
+                                query=user_message,
+                                beliefs=belief_results,
+                                memories=memories,
+                            )
+                            if consistency_report.dissonance_patterns:
+                                dissonance_report = consistency_report.summary
+                                logger.info(f"Detected {len(consistency_report.dissonance_patterns)} dissonance patterns")
+                                print(f"⚠️ Dissonance detected: {len(consistency_report.dissonance_patterns)} patterns")
+                        except Exception as e:
+                            logger.error(f"Failed to check consistency: {e}")
+
                 # Fallback to regular memory retrieval
                 elif self.retrieval_service:
                     memories = self.retrieval_service.retrieve_similar(
@@ -166,12 +186,14 @@ class PersonaService:
             except Exception as e:
                 logger.error(f"Failed to retrieve memories: {e}")
 
-        # Build the persona prompt with current context, memories, and dynamic beliefs
+        # Build the persona prompt with current context, memories, dynamic beliefs, and dissonance awareness
+        dissonance_report = dissonance_report if 'dissonance_report' in locals() else None
         full_prompt = self.prompt_builder.build_prompt(
             user_message,
             conversation_history=conversation_history,
             memories=memories,
-            belief_results=belief_results if belief_results else None
+            belief_results=belief_results if belief_results else None,
+            dissonance_report=dissonance_report
         )
 
         # Log prompt stats for visibility (not full content to avoid clutter)

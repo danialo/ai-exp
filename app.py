@@ -301,6 +301,7 @@ belief_vector_store = None
 belief_embedder = None
 belief_memory_retrieval = None
 belief_grounded_reasoner = None
+belief_consistency_checker = None
 
 if settings.PERSONA_MODE_ENABLED and belief_system and embedding_provider:
     try:
@@ -308,6 +309,7 @@ if settings.PERSONA_MODE_ENABLED and belief_system and embedding_provider:
         from src.services.belief_embedder import create_belief_embedder
         from src.services.belief_memory_retrieval import create_belief_memory_retrieval
         from src.services.belief_grounded_reasoner import create_belief_grounded_reasoner
+        from src.services.belief_consistency_checker import create_belief_consistency_checker
 
         # Initialize belief vector store
         belief_vector_store = create_belief_vector_store(
@@ -343,6 +345,11 @@ if settings.PERSONA_MODE_ENABLED and belief_system and embedding_provider:
                 memory_weight=settings.MEMORY_WEIGHT,
             )
             logger.info(f"Belief-memory retrieval initialized with weights: {settings.BELIEF_MEMORY_WEIGHT} beliefs / {settings.MEMORY_WEIGHT} memories")
+
+        # Initialize belief consistency checker for dissonance detection
+        if llm_service:
+            belief_consistency_checker = create_belief_consistency_checker(llm_service)
+            logger.info("Belief consistency checker initialized for dissonance detection")
 
     except Exception as e:
         logger.error(f"Failed to initialize belief vector services: {e}")
@@ -398,6 +405,7 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         belief_embedder=belief_embedder,  # Enable adding new beliefs
         belief_memory_retrieval=belief_memory_retrieval,  # Enable weighted belief-memory retrieval
         belief_grounded_reasoner=belief_grounded_reasoner,  # Enable belief-grounded reasoning
+        belief_consistency_checker=belief_consistency_checker,  # Enable dissonance detection
         web_search_service=web_search_service,  # Enable web search
         url_fetcher_service=url_fetcher_service,  # Enable URL browsing
         web_interpretation_service=web_interpretation_service,  # Enable content interpretation
