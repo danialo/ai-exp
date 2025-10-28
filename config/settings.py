@@ -140,6 +140,14 @@ class Settings:
         "SELF_INDEX_PATH",
         str(PROJECT_ROOT / "data" / "vector_index_self"),
     )
+    BELIEFS_INDEX_PATH: str = os.getenv(
+        "BELIEFS_INDEX_PATH",
+        str(PROJECT_ROOT / "data" / "vector_index_beliefs"),
+    )
+
+    # Belief-memory retrieval configuration
+    BELIEF_MEMORY_WEIGHT: float = float(os.getenv("BELIEF_MEMORY_WEIGHT", "0.7"))  # Weight for beliefs in self-queries
+    MEMORY_WEIGHT: float = float(os.getenv("MEMORY_WEIGHT", "0.3"))  # Weight for memories in self-queries
 
     # Self-concept configuration
     SELF_EXTRACTION_FREQUENCY: int = int(os.getenv("SELF_EXTRACTION_FREQUENCY", "10"))  # After N narratives
@@ -173,6 +181,7 @@ class Settings:
         Path(cls.SHORT_TERM_INDEX_PATH).mkdir(parents=True, exist_ok=True)
         Path(cls.LONG_TERM_INDEX_PATH).mkdir(parents=True, exist_ok=True)
         Path(cls.SELF_INDEX_PATH).mkdir(parents=True, exist_ok=True)
+        Path(cls.BELIEFS_INDEX_PATH).mkdir(parents=True, exist_ok=True)
         if cls.PERSONA_MODE_ENABLED:
             Path(cls.PERSONA_SPACE_PATH).mkdir(parents=True, exist_ok=True)
 
