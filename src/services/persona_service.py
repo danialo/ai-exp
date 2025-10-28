@@ -140,7 +140,11 @@ class PersonaService:
                 logger.error(f"Failed to retrieve memories: {e}")
 
         # Build the persona prompt with current context and memories
-        full_prompt = self.prompt_builder.build_prompt(user_message, memories=memories)
+        full_prompt = self.prompt_builder.build_prompt(
+            user_message,
+            conversation_history=conversation_history,
+            memories=memories
+        )
 
         # Log prompt stats for visibility (not full content to avoid clutter)
         prompt_lines = full_prompt.count('\n')
