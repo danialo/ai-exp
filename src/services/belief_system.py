@@ -100,7 +100,7 @@ class BeliefSystem:
         self.llm_service = llm_service
         self.min_evidence_threshold = min_evidence_threshold
 
-        self.beliefs_file = self.persona_space / "beliefs.json"
+        self.beliefs_file = self.persona_space / "identity" / "beliefs.json"
         self.beliefs_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize beliefs file with core beliefs if it doesn't exist
