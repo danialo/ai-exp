@@ -41,6 +41,11 @@ class Settings:
     SERP_API_KEY: str | None = os.getenv("SERPAPI_API_KEY")
     BROWSER_HEADLESS: bool = os.getenv("BROWSER_HEADLESS", "true").lower() == "true"
     BROWSER_TIMEOUT_MS: int = int(os.getenv("BROWSER_TIMEOUT_MS", "30000"))  # 30 seconds
+    BROWSER_SCREENSHOTS_ENABLED: bool = os.getenv("BROWSER_SCREENSHOTS_ENABLED", "false").lower() == "true"
+    BROWSER_SCREENSHOTS_PATH: str = os.getenv(
+        "BROWSER_SCREENSHOTS_PATH",
+        str(PROJECT_ROOT / "persona_space" / "logs" / "screenshots"),
+    )
     MAX_SEARCHES_PER_CONVERSATION: int = int(os.getenv("MAX_SEARCHES_PER_CONVERSATION", "5"))
     MAX_URL_FETCHES_PER_CONVERSATION: int = int(os.getenv("MAX_URL_FETCHES_PER_CONVERSATION", "3"))
     WEB_CONTENT_MAX_LENGTH: int = int(os.getenv("WEB_CONTENT_MAX_LENGTH", "10000"))  # chars for interpretation

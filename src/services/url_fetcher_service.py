@@ -1,6 +1,7 @@
 """URL fetching service using Playwright for browser automation.
 
 Handles fetching web pages with full JavaScript support.
+Uses trafilatura for intelligent content extraction.
 """
 
 import logging
@@ -8,10 +9,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import asyncio
 
 from playwright.sync_api import sync_playwright, Browser, Page, TimeoutError as PlaywrightTimeout
 from bs4 import BeautifulSoup
+import trafilatura
 
 from config.settings import settings
 
@@ -32,6 +35,7 @@ class FetchedContent:
     timestamp: datetime
     success: bool
     error_message: Optional[str] = None
+    screenshot_path: Optional[str] = None  # Path to screenshot if captured
 
 
 class URLFetcherService:
@@ -41,17 +45,28 @@ class URLFetcherService:
         self,
         headless: bool = True,
         timeout_ms: int = 30000,
+        capture_screenshots: bool = False,
+        screenshots_dir: Optional[Path] = None,
     ):
         """Initialize the URL fetcher.
 
         Args:
             headless: Run browser in headless mode (default: True)
             timeout_ms: Page load timeout in milliseconds (default: 30000)
+            capture_screenshots: Whether to capture screenshots (default: False)
+            screenshots_dir: Directory to save screenshots (default: from settings)
         """
         self.headless = headless if headless is not None else settings.BROWSER_HEADLESS
         self.timeout_ms = timeout_ms if timeout_ms is not None else settings.BROWSER_TIMEOUT_MS
+        self.capture_screenshots = capture_screenshots if capture_screenshots is not None else settings.BROWSER_SCREENSHOTS_ENABLED
+        self.screenshots_dir = screenshots_dir or Path(settings.BROWSER_SCREENSHOTS_PATH)
         self._playwright = None
         self._browser: Optional[Browser] = None
+
+        # Create screenshots directory if needed
+        if self.capture_screenshots:
+            self.screenshots_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Screenshots enabled - saving to {self.screenshots_dir}")
 
     def _ensure_browser(self):
         """Ensure browser is initialized."""
@@ -60,44 +75,40 @@ class URLFetcherService:
             self._browser = self._playwright.chromium.launch(headless=self.headless)
             logger.info(f"Browser launched (headless={self.headless})")
 
-    def _extract_main_content(self, soup: BeautifulSoup) -> str:
-        """Extract main content from HTML.
+    def _extract_main_content(self, html: str, url: str) -> str:
+        """Extract main content from HTML using trafilatura.
 
         Args:
-            soup: BeautifulSoup parsed HTML
+            html: Raw HTML content
+            url: URL of the page (for context)
 
         Returns:
             Extracted main content text
         """
-        # Try common article/main content selectors
-        main_selectors = [
-            "article",
-            "main",
-            '[role="main"]',
-            ".article-content",
-            ".post-content",
-            ".entry-content",
-            "#content",
-        ]
+        # Use trafilatura for intelligent content extraction
+        # It automatically removes ads, navigation, footers, etc.
+        extracted = trafilatura.extract(
+            html,
+            url=url,
+            include_comments=False,
+            include_tables=True,
+            no_fallback=False,  # Use fallback methods if needed
+            favor_precision=False,  # Favor recall to get more content
+        )
 
-        for selector in main_selectors:
-            main_element = soup.select_one(selector)
-            if main_element:
-                # Remove script, style, nav, footer
-                for tag in main_element.find_all(["script", "style", "nav", "footer", "aside"]):
-                    tag.decompose()
-                text = main_element.get_text(separator="\n", strip=True)
-                if len(text) > 100:  # Ensure meaningful content
-                    return text
+        if extracted and len(extracted) > 100:
+            return extracted
 
-        # Fallback: return body text
+        # Fallback to basic text extraction if trafilatura fails
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup.find_all(["script", "style", "nav", "footer", "aside", "header"]):
+            tag.decompose()
+
         body = soup.find("body")
         if body:
-            for tag in body.find_all(["script", "style", "nav", "footer", "aside", "header"]):
-                tag.decompose()
             return body.get_text(separator="\n", strip=True)
 
-        return ""
+        return soup.get_text(separator="\n", strip=True)
 
     def _fetch_url_simple(self, url: str, timestamp: datetime) -> FetchedContent:
         """Fetch URL using simple HTTP request (no JavaScript).
@@ -118,7 +129,8 @@ class URLFetcherService:
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
 
-            soup = BeautifulSoup(response.text, 'html.parser')
+            html = response.text
+            soup = BeautifulSoup(html, 'html.parser')
 
             # Get title
             title_tag = soup.find('title')
@@ -127,8 +139,8 @@ class URLFetcherService:
             # Get text content
             text_content = soup.get_text(separator="\n", strip=True)
 
-            # Extract main content
-            main_content = self._extract_main_content(soup)
+            # Extract main content using trafilatura
+            main_content = self._extract_main_content(html, url)
 
             # Limit content length
             max_length = settings.WEB_CONTENT_MAX_LENGTH
@@ -212,6 +224,21 @@ class URLFetcherService:
                 # Get page title
                 title = page.title()
 
+                # Capture screenshot if enabled
+                screenshot_path = None
+                if self.capture_screenshots:
+                    try:
+                        timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S")
+                        # Sanitize URL for filename
+                        safe_url = url.replace("://", "_").replace("/", "_")[:50]
+                        screenshot_filename = f"{timestamp_str}_{safe_url}.png"
+                        screenshot_path = str(self.screenshots_dir / screenshot_filename)
+                        page.screenshot(path=screenshot_path, full_page=False)
+                        logger.info(f"Screenshot captured: {screenshot_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to capture screenshot: {e}")
+                        screenshot_path = None
+
                 # Get HTML content
                 html = page.content()
                 soup = BeautifulSoup(html, "html.parser")
@@ -219,8 +246,8 @@ class URLFetcherService:
                 # Extract text content
                 text_content = soup.get_text(separator="\n", strip=True)
 
-                # Extract main content
-                main_content = self._extract_main_content(soup)
+                # Extract main content using trafilatura
+                main_content = self._extract_main_content(html, url)
 
                 # Limit content length
                 max_length = settings.WEB_CONTENT_MAX_LENGTH
@@ -238,6 +265,7 @@ class URLFetcherService:
                     main_content=main_content,
                     timestamp=timestamp,
                     success=True,
+                    screenshot_path=screenshot_path,
                 )
 
             finally:
@@ -272,7 +300,8 @@ class URLFetcherService:
     def fetch_url(self, url: str) -> FetchedContent:
         """Fetch content from a URL.
 
-        Tries simple HTTP first (fast, no dependencies), falls back to Playwright if needed.
+        If screenshots are enabled, always uses Playwright.
+        Otherwise, tries simple HTTP first, falls back to Playwright if needed.
 
         Args:
             url: URL to fetch
@@ -282,6 +311,24 @@ class URLFetcherService:
         """
         logger.info(f"Fetching URL: {url}")
         timestamp = datetime.now()
+
+        # If screenshots enabled, must use Playwright
+        if self.capture_screenshots:
+            logger.info("Screenshots enabled - using Playwright")
+            # Run sync Playwright in thread pool to avoid asyncio conflicts
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # We're in an async context, use thread pool
+                    import concurrent.futures
+                    future = _thread_pool.submit(self._fetch_url_sync, url, timestamp)
+                    return future.result(timeout=self.timeout_ms / 1000 + 10)
+            except RuntimeError:
+                # No event loop, we can run directly
+                pass
+
+            # Fallback to direct call
+            return self._fetch_url_sync(url, timestamp)
 
         # Try simple HTTP first (works for most sites, no system deps needed)
         result = self._fetch_url_simple(url, timestamp)
@@ -335,4 +382,6 @@ def create_url_fetcher_service() -> URLFetcherService:
     return URLFetcherService(
         headless=settings.BROWSER_HEADLESS,
         timeout_ms=settings.BROWSER_TIMEOUT_MS,
+        capture_screenshots=settings.BROWSER_SCREENSHOTS_ENABLED,
+        screenshots_dir=Path(settings.BROWSER_SCREENSHOTS_PATH),
     )

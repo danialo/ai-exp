@@ -582,11 +582,15 @@ class PersonaService:
                                 content=fetched.main_content or fetched.text_content,
                                 user_context=context,
                                 query_context=None,
+                                screenshot_path=fetched.screenshot_path,
                             )
 
                             # Format interpretation for persona
                             result = f"Content from: {fetched.title}\n"
-                            result += f"URL: {url}\n\n"
+                            result += f"URL: {url}\n"
+                            if fetched.screenshot_path:
+                                result += f"Screenshot saved: {fetched.screenshot_path}\n"
+                            result += "\n"
                             result += f"YOUR INTERPRETATION:\n{interpretation.interpretation}\n\n"
 
                             if interpretation.key_facts:

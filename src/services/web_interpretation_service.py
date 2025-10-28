@@ -1,6 +1,7 @@
 """Web content interpretation service.
 
 Uses LLM to analyze and summarize web content for Astra's understanding.
+Content is pre-cleaned using trafilatura for intelligent extraction.
 """
 
 import logging
@@ -24,6 +25,7 @@ class WebInterpretation:
     emotional_salience: str  # How content relates to Astra emotionally
     relevance_to_query: str  # How it relates to why it was fetched
     timestamp: datetime
+    screenshot_available: bool = False  # Whether a screenshot was captured
 
 
 class WebInterpretationService:
@@ -44,15 +46,17 @@ class WebInterpretationService:
         content: str,
         user_context: Optional[str] = None,
         query_context: Optional[str] = None,
+        screenshot_path: Optional[str] = None,
     ) -> WebInterpretation:
         """Interpret web content from Astra's perspective.
 
         Args:
             url: Source URL
             title: Page title
-            content: Main content text
+            content: Main content text (pre-cleaned by trafilatura)
             user_context: Optional context about why user wanted this
             query_context: Optional search query that led to this
+            screenshot_path: Optional path to screenshot of the page
 
         Returns:
             WebInterpretation object with Astra's understanding
@@ -65,6 +69,7 @@ class WebInterpretationService:
             content=content,
             user_context=user_context,
             query_context=query_context,
+            screenshot_path=screenshot_path,
         )
 
         try:
@@ -89,6 +94,7 @@ class WebInterpretationService:
                 emotional_salience=parts.get("emotional_salience", "neutral"),
                 relevance_to_query=parts.get("relevance", query_context or "general interest"),
                 timestamp=datetime.now(),
+                screenshot_available=screenshot_path is not None,
             )
 
             logger.info(f"Interpretation complete: {len(interpretation.interpretation)} chars")
@@ -113,10 +119,12 @@ class WebInterpretationService:
         content: str,
         user_context: Optional[str],
         query_context: Optional[str],
+        screenshot_path: Optional[str],
     ) -> str:
         """Build prompt for content interpretation."""
         prompt_parts = [
             "You are analyzing web content for your own understanding and memory.",
+            "The content has been intelligently extracted to focus on the main text.",
             "Read this content and provide your interpretation in this format:",
             "",
             "INTERPRETATION:",
@@ -142,6 +150,9 @@ class WebInterpretationService:
 
         if user_context:
             prompt_parts.append(f"User context: {user_context}")
+
+        if screenshot_path:
+            prompt_parts.append(f"Note: A screenshot was captured and saved at {screenshot_path}")
 
         prompt_parts.extend([
             "",
