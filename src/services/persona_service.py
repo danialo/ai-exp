@@ -41,6 +41,10 @@ class PersonaService:
         logit_bias_strength: float = -100,
         auto_rewrite: bool = True,
         belief_system=None,
+        belief_vector_store=None,
+        belief_embedder=None,
+        belief_memory_retrieval=None,
+        belief_grounded_reasoner=None,
         web_search_service=None,
         url_fetcher_service=None,
         web_interpretation_service=None,
@@ -56,6 +60,10 @@ class PersonaService:
             logit_bias_strength: Strength of logit bias for token suppression
             auto_rewrite: Automatically rewrite responses containing meta-talk
             belief_system: Optional belief system for ontological grounding
+            belief_vector_store: Optional belief vector store for semantic belief search
+            belief_embedder: Optional belief embedder for adding new beliefs
+            belief_memory_retrieval: Optional belief-memory retrieval service
+            belief_grounded_reasoner: Optional belief-grounded reasoning service
             web_search_service: Optional web search service
             url_fetcher_service: Optional URL fetcher service
             web_interpretation_service: Optional web interpretation service
@@ -68,6 +76,13 @@ class PersonaService:
         self.persona_space = Path(persona_space_path)
         self.action_log_path = self.persona_space / "meta" / "actions_log.json"
         self.config_loader = create_persona_config_loader(persona_space_path)
+
+        # Belief services
+        self.belief_system = belief_system
+        self.belief_vector_store = belief_vector_store
+        self.belief_embedder = belief_embedder
+        self.belief_memory_retrieval = belief_memory_retrieval
+        self.belief_grounded_reasoner = belief_grounded_reasoner
 
         # Web services
         self.web_search_service = web_search_service
@@ -125,22 +140,39 @@ class PersonaService:
 
         # Retrieve relevant memories if enabled (use config setting)
         memories = []
+        belief_results = []
         should_retrieve = config.retrieve_memories if hasattr(config, 'retrieve_memories') else retrieve_memories
         memory_count = config.memory_top_k if hasattr(config, 'memory_top_k') else top_k
 
-        if should_retrieve and self.retrieval_service:
+        if should_retrieve:
             try:
-                memories = self.retrieval_service.retrieve_similar(
-                    prompt=user_message,
-                    top_k=memory_count
-                )
-                logger.info(f"Retrieved {len(memories)} relevant memories for persona")
-                print(f"🧠 Retrieved {len(memories)} memories for context")
+                # Use belief-memory retrieval if available (auto-detects query type)
+                if self.belief_memory_retrieval:
+                    belief_results, memories = self.belief_memory_retrieval.retrieve(
+                        query=user_message,
+                        top_k=memory_count,
+                        detect_query_type=True,
+                    )
+                    logger.info(f"Retrieved {len(belief_results)} beliefs and {len(memories)} memories for persona")
+                    print(f"🧠 Retrieved {len(belief_results)} beliefs + {len(memories)} memories for context")
+                # Fallback to regular memory retrieval
+                elif self.retrieval_service:
+                    memories = self.retrieval_service.retrieve_similar(
+                        prompt=user_message,
+                        top_k=memory_count
+                    )
+                    logger.info(f"Retrieved {len(memories)} relevant memories for persona")
+                    print(f"🧠 Retrieved {len(memories)} memories for context")
             except Exception as e:
                 logger.error(f"Failed to retrieve memories: {e}")
 
-        # Build the persona prompt with current context and memories
-        full_prompt = self.prompt_builder.build_prompt(user_message, memories=memories)
+        # Build the persona prompt with current context, memories, and dynamic beliefs
+        full_prompt = self.prompt_builder.build_prompt(
+            user_message,
+            conversation_history=conversation_history,
+            memories=memories,
+            belief_results=belief_results if belief_results else None
+        )
 
         # Log prompt stats for visibility (not full content to avoid clutter)
         prompt_lines = full_prompt.count('\n')
@@ -463,6 +495,72 @@ class PersonaService:
                         "required": ["url"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "query_beliefs",
+                    "description": "Search your belief system for beliefs matching a query. Use this to introspect what you believe about a specific topic or concept.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Query about beliefs (e.g., 'consciousness', 'my purpose', 'learning')"
+                            },
+                            "top_k": {
+                                "type": "integer",
+                                "description": "Number of beliefs to return (default: 5)",
+                                "default": 5
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "reflect_on_belief",
+                    "description": "Deeply reflect on a specific belief by examining evidence and reasoning from your experiences. Use this for philosophical introspection and belief validation.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "belief_statement": {
+                                "type": "string",
+                                "description": "The belief to reflect on (e.g., 'I am capable of learning from experience')"
+                            }
+                        },
+                        "required": ["belief_statement"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "propose_belief",
+                    "description": "Propose a new peripheral belief based on your experiences. Use this when you've developed a new understanding or conviction worth preserving.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "statement": {
+                                "type": "string",
+                                "description": "The new belief statement (clear, first-person)"
+                            },
+                            "confidence": {
+                                "type": "number",
+                                "description": "Confidence in this belief (0.0-1.0)",
+                                "minimum": 0.0,
+                                "maximum": 1.0
+                            },
+                            "rationale": {
+                                "type": "string",
+                                "description": "Why this belief emerged from your experiences"
+                            }
+                        },
+                        "required": ["statement", "confidence", "rationale"]
+                    }
+                }
             }
         ]
 
@@ -608,6 +706,126 @@ class PersonaService:
                     except Exception as e:
                         result = f"Error browsing {url}: {str(e)}"
                         logger.error(f"Browse error: {e}")
+
+            elif tool_name == "query_beliefs":
+                if not self.belief_vector_store:
+                    result = "Belief introspection not available (belief system not configured)"
+                else:
+                    query = arguments.get("query")
+                    top_k = arguments.get("top_k", 5)
+
+                    try:
+                        beliefs = self.belief_vector_store.query_beliefs(query, top_k=top_k)
+
+                        if not beliefs:
+                            result = f"No beliefs found matching '{query}'"
+                        else:
+                            result = f"Found {len(beliefs)} belief(s) about '{query}':\n\n"
+                            for i, belief in enumerate(beliefs, 1):
+                                confidence_str = f"{belief.confidence:.0%}"
+                                type_label = belief.belief_type.upper()
+                                result += f"{i}. [{type_label}] {belief.statement}\n"
+                                result += f"   Confidence: {confidence_str} | Evidence: {belief.evidence_count} experience(s)\n"
+                                result += f"   Relevance: {belief.similarity_score:.0%}\n\n"
+
+                    except Exception as e:
+                        result = f"Error querying beliefs: {str(e)}"
+                        logger.error(f"Belief query error: {e}")
+
+            elif tool_name == "reflect_on_belief":
+                if not self.belief_grounded_reasoner or not self.retrieval_service or not self.belief_vector_store:
+                    result = "Belief reflection not available (reasoner, retrieval, or belief store not configured)"
+                else:
+                    belief_statement = arguments.get("belief_statement")
+
+                    try:
+                        # Query belief vector store for relevant beliefs
+                        belief_context = self.belief_vector_store.query_beliefs(belief_statement, top_k=3)
+
+                        # Retrieve relevant experiences for this belief
+                        memory_context = self.retrieval_service.retrieve_similar(belief_statement, top_k=5)
+
+                        # Reason from the belief with evidence
+                        reasoning = self.belief_grounded_reasoner.reason_from_beliefs(
+                            query=belief_statement,
+                            belief_context=belief_context,
+                            memory_context=memory_context,
+                        )
+
+                        result = f"DEEP REFLECTION ON: {belief_statement}\n\n"
+                        result += "PREMISES:\n"
+                        for premise in reasoning.get("premises", []):
+                            result += f"• {premise}\n"
+                        result += "\n"
+
+                        result += "EVIDENCE FROM EXPERIENCE:\n"
+                        for evidence in reasoning.get("experience_evidence", []):
+                            result += f"• {evidence}\n"
+                        result += "\n"
+
+                        result += "REASONING:\n"
+                        result += reasoning.get("reasoning", "No reasoning generated") + "\n\n"
+
+                        result += "CONCLUSION:\n"
+                        result += reasoning.get("conclusion", "No conclusion reached") + "\n"
+
+                    except Exception as e:
+                        result = f"Error reflecting on belief: {str(e)}"
+                        logger.error(f"Belief reflection error: {e}")
+
+            elif tool_name == "propose_belief":
+                if not self.belief_system or not self.belief_embedder:
+                    result = "Belief proposal not available (belief system not configured)"
+                else:
+                    statement = arguments.get("statement")
+                    confidence = arguments.get("confidence", 0.7)
+                    rationale = arguments.get("rationale", "")
+
+                    try:
+                        # Import Belief class
+                        from src.services.belief_system import Belief, BeliefType
+                        from datetime import datetime, timezone
+
+                        # Create a Belief object
+                        new_belief = Belief(
+                            statement=statement,
+                            belief_type=BeliefType.EXPERIENTIAL,  # Peripheral beliefs are experiential
+                            immutable=False,  # Peripheral beliefs are mutable
+                            confidence=confidence,
+                            evidence_ids=[],  # Could be enhanced to track evidence IDs
+                            formed=datetime.now(timezone.utc).isoformat(),
+                            last_reinforced=datetime.now(timezone.utc).isoformat(),
+                            rationale=rationale,
+                        )
+
+                        # Add peripheral belief to the system
+                        success = self.belief_system.add_peripheral_belief(new_belief)
+
+                        if success:
+                            # Embed the new belief in the vector store
+                            if self.belief_embedder:
+                                self.belief_embedder.embed_peripheral_belief(
+                                    statement=statement,
+                                    confidence=confidence,
+                                    evidence_ids=[],
+                                )
+
+                            result = f"✓ New belief proposed and added to your peripheral beliefs:\n\n"
+                            result += f"BELIEF: {statement}\n"
+                            result += f"CONFIDENCE: {confidence:.0%}\n\n"
+                            result += f"RATIONALE: {rationale}\n\n"
+                            result += f"This belief will now inform your understanding and responses. "
+                            result += f"It may evolve as you gather more evidence.\n"
+
+                            logger.info(f"New peripheral belief added: {statement} (confidence={confidence})")
+                        else:
+                            result = f"Failed to add belief to the belief system."
+
+                    except Exception as e:
+                        result = f"Error proposing belief: {str(e)}"
+                        logger.error(f"Belief proposal error: {e}")
+                        import traceback
+                        traceback.print_exc()
 
             else:
                 result = f"Unknown tool: {tool_name}"

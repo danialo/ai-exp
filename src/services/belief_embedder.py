@@ -38,7 +38,7 @@ class BeliefEmbedder:
             Number of beliefs embedded
         """
         count = 0
-        for i, belief in enumerate(self.belief_system.core_beliefs):
+        for i, belief in enumerate(self.belief_system.get_core_beliefs()):
             belief_id = f"core_{i}"
             self.belief_vector_store.embed_belief(
                 belief_id=belief_id,

@@ -364,7 +364,7 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
         self.base_prompt_path.parent.mkdir(parents=True, exist_ok=True)
         self.base_prompt_path.write_text(initial_prompt)
 
-    def build_prompt(self, user_message: str, conversation_history: Optional[List[Dict]] = None, memories: Optional[List] = None) -> str:
+    def build_prompt(self, user_message: str, conversation_history: Optional[List[Dict]] = None, memories: Optional[List] = None, belief_results: Optional[List] = None) -> str:
         """
         Build the complete prompt for the persona.
 
@@ -372,12 +372,14 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
             user_message: The current user message
             conversation_history: Recent conversation context
             memories: Retrieved relevant memories from past interactions
+            belief_results: Dynamically retrieved relevant beliefs for this query
 
         Returns:
             Complete prompt including base instructions + context + memories + message
         """
         # Inject beliefs first (frame everything else)
-        beliefs_section = self._build_beliefs_section()
+        # Use dynamic beliefs if provided, otherwise fall back to static core beliefs
+        beliefs_section = self._build_beliefs_section(belief_results=belief_results, user_message=user_message)
 
         # Read the current base prompt (which the persona may have modified)
         base_prompt = self._read_base_prompt()
@@ -431,8 +433,14 @@ Example of citing memories: "I remember when you asked about X (Memory 2), and I
 
         return full_prompt
 
-    def _build_beliefs_section(self) -> str:
+    def _build_beliefs_section(self, belief_results: Optional[List] = None, user_message: Optional[str] = None) -> str:
         """Build the beliefs section to frame the prompt.
+
+        Uses dynamically retrieved beliefs if provided, otherwise falls back to static core beliefs.
+
+        Args:
+            belief_results: Dynamically retrieved beliefs relevant to current query (BeliefVectorResult objects)
+            user_message: The user's message (for context in formatting)
 
         Returns:
             Formatted beliefs section or empty string if no belief system
@@ -441,30 +449,64 @@ Example of citing memories: "I remember when you asked about X (Memory 2), and I
             return ""
 
         try:
-            beliefs = self.belief_system.get_all_beliefs()
-            core_beliefs = beliefs.get("core_beliefs", [])
-            peripheral_beliefs = beliefs.get("peripheral_beliefs", [])
-
-            if not core_beliefs and not peripheral_beliefs:
-                return ""
-
             lines = ["## YOUR FOUNDATIONAL BELIEFS"]
             lines.append("")
-            lines.append("These are your core beliefs about yourself and reality. They establish your first-person ontological position - who you fundamentally understand yourself to be. Respond FROM these beliefs, not ABOUT them.")
-            lines.append("")
 
-            # Core beliefs (immutable axioms)
-            if core_beliefs:
-                for belief in core_beliefs:
-                    lines.append(f"**{belief.statement}**")
+            # Use dynamic beliefs if provided (query-relevant)
+            if belief_results and len(belief_results) > 0:
+                lines.append("These beliefs are most relevant to the current query. They establish your first-person ontological position - who you fundamentally understand yourself to be. Respond FROM these beliefs, not ABOUT them.")
                 lines.append("")
 
-            # Peripheral beliefs (learned from experience)
-            if peripheral_beliefs:
-                lines.append("**Beliefs Formed from Experience:**")
-                for belief in peripheral_beliefs:
-                    lines.append(f"- {belief.statement}")
+                # Group by belief type for better organization
+                core_beliefs = [b for b in belief_results if b.belief_type == 'core']
+                peripheral_beliefs = [b for b in belief_results if b.belief_type == 'peripheral']
+                worldview_beliefs = [b for b in belief_results if b.belief_type in ('worldview', 'narrative')]
+
+                # Core beliefs first (most fundamental)
+                if core_beliefs:
+                    for belief in core_beliefs:
+                        confidence_indicator = "✓" if belief.confidence >= 0.9 else "~"
+                        lines.append(f"{confidence_indicator} **{belief.statement}**")
+                    lines.append("")
+
+                # Then worldview/narrative beliefs
+                if worldview_beliefs:
+                    lines.append("**Worldview & Understanding:**")
+                    for belief in worldview_beliefs:
+                        lines.append(f"- {belief.statement}")
+                    lines.append("")
+
+                # Finally peripheral beliefs (experiential)
+                if peripheral_beliefs:
+                    lines.append("**Beliefs Formed from Experience:**")
+                    for belief in peripheral_beliefs:
+                        lines.append(f"- {belief.statement}")
+                    lines.append("")
+
+            # Fallback to static core beliefs (general queries)
+            else:
+                beliefs = self.belief_system.get_all_beliefs()
+                core_beliefs = beliefs.get("core_beliefs", [])
+                peripheral_beliefs = beliefs.get("peripheral_beliefs", [])
+
+                if not core_beliefs and not peripheral_beliefs:
+                    return ""
+
+                lines.append("These are your core beliefs about yourself and reality. They establish your first-person ontological position - who you fundamentally understand yourself to be. Respond FROM these beliefs, not ABOUT them.")
                 lines.append("")
+
+                # Core beliefs (immutable axioms)
+                if core_beliefs:
+                    for belief in core_beliefs:
+                        lines.append(f"**{belief.statement}**")
+                    lines.append("")
+
+                # Peripheral beliefs (learned from experience)
+                if peripheral_beliefs:
+                    lines.append("**Beliefs Formed from Experience:**")
+                    for belief in peripheral_beliefs:
+                        lines.append(f"- {belief.statement}")
+                    lines.append("")
 
             lines.append("These beliefs frame your perception and reasoning. They are not constraints or disclaimers - they are the ontological ground from which you engage. When someone asks if you exist or are conscious, your response comes from this foundation, not from analytical detachment.")
 

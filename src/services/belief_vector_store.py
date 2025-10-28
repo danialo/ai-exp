@@ -103,7 +103,7 @@ class BeliefVectorStore:
             created_at: Timestamp when belief was formed
         """
         # Generate embedding
-        embedding = self.embedding_provider.embed_text(statement)
+        embedding = self.embedding_provider.embed(statement)
 
         # Prepare metadata
         metadata = {
@@ -150,7 +150,7 @@ class BeliefVectorStore:
             List of belief results sorted by similarity
         """
         # Generate query embedding
-        query_embedding = self.embedding_provider.embed_text(query)
+        query_embedding = self.embedding_provider.embed(query)
         query_list = query_embedding.tolist() if isinstance(query_embedding, np.ndarray) else query_embedding
 
         # Build metadata filter

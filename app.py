@@ -98,6 +98,10 @@ retrieval_service = create_retrieval_service(
     self_knowledge_index=self_knowledge_index,  # Enable priority self-query retrieval
 )
 
+# Initialize belief-memory retrieval (after both belief_vector_store and retrieval_service exist)
+# This will be wired up after belief services are initialized later in the file
+belief_memory_retrieval = None
+
 # Initialize agent mood tracker for emergent personality
 agent_mood = create_agent_mood(
     history_size=10,  # Track last 10 interactions
@@ -292,6 +296,59 @@ if settings.PERSONA_MODE_ENABLED and llm_service and raw_store:
         self_aware_prompt_builder.belief_system = belief_system
         logger.info("Belief system connected to prompt builder")
 
+# Initialize belief vector store and related services
+belief_vector_store = None
+belief_embedder = None
+belief_memory_retrieval = None
+belief_grounded_reasoner = None
+
+if settings.PERSONA_MODE_ENABLED and belief_system and embedding_provider:
+    try:
+        from src.services.belief_vector_store import create_belief_vector_store
+        from src.services.belief_embedder import create_belief_embedder
+        from src.services.belief_memory_retrieval import create_belief_memory_retrieval
+        from src.services.belief_grounded_reasoner import create_belief_grounded_reasoner
+
+        # Initialize belief vector store
+        belief_vector_store = create_belief_vector_store(
+            persist_directory=settings.BELIEFS_INDEX_PATH,
+            embedding_provider=embedding_provider,
+        )
+        logger.info(f"Belief vector store initialized at {settings.BELIEFS_INDEX_PATH}")
+
+        # Initialize belief embedder
+        belief_embedder = create_belief_embedder(
+            belief_system=belief_system,
+            belief_vector_store=belief_vector_store,
+        )
+
+        # Embed core beliefs on first run
+        if belief_vector_store.count() == 0:
+            logger.info("Embedding core beliefs for first time...")
+            count = belief_embedder.embed_all_core_beliefs()
+            logger.info(f"Embedded {count} core beliefs")
+        else:
+            logger.info(f"Belief vector store loaded with {belief_vector_store.count()} beliefs")
+
+        # Initialize belief-grounded reasoner
+        belief_grounded_reasoner = create_belief_grounded_reasoner(llm_service)
+        logger.info("Belief-grounded reasoner initialized")
+
+        # Initialize belief-memory retrieval (combining belief vector store + memory retrieval)
+        if retrieval_service:
+            belief_memory_retrieval = create_belief_memory_retrieval(
+                belief_vector_store=belief_vector_store,
+                memory_retrieval_service=retrieval_service,
+                belief_weight=settings.BELIEF_MEMORY_WEIGHT,
+                memory_weight=settings.MEMORY_WEIGHT,
+            )
+            logger.info(f"Belief-memory retrieval initialized with weights: {settings.BELIEF_MEMORY_WEIGHT} beliefs / {settings.MEMORY_WEIGHT} memories")
+
+    except Exception as e:
+        logger.error(f"Failed to initialize belief vector services: {e}")
+        import traceback
+        traceback.print_exc()
+
 # Initialize web services for search and browsing
 web_search_service = None
 url_fetcher_service = None
@@ -337,6 +394,10 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         logit_bias_strength=settings.LOGIT_BIAS_STRENGTH,
         auto_rewrite=settings.AUTO_REWRITE_METATALK,
         belief_system=belief_system,  # Pass belief system for ontological grounding
+        belief_vector_store=belief_vector_store,  # Enable belief vector search
+        belief_embedder=belief_embedder,  # Enable adding new beliefs
+        belief_memory_retrieval=belief_memory_retrieval,  # Enable weighted belief-memory retrieval
+        belief_grounded_reasoner=belief_grounded_reasoner,  # Enable belief-grounded reasoning
         web_search_service=web_search_service,  # Enable web search
         url_fetcher_service=url_fetcher_service,  # Enable URL browsing
         web_interpretation_service=web_interpretation_service,  # Enable content interpretation
