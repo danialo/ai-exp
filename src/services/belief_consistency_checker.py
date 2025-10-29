@@ -90,11 +90,17 @@ class BeliefConsistencyChecker:
         Returns:
             ConsistencyReport with detected dissonance patterns
         """
-        # Step 0: Check for existing unresolved dissonances and resolved beliefs
+        # Step 0: Check for existing unresolved dissonances, reconciliations, and resolved beliefs
         beliefs_to_check = []
         existing_unresolved_patterns = []
 
         for belief in beliefs:
+            # Check if belief has reconciliation memory
+            has_reconciliation = self._check_for_reconciliation(belief.statement)
+            if has_reconciliation:
+                logger.info(f"✅ Skipping belief with reconciliation memory: {belief.statement}")
+                continue
+
             # Check if belief has resolution metadata (from previous resolutions)
             metadata = getattr(belief, 'metadata', {}) or {}
             has_resolution = (
@@ -647,6 +653,36 @@ class BeliefConsistencyChecker:
                         unresolved.append(structured)
 
         return unresolved
+
+    def _check_for_reconciliation(self, belief_statement: str) -> bool:
+        """Check if there's a reconciliation memory for this belief.
+
+        Args:
+            belief_statement: The belief to check
+
+        Returns:
+            True if reconciliation exists, False otherwise
+        """
+        if not self.raw_store:
+            return False
+
+        from sqlmodel import Session as DBSession, select
+        from src.memory.models import Experience
+
+        with DBSession(self.raw_store.engine) as session:
+            statement = (
+                select(Experience)
+                .where(Experience.type == ExperienceType.RECONCILIATION.value)
+            )
+
+            for exp in session.exec(statement).all():
+                if exp.content and isinstance(exp.content, dict):
+                    structured = exp.content.get("structured", {})
+                    if structured.get("belief_statement") == belief_statement:
+                        logger.info(f"Found reconciliation memory for: {belief_statement}")
+                        return True
+
+        return False
 
 
 def create_belief_consistency_checker(

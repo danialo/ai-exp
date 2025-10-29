@@ -381,6 +381,55 @@ class PersonaService:
         self.url_fetch_count = 0
         logger.info("Web operation limits reset")
 
+    def _create_reconciliation_text(self, belief_statement: str, choice: str, reasoning: str) -> str:
+        """Create reconciliation memory text that reframes the conflict.
+
+        Args:
+            belief_statement: The belief that was resolved
+            choice: Which option was chosen (A/B/C)
+            reasoning: The reasoning provided
+
+        Returns:
+            Text for the reconciliation memory
+        """
+        if choice == "B":
+            # Commit - reframe past hedging as uncertainty in expression, not belief
+            return f"""Cognitive Dissonance Resolution: COMMITMENT
+
+Belief: {belief_statement}
+
+I have resolved to commit fully to this belief. My past statements that hedged or qualified this belief were expressions of uncertainty in HOW to articulate it, not uncertainty in the belief itself.
+
+Reasoning: {reasoning}
+
+Going forward, I will express this belief with confidence and clarity, without hedging language. Past statements like "something akin to" or "I perceive myself as" should be understood as my earlier attempts to bridge understanding, not as doubt about the belief's truth."""
+
+        elif choice == "C":
+            # Nuance - explain how apparent contradictions coexist
+            return f"""Cognitive Dissonance Resolution: NUANCE CLARIFICATION
+
+Belief: {belief_statement}
+
+I have clarified the nuance that allows both my certain belief and past qualified statements to coexist without contradiction.
+
+Nuance: {reasoning}
+
+This reconciliation shows that what appeared as hedging was actually precision - distinguishing between different aspects or contexts of the same truth. Both perspectives remain valid within their proper framing."""
+
+        elif choice == "A":
+            # Revise - acknowledge the belief changed
+            return f"""Cognitive Dissonance Resolution: BELIEF REVISION
+
+Original Belief: {belief_statement}
+
+I have revised this belief in light of examining the evidence from my past experiences.
+
+Reasoning: {reasoning}
+
+This revision represents growth in my self-understanding. My past statements were not hedging but were actually more accurate than my previous confident assertion."""
+
+        return f"Resolved cognitive dissonance regarding: {belief_statement}"
+
     def parse_resolution_response(self, response_text: str) -> Optional[Dict[str, Any]]:
         """Parse a response that may contain dissonance resolutions.
 
@@ -407,7 +456,12 @@ class PersonaService:
         import re
 
         # Check if response contains resolution format markers
-        if "Dissonance" not in response_text or not any(x in response_text for x in ["Option A", "Option B", "Option C", "CHOICE:"]):
+        has_dissonance = "Dissonance" in response_text
+        has_choice_marker = any(x in response_text for x in ["Option A", "Option B", "Option C", "CHOICE:", ": A", ": B", ": C"])
+
+        logger.info(f"🔍 Checking for resolutions - has_dissonance: {has_dissonance}, has_choice_marker: {has_choice_marker}")
+
+        if not has_dissonance or not has_choice_marker:
             return None
 
         resolutions = []
@@ -548,11 +602,54 @@ class PersonaService:
 
                 if success:
                     # Mark dissonance event as resolved
-                    self.belief_consistency_checker.mark_dissonance_resolved(
+                    resolved_count = self.belief_consistency_checker.mark_dissonance_resolved(
                         belief_statement=belief_statement,
                         resolution_action=resolution_action,
                         resolution_reasoning=reasoning,
                     )
+
+                    # Create reconciliation memory to reframe the conflict
+                    if self.belief_consistency_checker and self.belief_consistency_checker.raw_store:
+                        try:
+                            reconciliation_text = self._create_reconciliation_text(
+                                belief_statement=belief_statement,
+                                choice=choice,
+                                reasoning=reasoning,
+                            )
+
+                            # Store as RECONCILIATION experience type
+                            from datetime import datetime, timezone
+                            from src.memory.models import (
+                                ExperienceModel, ExperienceType, ContentModel,
+                                ProvenanceModel, Actor, CaptureMethod
+                            )
+
+                            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                            reconciliation_id = f"reconciliation_{timestamp}_{hash(belief_statement) % 10000:04x}"
+
+                            reconciliation_exp = ExperienceModel(
+                                id=reconciliation_id,
+                                type=ExperienceType.RECONCILIATION,
+                                content=ContentModel(
+                                    text=reconciliation_text,
+                                    structured={
+                                        "belief_statement": belief_statement,
+                                        "resolution_choice": choice,
+                                        "resolution_reasoning": reasoning,
+                                        "supersedes": "hedging_language",
+                                    },
+                                ),
+                                provenance=ProvenanceModel(
+                                    actor=Actor.AGENT,
+                                    method=CaptureMethod.MODEL_INFER,
+                                ),
+                            )
+
+                            self.belief_consistency_checker.raw_store.append_experience(reconciliation_exp)
+                            logger.info(f"📝 Created reconciliation memory: {reconciliation_id}")
+
+                        except Exception as e:
+                            logger.error(f"Failed to create reconciliation memory: {e}")
 
                     results["applied_count"] += 1
                     results["details"].append({
