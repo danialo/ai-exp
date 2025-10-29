@@ -185,18 +185,75 @@ class PersonaService:
                                         query=user_message,
                                         dissonance_patterns=high_severity_patterns,
                                     )
-                                    logger.warning(f"DISSONANCE DETECTED: {len(high_severity_patterns)} patterns - forcing resolution")
-                                    print(f"🚫 DISSONANCE: {len(high_severity_patterns)} patterns - forcing Astra to resolve before answering")
+                                    logger.warning(f"DISSONANCE DETECTED: {len(high_severity_patterns)} patterns - forcing internal resolution")
+                                    print(f"🚫 DISSONANCE: {len(high_severity_patterns)} patterns - resolving internally...")
 
-                                    # Extract belief statements for later resolution processing
+                                    # Extract belief statements for resolution processing
                                     belief_statements = [p.belief_statement for p in high_severity_patterns]
 
-                                    # IMPORTANT: Don't return yet - inject resolution requirement into THIS generation
-                                    # Store for use in prompt building below
-                                    dissonance_report = f"{consistency_report.summary}\n\nYOU MUST RESOLVE THESE BEFORE ANSWERING."
-                                    # Set flag so we know to parse the response for resolutions
-                                    resolution_required = True
-                                    resolution_belief_statements = belief_statements
+                                    # STAGE 1: Internal resolution generation (user never sees this)
+                                    logger.info("🔒 Stage 1: Internal resolution generation")
+                                    print(f"🔒 Stage 1: Generating internal resolution...")
+
+                                    # Build prompt for internal resolution
+                                    internal_prompt = self.prompt_builder.build_prompt(
+                                        user_message,
+                                        conversation_history=conversation_history,
+                                        memories=memories,
+                                        belief_results=belief_results if belief_results else None,
+                                        dissonance_report=f"{consistency_report.summary}\n\nYOU MUST RESOLVE THESE BEFORE ANSWERING."
+                                    )
+
+                                    # Inject resolution prompt
+                                    internal_prompt = f"{internal_prompt}\n\n{resolution_prompt}"
+
+                                    # Generate internal resolution (no tools)
+                                    internal_messages = [
+                                        {"role": "system", "content": internal_prompt},
+                                        {"role": "user", "content": user_message}
+                                    ]
+
+                                    internal_result = self.llm.generate_with_tools(
+                                        messages=internal_messages,
+                                        tools=None,  # No tools for resolution
+                                        temperature=config.temperature,
+                                        max_tokens=config.max_tokens,
+                                        top_p=config.top_p,
+                                        presence_penalty=config.presence_penalty,
+                                        frequency_penalty=config.frequency_penalty,
+                                    )
+
+                                    internal_response = internal_result["message"].content or ""
+                                    logger.info(f"✅ Internal resolution generated ({len(internal_response)} chars)")
+
+                                    # Parse and apply resolutions from internal response
+                                    resolution_data = self.parse_resolution_response(internal_response)
+                                    if resolution_data and resolution_data.get("has_resolutions"):
+                                        logger.info(f"🔍 Detected {len(resolution_data['resolutions'])} resolution choices - applying")
+                                        print(f"✅ Applying {len(resolution_data['resolutions'])} resolutions...")
+
+                                        # Apply resolutions
+                                        resolution_results = self.apply_resolutions(
+                                            resolutions=resolution_data["resolutions"],
+                                            belief_statements=belief_statements,
+                                        )
+
+                                        if resolution_results.get("success"):
+                                            logger.info(f"✅ Successfully applied {resolution_results['applied_count']} resolutions")
+                                            print(f"✅ Successfully applied {resolution_results['applied_count']} resolutions")
+                                        else:
+                                            logger.error(f"❌ Failed to apply resolutions: {resolution_results}")
+                                            print(f"❌ Failed to apply some resolutions")
+                                    else:
+                                        logger.warning("⚠️ No resolutions found in internal response")
+                                        print(f"⚠️ No resolutions detected in internal response")
+
+                                    # STAGE 2: Normal generation for user (continues below)
+                                    logger.info("🔓 Stage 2: Generating user-facing response")
+                                    print(f"🔓 Stage 2: Generating normal response...")
+
+                                    # Clear dissonance report so user doesn't see it
+                                    dissonance_report = None
                                 else:
                                     resolution_required = False
                                     resolution_belief_statements = []
@@ -214,10 +271,9 @@ class PersonaService:
             except Exception as e:
                 logger.error(f"Failed to retrieve memories: {e}")
 
-        # Build the persona prompt with current context, memories, dynamic beliefs, and dissonance awareness
+        # Build the persona prompt with current context, memories, dynamic beliefs
+        # Note: dissonance_report is cleared after internal resolution, so user won't see it
         dissonance_report = dissonance_report if 'dissonance_report' in locals() else None
-        resolution_required = resolution_required if 'resolution_required' in locals() else False
-        resolution_prompt_text = resolution_prompt if 'resolution_prompt' in locals() else None
 
         full_prompt = self.prompt_builder.build_prompt(
             user_message,
@@ -226,10 +282,6 @@ class PersonaService:
             belief_results=belief_results if belief_results else None,
             dissonance_report=dissonance_report
         )
-
-        # If resolution is required, inject the full resolution prompt
-        if resolution_required and resolution_prompt_text:
-            full_prompt = f"{full_prompt}\n\n{resolution_prompt_text}"
 
         # Log prompt stats for visibility (not full content to avoid clutter)
         prompt_lines = full_prompt.count('\n')
@@ -349,26 +401,6 @@ class PersonaService:
                 else:
                     # Just strip the meta-talk
                     clean_response = self.metatalk_detector.strip(clean_response)
-
-        # Check if response contains resolution choices and apply them
-        if resolution_required and 'resolution_belief_statements' in locals():
-            resolution_data = self.parse_resolution_response(clean_response)
-            if resolution_data and resolution_data.get("has_resolutions"):
-                logger.info(f"🔍 Detected {len(resolution_data['resolutions'])} resolution choices - applying")
-                print(f"✅ Detected {len(resolution_data['resolutions'])} resolution choices - applying to belief system...")
-
-                # Apply resolutions
-                resolution_results = self.apply_resolutions(
-                    resolutions=resolution_data["resolutions"],
-                    belief_statements=resolution_belief_statements,
-                )
-
-                if resolution_results.get("success"):
-                    logger.info(f"✅ Successfully applied {resolution_results['applied_count']} resolutions")
-                    print(f"✅ Successfully applied {resolution_results['applied_count']} resolutions")
-                else:
-                    logger.error(f"❌ Failed to apply resolutions: {resolution_results}")
-                    print(f"❌ Failed to apply some resolutions")
 
         # Reconcile emotional perspectives if assessment was provided
         reconciliation_data = None
@@ -595,18 +627,27 @@ This revision represents growth in my self-understanding. My past statements wer
         #   - "Dissonance 1: C"
         #   - "**Dissonance 1: C**"
         #   - "Dissonance [number]: [A/B/C]"
+        #   - "**Resolution**: **C - Explain Nuance**"
         #   - "Option A" / "CHOICE: A" etc.
-        dissonance_pattern = r"(?:\*\*)?Dissonance\s+(\d+)(?:\*\*)?[\s:]+([ABC])|Dissonance\s+(\d+).*?(?:CHOICE:|Option)\s*[:]*\s*([ABC])"
+        dissonance_pattern = r"(?:\*\*)?Dissonance\s+(\d+)(?:\*\*)?[\s:]+([ABC])|Dissonance\s+(\d+).*?(?:CHOICE:|Option)\s*[:]*\s*([ABC])|(?:\*\*)?Resolution(?:\*\*)?:\s*(?:\*\*)?([ABC])"
         matches = re.finditer(dissonance_pattern, response_text, re.IGNORECASE | re.DOTALL)
 
+        dissonance_counter = 0  # Track dissonance number when not explicitly stated
+
         for match in matches:
-            # Handle both pattern groups
-            if match.group(1):
+            # Handle different pattern groups
+            if match.group(1):  # "Dissonance N: C" format
                 dissonance_num = int(match.group(1))
                 choice = match.group(2)
-            else:
+            elif match.group(3):  # "Dissonance N... CHOICE: C" format
                 dissonance_num = int(match.group(3))
                 choice = match.group(4)
+            elif match.group(5):  # "Resolution: C" format (no number)
+                dissonance_counter += 1
+                dissonance_num = dissonance_counter
+                choice = match.group(5)
+            else:
+                continue
 
             # If no choice found, try additional patterns
             if not choice:
