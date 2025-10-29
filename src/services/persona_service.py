@@ -172,6 +172,29 @@ class PersonaService:
                                 dissonance_report = consistency_report.summary
                                 logger.info(f"Detected {len(consistency_report.dissonance_patterns)} dissonance patterns")
                                 print(f"⚠️ Dissonance detected: {len(consistency_report.dissonance_patterns)} patterns")
+
+                                # BLOCKING LOGIC: Check for high-severity dissonance (>= 0.6)
+                                high_severity_patterns = [
+                                    p for p in consistency_report.dissonance_patterns
+                                    if p.severity >= 0.6
+                                ]
+
+                                if high_severity_patterns:
+                                    # Generate resolution prompt and block response
+                                    resolution_prompt = self.belief_consistency_checker.generate_resolution_prompt(
+                                        query=user_message,
+                                        dissonance_patterns=high_severity_patterns,
+                                    )
+                                    logger.warning(f"BLOCKING response due to {len(high_severity_patterns)} high-severity dissonance patterns")
+                                    print(f"🚫 BLOCKING: {len(high_severity_patterns)} high-severity dissonance patterns require resolution")
+
+                                    # Return resolution prompt as the response
+                                    return {
+                                        "response": resolution_prompt,
+                                        "resolution_required": True,
+                                        "dissonance_count": len(high_severity_patterns),
+                                        "tool_calls": [],
+                                    }
                         except Exception as e:
                             logger.error(f"Failed to check consistency: {e}")
 

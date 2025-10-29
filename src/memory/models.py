@@ -31,6 +31,7 @@ class ExperienceType(str, Enum):
     RECONCILIATION = "reconciliation"
     SELF_DEFINITION = "self_definition"  # Emergent self-concept patterns
     WEB_OBSERVATION = "web_observation"  # Web content interpretations
+    DISSONANCE_EVENT = "dissonance_event"  # Cognitive dissonance detected
 
 
 class Actor(str, Enum):
@@ -108,6 +109,13 @@ class ContentModel(BaseModel):
         - desires: List[str]
         - overwhelm_indicators: List[str]
         - tone_shifts: List[str]
+    - For DISSONANCE_EVENT: cognitive dissonance tracking with:
+        - belief_statement: str (the belief in question)
+        - conflicting_claims: List[dict] (self-claims that conflict)
+        - severity: float (0.0-1.0)
+        - resolution_status: str (unresolved/addressing/resolved)
+        - resolution_action: Optional[str] (what action was taken)
+        - resolution_reasoning: Optional[str] (explanation)
     """
 
     text: str

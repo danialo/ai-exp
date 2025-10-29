@@ -348,8 +348,11 @@ if settings.PERSONA_MODE_ENABLED and belief_system and embedding_provider:
 
         # Initialize belief consistency checker for dissonance detection
         if llm_service:
-            belief_consistency_checker = create_belief_consistency_checker(llm_service)
-            logger.info("Belief consistency checker initialized for dissonance detection")
+            belief_consistency_checker = create_belief_consistency_checker(
+                llm_service=llm_service,
+                raw_store=raw_store,
+            )
+            logger.info("Belief consistency checker initialized with dissonance event storage")
 
     except Exception as e:
         logger.error(f"Failed to initialize belief vector services: {e}")
@@ -1138,30 +1141,36 @@ async def persona_chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:
-        # If model override specified, create temporary persona service with that model
+        # Use the main persona service (model selection disabled to preserve belief system)
         active_persona_service = persona_service
-        if request.model:
-            _, persona_llm = create_llm_for_model(request.model)
-            active_persona_service = PersonaService(
-                llm_service=persona_llm,
-                persona_space_path=settings.PERSONA_SPACE_PATH,
-                retrieval_service=retrieval_service,
-                enable_anti_metatalk=settings.ANTI_METATALK_ENABLED,
-                logit_bias_strength=settings.LOGIT_BIAS_STRENGTH,
-                auto_rewrite=settings.AUTO_REWRITE_METATALK,
-                belief_system=belief_system,
-                web_search_service=web_search_service,
-                url_fetcher_service=url_fetcher_service,
-                web_interpretation_service=web_interpretation_service,
-            )
 
         # Generate persona response with emotional co-analysis and memory retrieval
-        response_text, reconciliation = active_persona_service.generate_response(
+        result = active_persona_service.generate_response(
             user_message=request.message,
             retrieve_memories=request.retrieve_memories,
             top_k=request.top_k,
             conversation_history=request.conversation_history
         )
+
+        # Check if response is blocked due to dissonance
+        if isinstance(result, dict) and result.get("resolution_required"):
+            # Return resolution prompt without storing in memory
+            return {
+                "response": result["response"],
+                "resolution_required": True,
+                "dissonance_count": result.get("dissonance_count", 0),
+                "reconciliation": None,
+                "internal_assessment": None,
+                "external_assessment": None,
+                "reconciled_state": None,
+                "experience_id": None,
+                "user_valence": 0.0,
+                "user_arousal": 0.0,
+                "user_dominance": 0.0,
+            }
+
+        # Normal response (tuple unpacking)
+        response_text, reconciliation = result
 
         # Store the interaction in memory so persona can learn from it
         # Use full VAD detection on user message
