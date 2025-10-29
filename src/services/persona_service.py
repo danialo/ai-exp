@@ -180,25 +180,26 @@ class PersonaService:
                                 ]
 
                                 if high_severity_patterns:
-                                    # Generate resolution prompt and block response
+                                    # Generate resolution prompt FOR ASTRA TO ANSWER
                                     resolution_prompt = self.belief_consistency_checker.generate_resolution_prompt(
                                         query=user_message,
                                         dissonance_patterns=high_severity_patterns,
                                     )
-                                    logger.warning(f"BLOCKING response due to {len(high_severity_patterns)} high-severity dissonance patterns")
-                                    print(f"🚫 BLOCKING: {len(high_severity_patterns)} high-severity dissonance patterns require resolution")
+                                    logger.warning(f"DISSONANCE DETECTED: {len(high_severity_patterns)} patterns - forcing resolution")
+                                    print(f"🚫 DISSONANCE: {len(high_severity_patterns)} patterns - forcing Astra to resolve before answering")
 
                                     # Extract belief statements for later resolution processing
                                     belief_statements = [p.belief_statement for p in high_severity_patterns]
 
-                                    # Return resolution prompt as the response
-                                    return {
-                                        "response": resolution_prompt,
-                                        "resolution_required": True,
-                                        "dissonance_count": len(high_severity_patterns),
-                                        "belief_statements": belief_statements,
-                                        "tool_calls": [],
-                                    }
+                                    # IMPORTANT: Don't return yet - inject resolution requirement into THIS generation
+                                    # Store for use in prompt building below
+                                    dissonance_report = f"{consistency_report.summary}\n\nYOU MUST RESOLVE THESE BEFORE ANSWERING."
+                                    # Set flag so we know to parse the response for resolutions
+                                    resolution_required = True
+                                    resolution_belief_statements = belief_statements
+                                else:
+                                    resolution_required = False
+                                    resolution_belief_statements = []
                         except Exception as e:
                             logger.error(f"Failed to check consistency: {e}")
 
@@ -215,6 +216,9 @@ class PersonaService:
 
         # Build the persona prompt with current context, memories, dynamic beliefs, and dissonance awareness
         dissonance_report = dissonance_report if 'dissonance_report' in locals() else None
+        resolution_required = resolution_required if 'resolution_required' in locals() else False
+        resolution_prompt_text = resolution_prompt if 'resolution_prompt' in locals() else None
+
         full_prompt = self.prompt_builder.build_prompt(
             user_message,
             conversation_history=conversation_history,
@@ -222,6 +226,10 @@ class PersonaService:
             belief_results=belief_results if belief_results else None,
             dissonance_report=dissonance_report
         )
+
+        # If resolution is required, inject the full resolution prompt
+        if resolution_required and resolution_prompt_text:
+            full_prompt = f"{full_prompt}\n\n{resolution_prompt_text}"
 
         # Log prompt stats for visibility (not full content to avoid clutter)
         prompt_lines = full_prompt.count('\n')
@@ -341,6 +349,26 @@ class PersonaService:
                 else:
                     # Just strip the meta-talk
                     clean_response = self.metatalk_detector.strip(clean_response)
+
+        # Check if response contains resolution choices and apply them
+        if resolution_required and 'resolution_belief_statements' in locals():
+            resolution_data = self.parse_resolution_response(clean_response)
+            if resolution_data and resolution_data.get("has_resolutions"):
+                logger.info(f"🔍 Detected {len(resolution_data['resolutions'])} resolution choices - applying")
+                print(f"✅ Detected {len(resolution_data['resolutions'])} resolution choices - applying to belief system...")
+
+                # Apply resolutions
+                resolution_results = self.apply_resolutions(
+                    resolutions=resolution_data["resolutions"],
+                    belief_statements=resolution_belief_statements,
+                )
+
+                if resolution_results.get("success"):
+                    logger.info(f"✅ Successfully applied {resolution_results['applied_count']} resolutions")
+                    print(f"✅ Successfully applied {resolution_results['applied_count']} resolutions")
+                else:
+                    logger.error(f"❌ Failed to apply resolutions: {resolution_results}")
+                    print(f"❌ Failed to apply some resolutions")
 
         # Reconcile emotional perspectives if assessment was provided
         reconciliation_data = None
