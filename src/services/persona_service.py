@@ -188,11 +188,15 @@ class PersonaService:
                                     logger.warning(f"BLOCKING response due to {len(high_severity_patterns)} high-severity dissonance patterns")
                                     print(f"🚫 BLOCKING: {len(high_severity_patterns)} high-severity dissonance patterns require resolution")
 
+                                    # Extract belief statements for later resolution processing
+                                    belief_statements = [p.belief_statement for p in high_severity_patterns]
+
                                     # Return resolution prompt as the response
                                     return {
                                         "response": resolution_prompt,
                                         "resolution_required": True,
                                         "dissonance_count": len(high_severity_patterns),
+                                        "belief_statements": belief_statements,
                                         "tool_calls": [],
                                     }
                         except Exception as e:
@@ -376,6 +380,202 @@ class PersonaService:
         self.search_count = 0
         self.url_fetch_count = 0
         logger.info("Web operation limits reset")
+
+    def parse_resolution_response(self, response_text: str) -> Optional[Dict[str, Any]]:
+        """Parse a response that may contain dissonance resolutions.
+
+        Detects if the response contains resolution choices (A/B/C) and extracts them.
+
+        Args:
+            response_text: The response text to parse
+
+        Returns:
+            Dict with resolution data if found, None otherwise
+            Format: {
+                "has_resolutions": bool,
+                "resolutions": [
+                    {
+                        "dissonance_number": int,
+                        "choice": "A"|"B"|"C",
+                        "reasoning": str,
+                        "belief_statement": str (extracted from context),
+                        ...
+                    }
+                ]
+            }
+        """
+        import re
+
+        # Check if response contains resolution format markers
+        if "Dissonance" not in response_text or not any(x in response_text for x in ["Option A", "Option B", "Option C", "CHOICE:"]):
+            return None
+
+        resolutions = []
+
+        # Pattern to match dissonance resolutions
+        # Looks for: "Dissonance [number]:" followed by option choice
+        dissonance_pattern = r"##?\s*Dissonance\s+(\d+).*?(?:CHOICE:|Option\s+([ABC]))"
+        matches = re.finditer(dissonance_pattern, response_text, re.IGNORECASE | re.DOTALL)
+
+        for match in matches:
+            dissonance_num = int(match.group(1))
+            choice = match.group(2) if match.group(2) else None
+
+            # If no choice in first match, look for explicit CHOICE: line
+            if not choice:
+                choice_pattern = r"(?:CHOICE:|I choose)\s*[:]*\s*Option\s+([ABC])"
+                choice_match = re.search(choice_pattern, response_text[match.end():match.end()+500], re.IGNORECASE)
+                if choice_match:
+                    choice = choice_match.group(1).upper()
+
+            if not choice:
+                logger.warning(f"Could not extract choice for Dissonance {dissonance_num}")
+                continue
+
+            # Extract reasoning (text after the choice, before next dissonance or end)
+            next_dissonance = re.search(r"##?\s*Dissonance\s+\d+", response_text[match.end():])
+            if next_dissonance:
+                reasoning_text = response_text[match.end():match.end() + next_dissonance.start()]
+            else:
+                reasoning_text = response_text[match.end():]
+
+            # Clean up reasoning text
+            reasoning_text = reasoning_text.strip()
+            # Remove "Reasoning:" prefix if present
+            reasoning_text = re.sub(r"^Reasoning:\s*", "", reasoning_text, flags=re.IGNORECASE)
+
+            resolutions.append({
+                "dissonance_number": dissonance_num,
+                "choice": choice.upper(),
+                "reasoning": reasoning_text[:1000],  # Limit to 1000 chars
+            })
+
+        if resolutions:
+            logger.info(f"Parsed {len(resolutions)} resolution choices from response")
+            return {
+                "has_resolutions": True,
+                "resolutions": resolutions,
+            }
+
+        return None
+
+    def apply_resolutions(self, resolutions: List[Dict[str, Any]], belief_statements: List[str]) -> Dict[str, Any]:
+        """Apply parsed resolutions to the belief system.
+
+        Args:
+            resolutions: List of resolution dicts from parse_resolution_response
+            belief_statements: List of belief statements corresponding to each dissonance
+
+        Returns:
+            Dict with results of applying resolutions
+        """
+        if not self.belief_system or not self.belief_consistency_checker:
+            logger.error("Cannot apply resolutions: belief system not available")
+            return {"success": False, "error": "Belief system not available"}
+
+        results = {
+            "success": True,
+            "applied_count": 0,
+            "failed_count": 0,
+            "details": [],
+        }
+
+        for resolution in resolutions:
+            dissonance_num = resolution["dissonance_number"]
+            choice = resolution["choice"]
+            reasoning = resolution["reasoning"]
+
+            # Get corresponding belief statement (1-indexed)
+            if dissonance_num < 1 or dissonance_num > len(belief_statements):
+                logger.error(f"Invalid dissonance number: {dissonance_num}")
+                results["failed_count"] += 1
+                results["details"].append({
+                    "dissonance": dissonance_num,
+                    "success": False,
+                    "error": "Invalid dissonance number",
+                })
+                continue
+
+            belief_statement = belief_statements[dissonance_num - 1]
+
+            try:
+                # Apply based on choice
+                if choice == "A":
+                    # Option A: Revise belief
+                    success = self.belief_system.resolve_dissonance_option_a(
+                        belief_statement=belief_statement,
+                        confidence_adjustment=-0.1,  # Reduce confidence slightly
+                    )
+                    resolution_action = "option_a_revise"
+
+                elif choice == "B":
+                    # Option B: Commit to belief
+                    success = self.belief_system.resolve_dissonance_option_b(
+                        belief_statement=belief_statement,
+                        commitment_reasoning=reasoning,
+                    )
+                    resolution_action = "option_b_commit"
+
+                elif choice == "C":
+                    # Option C: Explain nuance
+                    success = self.belief_system.resolve_dissonance_option_c(
+                        belief_statement=belief_statement,
+                        nuance_explanation=reasoning,
+                    )
+                    resolution_action = "option_c_nuance"
+
+                else:
+                    logger.error(f"Invalid choice: {choice}")
+                    results["failed_count"] += 1
+                    results["details"].append({
+                        "dissonance": dissonance_num,
+                        "belief": belief_statement,
+                        "success": False,
+                        "error": "Invalid choice",
+                    })
+                    continue
+
+                if success:
+                    # Mark dissonance event as resolved
+                    self.belief_consistency_checker.mark_dissonance_resolved(
+                        belief_statement=belief_statement,
+                        resolution_action=resolution_action,
+                        resolution_reasoning=reasoning,
+                    )
+
+                    results["applied_count"] += 1
+                    results["details"].append({
+                        "dissonance": dissonance_num,
+                        "belief": belief_statement,
+                        "choice": choice,
+                        "success": True,
+                    })
+                    logger.info(f"Applied resolution {choice} for belief: {belief_statement}")
+                else:
+                    results["failed_count"] += 1
+                    results["details"].append({
+                        "dissonance": dissonance_num,
+                        "belief": belief_statement,
+                        "choice": choice,
+                        "success": False,
+                        "error": "Belief system update failed",
+                    })
+
+            except Exception as e:
+                logger.error(f"Error applying resolution: {e}")
+                results["failed_count"] += 1
+                results["details"].append({
+                    "dissonance": dissonance_num,
+                    "belief": belief_statement,
+                    "success": False,
+                    "error": str(e),
+                })
+
+        if results["failed_count"] > 0:
+            results["success"] = False
+
+        logger.info(f"Applied {results['applied_count']} resolutions, {results['failed_count']} failed")
+        return results
 
     def _get_tool_definitions(self) -> List[Dict[str, Any]]:
         """Get OpenAI tool definitions for persona file operations.

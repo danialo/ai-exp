@@ -1154,11 +1154,19 @@ async def persona_chat(request: ChatRequest):
 
         # Check if response is blocked due to dissonance
         if isinstance(result, dict) and result.get("resolution_required"):
+            # Store belief statements for later resolution processing
+            # Extract from dissonance patterns if available
+            if "belief_statements" in result:
+                # Store in session or temp storage for next request
+                # For now, we'll extract them from the prompt when needed
+                pass
+
             # Return resolution prompt without storing in memory
             return {
                 "response": result["response"],
                 "resolution_required": True,
                 "dissonance_count": result.get("dissonance_count", 0),
+                "belief_statements": result.get("belief_statements", []),
                 "reconciliation": None,
                 "internal_assessment": None,
                 "external_assessment": None,
@@ -1171,6 +1179,44 @@ async def persona_chat(request: ChatRequest):
 
         # Normal response (tuple unpacking)
         response_text, reconciliation = result
+
+        # Check if response contains dissonance resolutions
+        resolution_data = active_persona_service.parse_resolution_response(response_text)
+        if resolution_data and resolution_data.get("has_resolutions"):
+            logger.info(f"Detected {len(resolution_data['resolutions'])} resolution choices in response")
+            print(f"✅ Detected {len(resolution_data['resolutions'])} resolution choices - applying to belief system...")
+
+            # Extract belief statements from previous dissonance prompt
+            # We need to get them from conversation history
+            belief_statements = []
+            if request.conversation_history:
+                # Look for the dissonance prompt in history
+                for msg in reversed(request.conversation_history):
+                    if msg.get("role") == "assistant" and "DISSONANCE RESOLUTION REQUIRED" in msg.get("content", ""):
+                        # Parse belief statements from the prompt
+                        import re
+                        prompt_text = msg.get("content", "")
+                        belief_pattern = r"\*\*Your stated belief:\*\*\s+(.+?)(?:\n|$)"
+                        matches = re.findall(belief_pattern, prompt_text)
+                        belief_statements.extend(matches)
+                        break
+
+            if belief_statements:
+                # Apply resolutions
+                resolution_results = active_persona_service.apply_resolutions(
+                    resolutions=resolution_data["resolutions"],
+                    belief_statements=belief_statements,
+                )
+
+                if resolution_results.get("success"):
+                    logger.info(f"Successfully applied {resolution_results['applied_count']} resolutions")
+                    print(f"✅ Successfully applied {resolution_results['applied_count']} resolutions to belief system")
+                else:
+                    logger.error(f"Failed to apply resolutions: {resolution_results}")
+                    print(f"❌ Failed to apply some resolutions: {resolution_results.get('error', 'Unknown error')}")
+            else:
+                logger.warning("Could not extract belief statements from conversation history")
+                print("⚠️ Could not extract belief statements from history - resolutions not applied")
 
         # Store the interaction in memory so persona can learn from it
         # Use full VAD detection on user message

@@ -90,11 +90,47 @@ class BeliefConsistencyChecker:
         Returns:
             ConsistencyReport with detected dissonance patterns
         """
+        # Step 0: Filter out beliefs that have been resolved
+        # Check belief metadata for resolution markers
+        beliefs_to_check = []
+        for belief in beliefs:
+            # Check if belief has resolution metadata (from previous resolutions)
+            metadata = getattr(belief, 'metadata', {}) or {}
+            has_resolution = (
+                metadata.get('reconciled') or  # Option C
+                metadata.get('commitment') or  # Option B
+                metadata.get('dissonance_resolution')  # Option A
+            )
+
+            if has_resolution:
+                logger.info(f"Skipping belief with existing resolution: {belief.statement}")
+                continue
+
+            # Also check for unresolved dissonances (in-flight resolutions)
+            unresolved = self.get_unresolved_dissonances_for_belief(belief.statement)
+            if unresolved:
+                logger.info(f"Skipping belief with {len(unresolved)} unresolved dissonance(s): {belief.statement}")
+                continue
+
+            # No resolution yet, check for dissonance
+            beliefs_to_check.append(belief)
+
+        # If all beliefs have resolutions, skip further checks
+        if not beliefs_to_check:
+            logger.info("All beliefs have resolutions, returning empty report")
+            return ConsistencyReport(
+                query=query,
+                relevant_beliefs=beliefs,
+                extracted_claims=[],
+                dissonance_patterns=[],
+                summary="All relevant beliefs have been reconciled.",
+            )
+
         # Step 1: Extract self-claims from memories
         extracted_claims = self._extract_self_claims(memories)
 
         # Step 2: Compare beliefs against claims
-        dissonance_patterns = self._detect_dissonance(beliefs, extracted_claims)
+        dissonance_patterns = self._detect_dissonance(beliefs_to_check, extracted_claims)
 
         # Step 3: Store significant dissonance events (severity >= 0.6)
         if self.raw_store:
@@ -106,7 +142,7 @@ class BeliefConsistencyChecker:
                     logger.error(f"Failed to store dissonance event: {e}")
 
         # Step 4: Generate summary
-        summary = self._generate_summary(query, beliefs, dissonance_patterns)
+        summary = self._generate_summary(query, beliefs_to_check, dissonance_patterns)
 
         return ConsistencyReport(
             query=query,
@@ -483,6 +519,96 @@ class BeliefConsistencyChecker:
         logger.info(f"Stored dissonance event: {experience_id}")
 
         return experience_id
+
+    def mark_dissonance_resolved(
+        self,
+        belief_statement: str,
+        resolution_action: str,
+        resolution_reasoning: str,
+    ) -> int:
+        """Mark all unresolved dissonance events for a belief as resolved.
+
+        Args:
+            belief_statement: The belief that was resolved
+            resolution_action: Which option was chosen (A/B/C)
+            resolution_reasoning: Explanation of the resolution
+
+        Returns:
+            Number of dissonance events marked as resolved
+        """
+        if not self.raw_store:
+            logger.warning("No raw_store available to mark dissonance as resolved")
+            return 0
+
+        from sqlmodel import Session as DBSession, select
+        from src.memory.models import Experience
+
+        resolved_count = 0
+
+        with DBSession(self.raw_store.engine) as session:
+            # Find all unresolved dissonance events for this belief
+            statement = (
+                select(Experience)
+                .where(Experience.type == ExperienceType.DISSONANCE_EVENT.value)
+            )
+
+            for exp in session.exec(statement).all():
+                # Check if this dissonance is for the target belief
+                if exp.content and isinstance(exp.content, dict):
+                    structured = exp.content.get("structured", {})
+                    if (
+                        structured.get("belief_statement") == belief_statement
+                        and structured.get("resolution_status") == "unresolved"
+                    ):
+                        # Update resolution fields
+                        structured["resolution_status"] = "resolved"
+                        structured["resolution_action"] = resolution_action
+                        structured["resolution_reasoning"] = resolution_reasoning
+                        structured["resolution_timestamp"] = datetime.now(timezone.utc).isoformat()
+
+                        # Mark the row as needing update
+                        session.add(exp)
+                        resolved_count += 1
+
+            # Commit all updates
+            session.commit()
+
+        logger.info(f"Marked {resolved_count} dissonance events as resolved for: {belief_statement}")
+        return resolved_count
+
+    def get_unresolved_dissonances_for_belief(self, belief_statement: str) -> List[Dict[str, Any]]:
+        """Check if there are any unresolved dissonance events for a belief.
+
+        Args:
+            belief_statement: The belief to check
+
+        Returns:
+            List of unresolved dissonance event data, empty if none found
+        """
+        if not self.raw_store:
+            return []
+
+        from sqlmodel import Session as DBSession, select
+        from src.memory.models import Experience
+
+        unresolved = []
+
+        with DBSession(self.raw_store.engine) as session:
+            statement = (
+                select(Experience)
+                .where(Experience.type == ExperienceType.DISSONANCE_EVENT.value)
+            )
+
+            for exp in session.exec(statement).all():
+                if exp.content and isinstance(exp.content, dict):
+                    structured = exp.content.get("structured", {})
+                    if (
+                        structured.get("belief_statement") == belief_statement
+                        and structured.get("resolution_status") == "unresolved"
+                    ):
+                        unresolved.append(structured)
+
+        return unresolved
 
 
 def create_belief_consistency_checker(
