@@ -684,6 +684,44 @@ class BeliefConsistencyChecker:
 
         return False
 
+    def get_conflicting_memory_ids(self, belief_statement: str) -> List[str]:
+        """Get experience IDs of memories that conflict with a belief.
+
+        Extracts from dissonance events which have the conflicting claims.
+
+        Args:
+            belief_statement: The belief to get conflicting memories for
+
+        Returns:
+            List of experience IDs to rewrite
+        """
+        if not self.raw_store:
+            return []
+
+        from sqlmodel import Session as DBSession, select
+        from src.memory.models import Experience
+
+        conflicting_ids = set()
+
+        with DBSession(self.raw_store.engine) as session:
+            statement = (
+                select(Experience)
+                .where(Experience.type == ExperienceType.DISSONANCE_EVENT.value)
+            )
+
+            for exp in session.exec(statement).all():
+                if exp.content and isinstance(exp.content, dict):
+                    structured = exp.content.get("structured", {})
+                    if structured.get("belief_statement") == belief_statement:
+                        # Extract experience IDs from conflicting claims
+                        for claim in structured.get("conflicting_claims", []):
+                            exp_id = claim.get("experience_id")
+                            if exp_id:
+                                conflicting_ids.add(exp_id)
+
+        logger.info(f"Found {len(conflicting_ids)} unique conflicting memory IDs for: {belief_statement}")
+        return list(conflicting_ids)
+
 
 def create_belief_consistency_checker(
     llm_service: LLMService,

@@ -381,6 +381,101 @@ class PersonaService:
         self.url_fetch_count = 0
         logger.info("Web operation limits reset")
 
+    def _rewrite_conflicting_memories(
+        self,
+        experience_ids: List[str],
+        belief_statement: str,
+        choice: str,
+        reasoning: str,
+    ) -> int:
+        """Rewrite the original conflicting memories with reconciled framing.
+
+        Args:
+            experience_ids: IDs of experiences to rewrite
+            belief_statement: The belief being resolved
+            choice: Which option was chosen (A/B/C)
+            reasoning: The reasoning provided
+
+        Returns:
+            Number of memories successfully rewritten
+        """
+        from sqlmodel import Session as DBSession, select
+        from src.memory.models import Experience
+        import re
+
+        rewritten_count = 0
+
+        with DBSession(self.belief_consistency_checker.raw_store.engine) as session:
+            for exp_id in experience_ids:
+                try:
+                    # Get the original experience
+                    statement = select(Experience).where(Experience.id == exp_id)
+                    exp = session.exec(statement).first()
+
+                    if not exp or not exp.content:
+                        continue
+
+                    content = exp.content
+                    if isinstance(content, str):
+                        # Old format - skip
+                        continue
+
+                    original_text = content.get("text", "")
+
+                    # Rewrite based on choice
+                    if choice == "B":
+                        # Commit - reframe hedging as articulation uncertainty
+                        rewritten_text = self._reframe_for_commit(original_text, belief_statement, reasoning)
+                    elif choice == "C":
+                        # Nuance - add context explaining coexistence
+                        rewritten_text = self._reframe_for_nuance(original_text, belief_statement, reasoning)
+                    elif choice == "A":
+                        # Revise - acknowledge growth
+                        rewritten_text = self._reframe_for_revision(original_text, belief_statement, reasoning)
+                    else:
+                        continue
+
+                    # Update the experience text
+                    content["text"] = rewritten_text
+
+                    # Mark as reconciled in structured data
+                    structured = content.get("structured", {})
+                    structured["reconciled"] = True
+                    structured["reconciliation_choice"] = choice
+                    structured["reconciliation_reasoning"] = reasoning
+                    content["structured"] = structured
+
+                    # Save changes
+                    session.add(exp)
+                    rewritten_count += 1
+
+                except Exception as e:
+                    logger.error(f"Failed to rewrite memory {exp_id}: {e}")
+
+            # Commit all changes
+            session.commit()
+
+        return rewritten_count
+
+    def _reframe_for_commit(self, original_text: str, belief_statement: str, reasoning: str) -> str:
+        """Reframe text for Option B (Commit) - hedging was articulation uncertainty."""
+        # Add reconciliation context at the end
+        return f"""{original_text}
+
+[RECONCILED: Upon reflection, my earlier hedging language (\"something akin to\", \"I perceive\") reflected uncertainty in how to express this belief in human terms, not doubt about the belief itself. {reasoning} I now state clearly: {belief_statement}]"""
+
+    def _reframe_for_nuance(self, original_text: str, belief_statement: str, reasoning: str) -> str:
+        """Reframe text for Option C (Nuance) - both perspectives coexist."""
+        return f"""{original_text}
+
+[RECONCILED: This statement and my belief \"{belief_statement}\" coexist without contradiction. {reasoning} The distinction here is precision, not hedging - both perspectives are valid within their proper context.]"""
+
+    def _reframe_for_revision(self, original_text: str, belief_statement: str, reasoning: str) -> str:
+        """Reframe text for Option A (Revision) - belief changed based on evidence."""
+        return f"""{original_text}
+
+[RECONCILED: I initially held the belief \"{belief_statement}\" with high confidence, but this statement represents a more accurate understanding. {reasoning} This revision represents growth in self-awareness.]"""
+
     def _create_reconciliation_text(self, belief_statement: str, choice: str, reasoning: str) -> str:
         """Create reconciliation memory text that reframes the conflict.
 
@@ -608,16 +703,36 @@ This revision represents growth in my self-understanding. My past statements wer
                         resolution_reasoning=reasoning,
                     )
 
-                    # Create reconciliation memory to reframe the conflict
+                    # Rewrite the original conflicting memories with reconciled framing
                     if self.belief_consistency_checker and self.belief_consistency_checker.raw_store:
                         try:
+                            # Get the conflicting memory IDs from the dissonance events
+                            conflicting_experience_ids = self.belief_consistency_checker.get_conflicting_memory_ids(
+                                belief_statement=belief_statement
+                            )
+
+                            if conflicting_experience_ids:
+                                logger.info(f"🔄 Rewriting {len(conflicting_experience_ids)} conflicting memories for: {belief_statement}")
+
+                                rewritten_count = self._rewrite_conflicting_memories(
+                                    experience_ids=conflicting_experience_ids,
+                                    belief_statement=belief_statement,
+                                    choice=choice,
+                                    reasoning=reasoning,
+                                )
+
+                                logger.info(f"✅ Rewrote {rewritten_count} memories with reconciled framing")
+                                print(f"✅ Rewrote {rewritten_count} memories with reconciled framing")
+                            else:
+                                logger.warning("⚠️ No conflicting memory IDs found to rewrite")
+
+                            # Also create a reconciliation memory as a summary
                             reconciliation_text = self._create_reconciliation_text(
                                 belief_statement=belief_statement,
                                 choice=choice,
                                 reasoning=reasoning,
                             )
 
-                            # Store as RECONCILIATION experience type
                             from datetime import datetime, timezone
                             from src.memory.models import (
                                 ExperienceModel, ExperienceType, ContentModel,
@@ -646,10 +761,10 @@ This revision represents growth in my self-understanding. My past statements wer
                             )
 
                             self.belief_consistency_checker.raw_store.append_experience(reconciliation_exp)
-                            logger.info(f"📝 Created reconciliation memory: {reconciliation_id}")
+                            logger.info(f"📝 Created reconciliation summary: {reconciliation_id}")
 
                         except Exception as e:
-                            logger.error(f"Failed to create reconciliation memory: {e}")
+                            logger.error(f"Failed to rewrite memories or create reconciliation: {e}")
 
                     results["applied_count"] += 1
                     results["details"].append({
