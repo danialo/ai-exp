@@ -414,17 +414,28 @@ class PersonaService:
 
         # Pattern to match dissonance resolutions
         # Looks for: "Dissonance [number]:" followed by option choice
-        dissonance_pattern = r"##?\s*Dissonance\s+(\d+).*?(?:CHOICE:|Option\s+([ABC]))"
+        # Handles formats like:
+        #   - "Dissonance 1: C"
+        #   - "**Dissonance 1: C**"
+        #   - "Dissonance [number]: [A/B/C]"
+        #   - "Option A" / "CHOICE: A" etc.
+        dissonance_pattern = r"(?:\*\*)?Dissonance\s+(\d+)(?:\*\*)?[\s:]+([ABC])|Dissonance\s+(\d+).*?(?:CHOICE:|Option)\s*[:]*\s*([ABC])"
         matches = re.finditer(dissonance_pattern, response_text, re.IGNORECASE | re.DOTALL)
 
         for match in matches:
-            dissonance_num = int(match.group(1))
-            choice = match.group(2) if match.group(2) else None
+            # Handle both pattern groups
+            if match.group(1):
+                dissonance_num = int(match.group(1))
+                choice = match.group(2)
+            else:
+                dissonance_num = int(match.group(3))
+                choice = match.group(4)
 
-            # If no choice in first match, look for explicit CHOICE: line
+            # If no choice found, try additional patterns
             if not choice:
-                choice_pattern = r"(?:CHOICE:|I choose)\s*[:]*\s*Option\s+([ABC])"
-                choice_match = re.search(choice_pattern, response_text[match.end():match.end()+500], re.IGNORECASE)
+                # Look for "I choose Option X" or similar
+                choice_pattern = r"(?:CHOICE|I choose|Option)\s*[:]*\s*([ABC])"
+                choice_match = re.search(choice_pattern, response_text[match.end():match.end()+200], re.IGNORECASE)
                 if choice_match:
                     choice = choice_match.group(1).upper()
 

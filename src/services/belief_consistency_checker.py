@@ -90,9 +90,10 @@ class BeliefConsistencyChecker:
         Returns:
             ConsistencyReport with detected dissonance patterns
         """
-        # Step 0: Filter out beliefs that have been resolved
-        # Check belief metadata for resolution markers
+        # Step 0: Check for existing unresolved dissonances and resolved beliefs
         beliefs_to_check = []
+        existing_unresolved_patterns = []
+
         for belief in beliefs:
             # Check if belief has resolution metadata (from previous resolutions)
             metadata = getattr(belief, 'metadata', {}) or {}
@@ -106,14 +107,51 @@ class BeliefConsistencyChecker:
                 logger.info(f"Skipping belief with existing resolution: {belief.statement}")
                 continue
 
-            # Also check for unresolved dissonances (in-flight resolutions)
+            # Check for unresolved dissonances (in-flight resolutions)
             unresolved = self.get_unresolved_dissonances_for_belief(belief.statement)
             if unresolved:
-                logger.info(f"Skipping belief with {len(unresolved)} unresolved dissonance(s): {belief.statement}")
+                logger.info(f"Found {len(unresolved)} unresolved dissonance(s) for: {belief.statement}")
+                # Reconstruct dissonance patterns from unresolved events
+                for unresolved_data in unresolved:
+                    # Convert stored dissonance data back to DissonancePattern
+                    memory_claims = [
+                        SelfClaim(
+                            statement=claim.get('statement', ''),
+                            source=claim.get('source', 'self'),
+                            confidence=claim.get('confidence', 'certain'),
+                            context=claim.get('context', ''),
+                            experience_id=claim.get('experience_id', ''),
+                        )
+                        for claim in unresolved_data.get('conflicting_claims', [])
+                    ]
+
+                    pattern = DissonancePattern(
+                        belief_statement=belief.statement,
+                        belief_confidence=belief.confidence,
+                        pattern_type=unresolved_data.get('pattern_type', 'hedging'),
+                        memory_claims=memory_claims,
+                        analysis=f"[UNRESOLVED] Previous dissonance detected but not yet resolved.",
+                        severity=unresolved_data.get('severity', 0.7),
+                    )
+                    existing_unresolved_patterns.append(pattern)
+
+                # Don't check this belief for new dissonances while it has unresolved ones
                 continue
 
-            # No resolution yet, check for dissonance
+            # No resolution and no unresolved dissonances - check for new dissonance
             beliefs_to_check.append(belief)
+
+        # If we have existing unresolved patterns, return them for re-blocking
+        if existing_unresolved_patterns:
+            logger.warning(f"Re-blocking due to {len(existing_unresolved_patterns)} existing unresolved dissonances")
+            summary = self._generate_summary(query, beliefs, existing_unresolved_patterns)
+            return ConsistencyReport(
+                query=query,
+                relevant_beliefs=beliefs,
+                extracted_claims=[],  # Don't extract new claims for existing patterns
+                dissonance_patterns=existing_unresolved_patterns,
+                summary=f"UNRESOLVED: {summary}",
+            )
 
         # If all beliefs have resolutions, skip further checks
         if not beliefs_to_check:
