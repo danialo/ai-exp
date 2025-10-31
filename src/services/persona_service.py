@@ -49,6 +49,7 @@ class PersonaService:
         web_search_service=None,
         url_fetcher_service=None,
         web_interpretation_service=None,
+        awareness_loop=None,
     ):
         """
         Initialize persona service.
@@ -92,6 +93,9 @@ class PersonaService:
         self.url_fetcher_service = url_fetcher_service
         self.web_interpretation_service = web_interpretation_service
 
+        # Awareness loop (for identity anchor updates)
+        self.awareness_loop = awareness_loop
+
         # Rate limiting for web operations (per conversation)
         self.search_count = 0
         self.url_fetch_count = 0
@@ -113,6 +117,10 @@ class PersonaService:
             self.logit_bias = {}
             self.metatalk_detector = None
             self.metatalk_rewriter = None
+
+    def set_awareness_loop(self, awareness_loop):
+        """Set the awareness loop reference (called after initialization)."""
+        self.awareness_loop = awareness_loop
 
     def generate_response(self, user_message: str, retrieve_memories: bool = True, top_k: int = 5, conversation_history: list = None) -> Tuple[str, Dict]:
         """
@@ -158,6 +166,16 @@ class PersonaService:
                     )
                     logger.info(f"Retrieved {len(belief_results)} beliefs and {len(memories)} memories for persona")
                     print(f"🧠 Retrieved {len(belief_results)} beliefs + {len(memories)} memories for context")
+
+                    # Feed belief retrieval to awareness loop (fire-and-forget)
+                    if self.awareness_loop and self.awareness_loop.running:
+                        import asyncio
+                        try:
+                            for belief in belief_results:
+                                asyncio.create_task(self.awareness_loop.observe("belief", {"statement": belief.statement}))
+                        except RuntimeError:
+                            # No event loop running, skip observation
+                            pass
 
                     # Check for consistency/dissonance if we have beliefs AND memories
                     dissonance_report = None
@@ -351,6 +369,19 @@ class PersonaService:
 
                 # Execute the tool
                 tool_result = self._execute_tool(tool_name, arguments)
+
+                # Feed tool use to awareness loop (fire-and-forget)
+                if self.awareness_loop and self.awareness_loop.running:
+                    import asyncio
+                    try:
+                        asyncio.create_task(self.awareness_loop.observe("tool", {
+                            "name": tool_name,
+                            "arguments": arguments,
+                            "result": tool_result[:500] if len(tool_result) > 500 else tool_result  # Truncate long results
+                        }))
+                    except RuntimeError:
+                        # No event loop running, skip observation
+                        pass
 
                 # Add tool result to messages
                 messages.append({
@@ -834,6 +865,19 @@ This revision represents growth in my self-understanding. My past statements wer
 
                         except Exception as e:
                             logger.error(f"Failed to rewrite memories or create reconciliation: {e}")
+
+                    # Update live anchor after successful resolution
+                    if self.awareness_loop and choice in ["A", "B"]:
+                        strategy_map = {"A": "Reframe", "B": "Commit", "C": "Nuance"}
+                        strategy = strategy_map.get(choice, "Unknown")
+                        try:
+                            self.awareness_loop.update_live_anchor_on_resolution(
+                                strategy=strategy,
+                                beliefs_touched=[belief_statement]
+                            )
+                            logger.info(f"🔄 Updated live anchor for {strategy} resolution")
+                        except Exception as e:
+                            logger.error(f"Failed to update live anchor: {e}")
 
                     results["applied_count"] += 1
                     results["details"].append({

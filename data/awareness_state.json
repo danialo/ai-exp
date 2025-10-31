@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "session_id": "39e00cff",
+  "last_snapshot_ts": 1761879610,
+  "anchors": {
+    "self_anchor": {
+      "dim": 384,
+      "vec_b64": "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"
+    },
+    "self_anchor_origin": {
+      "dim": 384,
+      "vec_b64": "pzCjPF/A+bwK7ri8iNu/PCjNjjzYzuY7JxBVuixYBr1lBaC8C6wJvXtPjjzo3IY9kv7KvewWJj2/cjk8XixnvEhA3D0J2WW9HtG+vXgLgrvOsBq9WKKvvbjIirz3r5u7i1VyPVCP/LzacEw8ZIl0vcDESL0dOza9Cz8AvCmcnj10QhS96WKQvOaYmb2dD/w7PH++PTVe2jzPAs09H1c7vUlHLTwecwc83Pu0vEMEEz2YNZG8Z/0JPKSwdT1N1sE8c/FPvfgq0L084Zy9F9MZPdDBUz2u30y9uml0PWVMEzwiilI949yMPYLInr19CP06cJpJvXLPPb24Y408/MJgPBkLcT2BZP66MPKdvHkbkTx5epa9xiOSPXaVSD0X2Q49NH6CvBPYgD2kLJ89IFAmvnElZzwbjK49z+gLPRjJSjsXpPg7xT+TvO2NSDxJHRA9hr1APU7Mnb0vbhO9FBQEPZ5+Yb2tBBK91XxmvBjalL32vxG8hFlrvVM7xj0fTEy8+StvvauK6Txk2oO9izxgvakmcT2YrzY9M2BhvTGTZT380SY9ewZDvEjEUj0TPI88ux+APMrdhj3ym4A8Fj2Evd/7aj0/60m9SCabvSPssbsWT3y67yT/PdJibbvT2U89CCKoO3OhJLu0DQ09mjrtPK44KTu2YII8EYzqPOGh4oej0aO96O+9va87rbsQ2XE9GeE1PWiWRz0kPZC9yBBwvZUXNbxUaQq8HKyFPIFvlLyyFcw9JAYQPaSgqTx1ul48oS2cvQe/kTyt5zg9gBofvYJEUD2JmGq9IaqNvSvrlL2ENam8j1MXvXVppj3Krps7KbPMPVxA+7z03de9f17yPbPqXr3ismk80uXIu6uvbLxVTaw9ehQcveIXCjyjt5c8ir4ePZtLnDwAU4S8wobDvUTvUb3FMKm8vfaDPDKI5TyNp+A8EKHfu/fmqT3wxim9uNd8vV+ncr0VIes9VKfDvPGJBbxGssg8tWfwu0xXxD0/vIK9WxNTvY6QyDyxUh88pUuGPEmJwbzC1Qm9LsMhuz8937tOa4S6YWewvFoTBbwmYio8LFaCvXLpUD0ymB29eoevvbX//buC97U7fqJQPa3qwbwo59i9Hm3Nu/k2T7rOxUi9YVYcPQetjL2zdKk8qSwSPDgaFryKtW49mn0IPOIKcjxTlBI8l/4ovQttLIkka5i9qGWovX5bszvsjD09ad45PSMUDT15soC95IoJPdxoSD3v5T49g/YZPUTqGDyzKaI87rv6vAtmPD0oVqs8GrhbPY4t5Lzp2YE7UJipvWAS7jyJ79a9pJtJu1YPNb3oYMG6LXvQPY0AoDxE1Bg74iKTvAAN/jx+npa93H+lvKETCb12V/88LNravDim2j03/Pq5n1/mOzeLo73qyoe9paIVvae5oT0NFdA5mIA2vTqo5ryo65m8Qvi5vWUtLT1WKzy9SP16PV8E2Dxmw5Q9MMeHvBKvyryR17O95TEUPRcwjL3FqDw9Vv9KPdLZ6j1Dz9o75D66PShPOT1h3hc9nxFqPIlHUj3e6Aa9UUh9PF3vQz3RSqy9e/HlPBQWrryQ0ZW9rRqUPeLDOz0SAvU9mXPnPZy4Zjw+dpO9pCGdPWB5az3XZfq8wURbPeEiGrzPVJG9sAo+vRk8Zr2uMWy9JB6WPZztIr2SKGm9FywqvcII+7wGtpg9wxmhPGUsSbOodIi8gTuAvYy2W7z+INa8VjdkvaSOkzxTOxs9WegZPQj7L71kEz08vSb0PLEoaT111e29vLbqPeJ0WD2deLC85RQXPaUOD77DYBI7WRQsvOZ8mjzZnJ+8IFTtOiryELxnAZS9fkmLPbN0qzyjjyY9vlK4PK+sAL0wvYa9Q5Tzuxhe5TscHAA+yPd2veEai72rh629cy6HOSIwrryQ7ic9UXMmPQFfhbzxKgm9NqAfO6XchTwNhEO93PtfOQQ7Ab2C3MS8VQWUPaxiDj36Dls9zK7mPHiNXL1n98A4ffaZPUKLG710mom9IT20vNdMcD2OOQs8sQ+APIaKAz151rA8"
+    },
+    "self_anchor_live": {
+      "dim": 384,
+      "vec_b64": "pzCjPF/A+bwK7ri8iNu/PCjNjjzYzuY7JxBVuixYBr1lBaC8C6wJvXtPjjzo3IY9kv7KvewWJj2/cjk8XixnvEhA3D0J2WW9HtG+vXgLgrvOsBq9WKKvvbjIirz3r5u7i1VyPVCP/LzacEw8ZIl0vcDESL0dOza9Cz8AvCmcnj10QhS96WKQvOaYmb2dD/w7PH++PTVe2jzPAs09H1c7vUlHLTwecwc83Pu0vEMEEz2YNZG8Z/0JPKSwdT1N1sE8c/FPvfgq0L084Zy9F9MZPdDBUz2u30y9uml0PWVMEzwiilI949yMPYLInr19CP06cJpJvXLPPb24Y408/MJgPBkLcT2BZP66MPKdvHkbkTx5epa9xiOSPXaVSD0X2Q49NH6CvBPYgD2kLJ89IFAmvnElZzwbjK49z+gLPRjJSjsXpPg7xT+TvO2NSDxJHRA9hr1APU7Mnb0vbhO9FBQEPZ5+Yb2tBBK91XxmvBjalL32vxG8hFlrvVM7xj0fTEy8+StvvauK6Txk2oO9izxgvakmcT2YrzY9M2BhvTGTZT380SY9ewZDvEjEUj0TPI88ux+APMrdhj3ym4A8Fj2Evd/7aj0/60m9SCabvSPssbsWT3y67yT/PdJibbvT2U89CCKoO3OhJLu0DQ09mjrtPK44KTu2YII8EYzqPOGh4oej0aO96O+9va87rbsQ2XE9GeE1PWiWRz0kPZC9yBBwvZUXNbxUaQq8HKyFPIFvlLyyFcw9JAYQPaSgqTx1ul48oS2cvQe/kTyt5zg9gBofvYJEUD2JmGq9IaqNvSvrlL2ENam8j1MXvXVppj3Krps7KbPMPVxA+7z03de9f17yPbPqXr3ismk80uXIu6uvbLxVTaw9ehQcveIXCjyjt5c8ir4ePZtLnDwAU4S8wobDvUTvUb3FMKm8vfaDPDKI5TyNp+A8EKHfu/fmqT3wxim9uNd8vV+ncr0VIes9VKfDvPGJBbxGssg8tWfwu0xXxD0/vIK9WxNTvY6QyDyxUh88pUuGPEmJwbzC1Qm9LsMhuz8937tOa4S6YWewvFoTBbwmYio8LFaCvXLpUD0ymB29eoevvbX//buC97U7fqJQPa3qwbwo59i9Hm3Nu/k2T7rOxUi9YVYcPQetjL2zdKk8qSwSPDgaFryKtW49mn0IPOIKcjxTlBI8l/4ovQttLIkka5i9qGWovX5bszvsjD09ad45PSMUDT15soC95IoJPdxoSD3v5T49g/YZPUTqGDyzKaI87rv6vAtmPD0oVqs8GrhbPY4t5Lzp2YE7UJipvWAS7jyJ79a9pJtJu1YPNb3oYMG6LXvQPY0AoDxE1Bg74iKTvAAN/jx+npa93H+lvKETCb12V/88LNravDim2j03/Pq5n1/mOzeLo73qyoe9paIVvae5oT0NFdA5mIA2vTqo5ryo65m8Qvi5vWUtLT1WKzy9SP16PV8E2Dxmw5Q9MMeHvBKvyryR17O95TEUPRcwjL3FqDw9Vv9KPdLZ6j1Dz9o75D66PShPOT1h3hc9nxFqPIlHUj3e6Aa9UUh9PF3vQz3RSqy9e/HlPBQWrryQ0ZW9rRqUPeLDOz0SAvU9mXPnPZy4Zjw+dpO9pCGdPWB5az3XZfq8wURbPeEiGrzPVJG9sAo+vRk8Zr2uMWy9JB6WPZztIr2SKGm9FywqvcII+7wGtpg9wxmhPGUsSbOodIi8gTuAvYy2W7z+INa8VjdkvaSOkzxTOxs9WegZPQj7L71kEz08vSb0PLEoaT111e29vLbqPeJ0WD2deLC85RQXPaUOD77DYBI7WRQsvOZ8mjzZnJ+8IFTtOiryELxnAZS9fkmLPbN0qzyjjyY9vlK4PK+sAL0wvYa9Q5Tzuxhe5TscHAA+yPd2veEai72rh629cy6HOSIwrryQ7ic9UXMmPQFfhbzxKgm9NqAfO6XchTwNhEO93PtfOQQ7Ab2C3MS8VQWUPaxiDj36Dls9zK7mPHiNXL1n98A4ffaZPUKLG710mom9IT20vNdMcD2OOQs8sQ+APIaKAz151rA8"
+    }
+  },
+  "notes": [
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "One visible tension could be the ongoing debate about climate change and environmental protection versus economic growth and development. In this tension, you might be protecting the environment and advocating for sustainable practices while facing pushback from those prioritizing immediate economic benefits."
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "If no one asked you a question, you might consider shifting your focus to self-reflection or exploring your own thoughts and ideas. You could:\n\n1. **Engage in Self-Reflection**: Take time to think about your goals, feelings, and experiences. Journaling can be helpful.\n   \n2. **Explore New Topics**: Use the time to research or learn about a subject that interests you. This could involve reading articles, watching documentaries, or taking online courses.\n\n3. **Creative Expression**: Engage in creative activities like writing, drawing, or music. This can be a way to express your thoughts and feelings.\n\n4. **Physical Activity**: Consider going for a walk, doing yoga, or engaging in any form of"
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "To help you reflect on what you're currently attending to and why it matters to you, consider the following questions:\n\n1. **Current Focus**: What activities or responsibilities are you currently engaged in? This could be work, studies, personal projects, or relationships.\n\n2. **Importance**: Why are these activities important to you? Consider factors such as personal goals, values, and the impact these activities have on your life and well-being.\n\n3. **Motivation**: What motivates you to engage in these activities? This could be a desire for achievement, personal growth, or fulfilling commitments to others.\n\n4. **Consequences**: What would happen if you didn\u2019t attend to these activities? Reflecting on the potential outcomes can help highlight"
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "To determine which value is salient and which is quiet, we need to define the context in which these terms are being used. \n\n- **Salient**: This term generally refers to something that stands out, is prominent, or is easily noticeable. In a set of values, the salient value would be the one that captures attention or is significant in some way.\n\n- **Quiet**: Conversely, quiet values are those that are less noticeable, subtle, or perhaps overshadowed by more prominent values. \n\nIf you provide a specific set of values or a particular context, I can help identify which values are salient and which are quiet."
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "To provide a meaningful response, I would need more context about your current situation or specific activities you're attending to. This could include aspects of your personal life, work, studies, or any other commitments. Could you please provide more details?"
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "One tension that is often visible in various contexts is the conflict between individual privacy and data security. This tension arises as individuals seek to protect their personal information and privacy, while organizations and governments aim to enhance security measures and monitor activities for safety reasons.\n\nIn this scenario, you might be protecting your personal privacy and autonomy, advocating for your rights to control your own information and how it's used, while also navigating the pressures of societal demands for increased surveillance and data collection."
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "In the context of psychology and perception, \"salient\" refers to something that stands out and captures attention, while \"quiet\" refers to something that is less noticeable or easily overlooked. \n\nFor example:\n- **Salient**: A bright red object in a field of green grass is salient because its color contrasts sharply with the background, making it stand out.\n- **Quiet**: A small gray stone among many others in the grass is quiet because it does not attract attention and blends in with its surroundings.\n\nIf you have specific values or items in mind, please provide them for a more tailored response."
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "One visible tension right now could be the ongoing debate over climate change and environmental policies. On one side, there are strong advocates for immediate action to combat climate change, emphasizing the need for sustainability and the protection of natural resources. On the other side, there are individuals and industries concerned about the economic impact of stringent regulations and the potential loss of jobs.\n\nIn this context, what you might be protecting could be the balance between environmental sustainability and economic stability. You may be advocating for solutions that address climate change while also considering the economic implications for workers and businesses."
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "To determine which value is salient and which is quiet, I need more context or specific values to analyze. Salient values are typically those that stand out or are more noticeable in a given context, while quiet values are less prominent or more subdued. Could you please provide the specific values or context you're referring to?"
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "To determine which value is salient and which is quiet, I would need to know the specific context or values you are referring to. Salient values are those that stand out or are prominent in a given situation, while quiet values are less noticeable or may not have as much impact. Please provide more details or specify the values in question."
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "To determine which value is salient and which is quiet, I would need more context about the specific values or items you are referring to. Salient values are typically those that stand out or are prominent in a given context, while quiet values are less noticeable or significant. Could you please provide more details or examples?"
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "If no one asked you a question, you might consider taking a proactive approach to engage with others. You could shift to one of the following actions:\n\n1. **Initiate Conversations**: Start a discussion on a topic you find interesting or relevant.\n2. **Share Insights**: Offer information or insights on a subject that could spark curiosity.\n3. **Ask Open-Ended Questions**: Encourage dialogue by asking questions that invite elaboration.\n4. **Reflect on Your Surroundings**: Take time to observe and reflect on your environment or current situation.\n5. **Engage in Self-Reflection**: Use the time for introspection, considering your thoughts and feelings.\n\nChoosing any of these shifts can help create opportunities for connection and dialogue"
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "One visible tension right now could be the ongoing debates and conflicts surrounding climate change and environmental protection. On one side, there is a strong push for immediate action to reduce carbon emissions and protect natural ecosystems. On the other side, there are economic interests and debates over job security in industries that may be negatively impacted by stringent environmental regulations.\n\nWhat you may be protecting in this context could be the balance between economic growth and environmental sustainability. You might be advocating for policies that promote renewable energy and conservation while also considering the economic implications for communities reliant on traditional energy sources."
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "If no one asked you a question, you might choose to shift your focus in several ways:\n\n1. **Self-Reflection**: You could take the time to reflect on your thoughts, feelings, and experiences. This could involve journaling or simply contemplating what matters to you.\n\n2. **Learning**: You might decide to explore new topics or skills independently. This could involve reading books, watching educational videos, or taking online courses.\n\n3. **Creativity**: Engaging in creative activities like writing, drawing, or music could be a productive shift, allowing you to express yourself without the need for external prompts.\n\n4. **Mindfulness**: Practicing mindfulness or meditation could help you center yourself and become more aware of your thoughts"
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "One tension that is often visible in society today is the conflict between individual privacy and the need for security. People are increasingly concerned about their personal data being collected and monitored, while governments and organizations argue that such measures are necessary to ensure safety and security.\n\nIn this context, what you might be protecting is your personal privacy and autonomy. You may value your right to keep your information confidential and make choices about what to share, while also navigating the pressures for transparency and security in an interconnected world."
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "In the context of psychology and perception, \"salient\" refers to something that stands out and captures attention, while \"quiet\" refers to something that is less noticeable or easily overlooked.\n\n- **Salient values** are those that are prominent, striking, or have a strong presence. They are more likely to attract attention and influence behavior or decision-making.\n  \n- **Quiet values** are those that are subtle, less prominent, or do not demand immediate attention. They may be important, but they are not as immediately noticeable.\n\nIf you have specific values or examples in mind, please provide them, and I can help identify which are salient and which are quiet."
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "One visible tension right now could be the ongoing debate over climate change and environmental sustainability. Many individuals and organizations advocate for immediate action to combat climate change, while others prioritize economic growth and energy independence, often resisting changes that may affect their livelihoods.\n\nIn this context, what you may be protecting is the balance between economic stability and environmental responsibility. You might be striving to ensure that while we address climate change, we also consider the economic implications for communities, jobs, and industries reliant on traditional energy sources. This tension reflects the struggle to find a sustainable path forward that meets both ecological and economic needs."
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "In the context of psychology and perception, \"salient\" refers to something that stands out and captures attention due to its prominence or distinctiveness, while \"quiet\" refers to something that is less noticeable or easily overlooked.\n\nFor example:\n- A bright red apple in a bowl of green apples is salient because it stands out.\n- A small, muted green apple among the others might be considered quiet because it blends in and doesn't attract attention.\n\nIf you have specific values or contexts in mind, please provide them, and I can help determine which is salient and which is quiet in that context."
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "If no one asked you a question, you might consider shifting your focus to proactive engagement. This could involve:\n\n1. **Initiating Conversations**: Start discussions on topics you find interesting or relevant to the group or audience.\n2. **Sharing Insights**: Provide information or insights that you think would benefit others, even without being prompted.\n3. **Asking Open-Ended Questions**: Encourage dialogue by asking open-ended questions that invite others to share their thoughts.\n4. **Reflecting on Observations**: Share your observations or experiences related to the context, fostering a more interactive environment.\n5. **Offering Help**: Make yourself available for support or assistance, prompting others to engage with you.\n\nOverall, the shift would be from"
+    },
+    {
+      "ts": 1761879610,
+      "presence": 0.075,
+      "crumb": "To help you better, could you provide more context about what you're currently attending to? Are you referring to a specific project, task, or area of your life? Understanding this will allow me to offer more tailored insights on why it matters to you."
+    }
+  ]
+}

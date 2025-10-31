@@ -196,6 +196,82 @@ class BeliefConsistencyChecker:
             summary=summary,
         )
 
+    def proactive_scan(
+        self,
+        active_beliefs: List[str],
+        presence_meta: Dict[str, Any]
+    ) -> Optional[List[DissonancePattern]]:
+        """
+        Proactively scan for tensions based on awareness loop signals.
+
+        Called by awareness loop when:
+        - coherence_drop > 0.4
+        - novelty > 0.6
+
+        Args:
+            active_beliefs: List of belief statements recently touched
+            presence_meta: Metadata from awareness blackboard
+
+        Returns:
+            List of DissonancePattern if tensions found, None otherwise
+        """
+        coherence_drop = presence_meta.get("coherence_drop", 0.0)
+        novelty = presence_meta.get("novelty", 0.0)
+
+        # Only scan if thresholds met
+        if coherence_drop <= 0.4 and novelty <= 0.6:
+            return None
+
+        logger.info(
+            f"🔍 Proactive dissonance scan triggered: "
+            f"coherence_drop={coherence_drop:.2f}, novelty={novelty:.2f}"
+        )
+
+        # Limit to top K beliefs
+        beliefs_to_scan = active_beliefs[:10]
+
+        if not beliefs_to_scan:
+            return None
+
+        # Quick scan: check for unresolved dissonances
+        detected_patterns = []
+
+        for belief_statement in beliefs_to_scan:
+            unresolved = self.get_unresolved_dissonances_for_belief(belief_statement)
+
+            if unresolved:
+                # Found tension - reconstruct pattern
+                for unresolved_data in unresolved:
+                    memory_claims = [
+                        SelfClaim(
+                            statement=claim.get('statement', ''),
+                            source=claim.get('source', 'self'),
+                            confidence=claim.get('confidence', 'certain'),
+                            context=claim.get('context', ''),
+                            experience_id=claim.get('experience_id', ''),
+                        )
+                        for claim in unresolved_data.get('conflicting_claims', [])
+                    ]
+
+                    pattern = DissonancePattern(
+                        belief_statement=belief_statement,
+                        belief_confidence=0.8,  # Assume moderate confidence
+                        pattern_type=unresolved_data.get('pattern_type', 'contradiction'),
+                        memory_claims=memory_claims,
+                        analysis=f"[PROACTIVE] Tension detected via awareness: {unresolved_data.get('analysis', '')}",
+                        severity=unresolved_data.get('severity', 0.7),
+                    )
+
+                    detected_patterns.append(pattern)
+
+        if detected_patterns:
+            logger.warning(
+                f"⚠️  Proactive scan found {len(detected_patterns)} tension(s)"
+            )
+            return detected_patterns
+
+        return None
+
     def _extract_self_claims(self, memories: List[RetrievalResult]) -> List[SelfClaim]:
         """Extract self-claims from memory narratives using LLM.
 

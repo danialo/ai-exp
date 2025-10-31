@@ -157,6 +157,33 @@ class Settings:
     CORE_TRAIT_LIMIT: int = int(os.getenv("CORE_TRAIT_LIMIT", "5"))  # Max core traits in prompt
     SURFACE_TRAIT_LIMIT: int = int(os.getenv("SURFACE_TRAIT_LIMIT", "3"))  # Max surface traits in prompt
 
+    # Redis configuration (for awareness loop)
+    REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+    REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
+    REDIS_PASSWORD: str | None = os.getenv("REDIS_PASSWORD")
+
+    # Awareness loop configuration
+    AWARENESS_ENABLED: bool = os.getenv("AWARENESS_ENABLED", "false").lower() == "true"
+    AWARENESS_TICK_RATE_FAST: float = float(os.getenv("AWARENESS_TICK_RATE_FAST", "2.0"))
+    AWARENESS_TICK_RATE_SLOW: float = float(os.getenv("AWARENESS_TICK_RATE_SLOW", "0.1"))
+    AWARENESS_INTROSPECTION_INTERVAL: int = int(os.getenv("AWARENESS_INTROSPECTION_INTERVAL", "180"))
+    AWARENESS_INTROSPECTION_JITTER: int = int(os.getenv("AWARENESS_INTROSPECTION_JITTER", "5"))
+    AWARENESS_SNAPSHOT_INTERVAL: int = int(os.getenv("AWARENESS_SNAPSHOT_INTERVAL", "60"))
+    AWARENESS_BUFFER_SIZE: int = int(os.getenv("AWARENESS_BUFFER_SIZE", "512"))
+    AWARENESS_QUEUE_MAXSIZE: int = int(os.getenv("AWARENESS_QUEUE_MAXSIZE", "2048"))
+    AWARENESS_NOTES_MAX: int = int(os.getenv("AWARENESS_NOTES_MAX", "100"))
+    AWARENESS_EMBEDDING_DIM: int = int(os.getenv("AWARENESS_EMBEDDING_DIM", "64"))
+    AWARENESS_EMBEDDING_CACHE_TTL: int = int(os.getenv("AWARENESS_EMBEDDING_CACHE_TTL", "300"))
+    AWARENESS_WATCHDOG_THRESHOLD_MS: float = float(os.getenv("AWARENESS_WATCHDOG_THRESHOLD_MS", "250"))
+    AWARENESS_WATCHDOG_STRIKES: int = int(os.getenv("AWARENESS_WATCHDOG_STRIKES", "3"))
+    AWARENESS_INTROSPECTION_BUDGET_PER_MIN: int = int(os.getenv("AWARENESS_INTROSPECTION_BUDGET_PER_MIN", "100"))
+    AWARENESS_DATA_DIR: str = os.getenv("AWARENESS_DATA_DIR", str(PROJECT_ROOT / "data"))
+
+    # Identity anchor configuration (dual-anchor system)
+    IDENTITY_ANCHOR_BETA_WEEK_CAP: float = float(os.getenv("IDENTITY_ANCHOR_BETA_WEEK_CAP", "0.01"))
+    IDENTITY_LEDGER_DIR: str = os.getenv("IDENTITY_LEDGER_DIR", str(PROJECT_ROOT / "data" / "identity"))
+
     # Affect blending weights (user, memory, self)
     @staticmethod
     def get_affect_weights() -> Tuple[float, float, float]:

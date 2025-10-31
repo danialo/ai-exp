@@ -1,5 +1,6 @@
 """FastAPI web interface for AI Experience Memory System."""
 
+import asyncio
 import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -46,6 +47,13 @@ from src.services.self_knowledge_index import create_self_knowledge_index
 from src.services.web_search_service import create_web_search_service
 from src.services.url_fetcher_service import create_url_fetcher_service
 from src.services.web_interpretation_service import create_web_interpretation_service
+
+# Awareness loop imports
+import contextlib
+from pathlib import Path
+from redis.asyncio import Redis
+from src.services.awareness_loop import AwarenessLoop, AwarenessConfig
+from src.services.awareness_metrics import get_metrics as get_awareness_metrics
 
 
 # Initialize FastAPI app
@@ -119,6 +127,7 @@ previous_user_valence: Optional[float] = None
 
 # Initialize LLM service if API key is available
 llm_service = None
+mini_llm_service = None  # For cost-effective introspection
 experience_lens = None
 
 # Determine which LLM provider to use
@@ -152,6 +161,16 @@ if api_key:
         max_tokens=settings.LLM_MAX_TOKENS,
         base_url=base_url,
         self_aware_prompt_builder=self_aware_prompt_builder,
+    )
+
+    # Create mini LLM service for cost-effective introspection
+    mini_llm_service = create_llm_service(
+        api_key=api_key,
+        model="gpt-4o-mini",  # Cheaper model for introspection
+        temperature=0.7,
+        max_tokens=150,  # Short responses for introspection
+        base_url=base_url,
+        self_aware_prompt_builder=None,  # Not needed for introspection
     )
 
     # Re-initialize ingestion pipeline with LLM service for self-claim detection
@@ -414,6 +433,106 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         web_interpretation_service=web_interpretation_service,  # Enable content interpretation
     )
 
+# Initialize awareness loop (Redis-backed continuous presence)
+awareness_loop: Optional[AwarenessLoop] = None
+awareness_task: Optional[asyncio.Task] = None
+redis_client: Optional[Redis] = None
+
+if settings.AWARENESS_ENABLED:
+    logger.info("Awareness loop enabled - initializing Redis and components")
+
+
+@app.on_event("startup")
+async def startup_awareness():
+    """Start awareness loop on application startup."""
+    global awareness_loop, awareness_task, redis_client
+
+    if not settings.AWARENESS_ENABLED:
+        logger.info("Awareness loop disabled")
+        return
+
+    try:
+        # Initialize Redis client
+        redis_client = Redis(
+            host=settings.REDIS_HOST,
+            port=settings.REDIS_PORT,
+            db=settings.REDIS_DB,
+            password=settings.REDIS_PASSWORD,
+            decode_responses=False,  # We handle encoding/decoding
+        )
+
+        # Test Redis connection
+        await redis_client.ping()
+        logger.info(f"Redis connection established: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+
+        # Create awareness config
+        awareness_config = AwarenessConfig(
+            enabled=True,
+            tick_rate_fast=settings.AWARENESS_TICK_RATE_FAST,
+            tick_rate_slow=settings.AWARENESS_TICK_RATE_SLOW,
+            introspection_interval=settings.AWARENESS_INTROSPECTION_INTERVAL,
+            introspection_jitter=settings.AWARENESS_INTROSPECTION_JITTER,
+            snapshot_interval=settings.AWARENESS_SNAPSHOT_INTERVAL,
+            buffer_size=settings.AWARENESS_BUFFER_SIZE,
+            queue_maxsize=settings.AWARENESS_QUEUE_MAXSIZE,
+            notes_max=settings.AWARENESS_NOTES_MAX,
+            embedding_dim=settings.AWARENESS_EMBEDDING_DIM,
+            embedding_cache_ttl=settings.AWARENESS_EMBEDDING_CACHE_TTL,
+            watchdog_threshold_ms=settings.AWARENESS_WATCHDOG_THRESHOLD_MS,
+            watchdog_strikes=settings.AWARENESS_WATCHDOG_STRIKES,
+            introspection_budget_per_min=settings.AWARENESS_INTROSPECTION_BUDGET_PER_MIN,
+        )
+
+        # Initialize awareness loop
+        awareness_loop = AwarenessLoop(
+            redis_client=redis_client,
+            embedding_provider=embedding_provider,
+            data_dir=Path(settings.AWARENESS_DATA_DIR),
+            config=awareness_config,
+            llm_service=mini_llm_service,  # Use mini model for cost-effective introspection
+        )
+
+        # Start awareness loop
+        await awareness_loop.start()
+        awareness_task = asyncio.create_task(awareness_loop.run())
+
+        logger.info("Awareness loop started successfully")
+
+        # Wire awareness loop to persona service
+        if persona_service:
+            persona_service.set_awareness_loop(awareness_loop)
+            logger.info("Awareness loop wired to persona service")
+
+    except Exception as e:
+        logger.error(f"Failed to start awareness loop: {e}")
+        # Don't crash the app if awareness fails
+        awareness_loop = None
+        awareness_task = None
+        if redis_client:
+            await redis_client.close()
+            redis_client = None
+
+
+@app.on_event("shutdown")
+async def shutdown_awareness():
+    """Stop awareness loop on application shutdown."""
+    global awareness_loop, awareness_task, redis_client
+
+    if awareness_task and not awareness_task.done():
+        logger.info("Stopping awareness loop...")
+        awareness_task.cancel()
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await awareness_task
+
+    if awareness_loop:
+        await awareness_loop.stop()
+        logger.info("Awareness loop stopped")
+
+    if redis_client:
+        await redis_client.close()
+        logger.info("Redis connection closed")
+
 
 # Request/Response models
 class ChatRequest(BaseModel):
@@ -539,6 +658,10 @@ async def chat(request: ChatRequest):
     print(f"🎭 User affect: {user_valence:.3f} ({affect_detector.get_emotion_label(user_valence)}) - '{request.message[:50]}...'")
     logger.info(f"User affect detected: {user_valence:.3f} ({affect_detector.get_emotion_label(user_valence)})")
 
+    # Feed user message to awareness loop
+    if awareness_loop and awareness_loop.running:
+        await awareness_loop.observe("user", {"text": request.message, "valence": user_valence})
+
     # Step 1.5: Detect if agent was successful in previous interaction (for internal mood)
     was_successful = success_detector.detect_success(
         user_message=request.message,
@@ -590,6 +713,10 @@ async def chat(request: ChatRequest):
         blended_valence = user_valence  # Use user valence as fallback
         retrieved_ids = []
         memories = []
+
+    # Feed assistant response to awareness loop
+    if awareness_loop and awareness_loop.running:
+        await awareness_loop.observe("token", {"text": response_text})
 
     # Step 3: Record dual-track mood updates
     mood_before = agent_mood.current_mood
@@ -1798,6 +1925,122 @@ async def delete_task(task_id: str):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete task: {str(e)}")
+
+
+# =====================================================================
+# Awareness Loop Endpoints
+# =====================================================================
+
+@app.get("/api/awareness/status")
+async def get_awareness_status():
+    """Get current awareness loop status."""
+    if not settings.AWARENESS_ENABLED:
+        return {
+            "enabled": False,
+            "message": "Awareness loop is disabled"
+        }
+
+    if not awareness_loop:
+        return {
+            "enabled": True,
+            "running": False,
+            "message": "Awareness loop failed to initialize"
+        }
+
+    try:
+        # Get metrics summary
+        metrics = get_awareness_metrics().get_summary()
+
+        # Get presence state from blackboard
+        scalar = await awareness_loop.blackboard.get_presence_scalar()
+        meta = await awareness_loop.blackboard.get_meta()
+
+        return {
+            "enabled": True,
+            "running": awareness_loop.running,
+            "session_id": awareness_loop.session_id,
+            "tick": awareness_loop.tick_id,
+            "mode": awareness_loop.mode,
+            "presence": round(scalar, 3),
+            "novelty": round(meta.get("novelty", 0.0), 3),
+            "sim_self_live": round(meta.get("sim_self_live", 0.0), 3),
+            "sim_self_origin": round(meta.get("sim_self_origin", 0.0), 3),
+            "coherence_drop": round(meta.get("coherence_drop", 0.0), 3),
+            "entropy": round(meta.get("entropy", 0.0), 3),
+            "last_note_ts": meta.get("tick", 0),
+            "metrics": metrics,
+            "meta": meta,  # Full metadata for debugging
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get awareness status: {str(e)}")
+
+
+@app.get("/api/awareness/notes")
+async def get_awareness_notes(limit: int = 20):
+    """Get recent introspection notes."""
+    if not settings.AWARENESS_ENABLED:
+        raise HTTPException(status_code=503, detail="Awareness loop is disabled")
+
+    if not awareness_loop:
+        raise HTTPException(status_code=503, detail="Awareness loop not initialized")
+
+    try:
+        notes = await awareness_loop.blackboard.get_introspection_notes(limit=limit)
+
+        return {
+            "notes": notes,
+            "count": len(notes)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get notes: {str(e)}")
+
+
+@app.post("/api/awareness/pause")
+async def pause_awareness():
+    """Pause awareness loop (non-destructive, just sets flag)."""
+    if not settings.AWARENESS_ENABLED:
+        raise HTTPException(status_code=503, detail="Awareness loop is disabled")
+
+    if not awareness_loop:
+        raise HTTPException(status_code=503, detail="Awareness loop not initialized")
+
+    awareness_loop.running = False
+
+    return {
+        "success": True,
+        "message": "Awareness loop paused"
+    }
+
+
+@app.post("/api/awareness/resume")
+async def resume_awareness():
+    """Resume awareness loop."""
+    if not settings.AWARENESS_ENABLED:
+        raise HTTPException(status_code=503, detail="Awareness loop is disabled")
+
+    if not awareness_loop:
+        raise HTTPException(status_code=503, detail="Awareness loop not initialized")
+
+    awareness_loop.running = True
+
+    return {
+        "success": True,
+        "message": "Awareness loop resumed"
+    }
+
+
+@app.get("/api/awareness/metrics")
+async def get_awareness_metrics_detailed():
+    """Get detailed awareness metrics."""
+    if not settings.AWARENESS_ENABLED:
+        raise HTTPException(status_code=503, detail="Awareness loop is disabled")
+
+    try:
+        metrics = get_awareness_metrics().get_all_metrics()
+
+        return metrics
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get metrics: {str(e)}")
 
 
 # Mount static files
