@@ -1499,6 +1499,26 @@ async def health():
     return {"status": "healthy"}
 
 
+class InjectRequest(BaseModel):
+    kind: str = "user"
+    text: str = ""
+
+
+@app.post("/api/dev/inject")
+async def inject_percept(request: InjectRequest):
+    """
+    Dev endpoint to inject text into awareness loop for testing.
+
+    Args:
+        request: JSON body with kind and text fields
+    """
+    if not awareness_loop or not awareness_loop.running:
+        raise HTTPException(status_code=503, detail="Awareness loop not running")
+
+    await awareness_loop.observe(request.kind, {"text": request.text})
+    return {"ok": True, "injected": {"kind": request.kind, "text_len": len(request.text)}}
+
+
 @app.get("/api/debug/prompt")
 async def debug_prompt(message: str = "Do you exist?", retrieve_memories: bool = True):
     """Debug endpoint to see the full prompt being sent to GPT-4."""
@@ -1955,6 +1975,14 @@ async def get_awareness_status():
         scalar = await awareness_loop.blackboard.get_presence_scalar()
         meta = await awareness_loop.blackboard.get_meta()
 
+        # Count percept types in buffer for diagnostics
+        percept_counts = {}
+        text_percept_count = 0
+        for p in awareness_loop.percepts:
+            percept_counts[p.kind] = percept_counts.get(p.kind, 0) + 1
+            if p.kind in ("user", "token") and p.payload.get("text"):
+                text_percept_count += 1
+
         return {
             "enabled": True,
             "running": awareness_loop.running,
@@ -1968,6 +1996,11 @@ async def get_awareness_status():
             "coherence_drop": round(meta.get("coherence_drop", 0.0), 3),
             "entropy": round(meta.get("entropy", 0.0), 3),
             "last_note_ts": meta.get("tick", 0),
+            "buffer": {
+                "total_percepts": len(awareness_loop.percepts),
+                "text_percepts": text_percept_count,
+                "by_kind": percept_counts,
+            },
             "metrics": metrics,
             "meta": meta,  # Full metadata for debugging
         }

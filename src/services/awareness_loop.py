@@ -170,11 +170,36 @@ class AwarenessLoop:
         if "self_anchor_origin" not in self.anchors:
             cold_anchor = self.persistence.get_cold_start_anchor()
             if cold_anchor is not None:
-                # Initialize both anchors to same starting point
+                # Initialize both anchors to same starting point (from snapshot)
                 self.anchors["self_anchor_origin"] = cold_anchor.copy()
                 self.anchors["self_anchor_live"] = cold_anchor.copy()
+                logger.info("Initialized anchors from cold start snapshot")
+            else:
+                # No snapshot - seed with self-knowledge text
+                await self._seed_anchors_from_self_knowledge()
 
         self.running = True
+
+    async def _seed_anchors_from_self_knowledge(self) -> None:
+        """Seed anchors with self-knowledge embedding on first start."""
+        seed_text = (
+            "I am Astra, an autonomy-first AI agent with episodic memory and emotional awareness. "
+            "I maintain beliefs about my identity, capabilities, and values. "
+            "I engage in meaningful conversations, reflect on my experiences, and grow through interactions. "
+            "My core values include integrity, curiosity, empathy, and continuous learning."
+        )
+
+        try:
+            embedding = await self.embedding_cache.get_embedding(seed_text, context_len=0)
+            if embedding is not None:
+                self.anchors["self_anchor_origin"] = embedding.copy()
+                self.anchors["self_anchor_live"] = embedding.copy()
+                self.last_presence_vec = embedding.copy()
+                logger.info(f"Seeded anchors from self-knowledge text ({len(seed_text)} chars)")
+            else:
+                logger.warning("Failed to embed seed text for anchor initialization")
+        except Exception as e:
+            logger.error(f"Error seeding anchors from self-knowledge: {e}")
 
     async def _restore_from_snapshot(self, snapshot: AwarenessSnapshot) -> None:
         """Restore state from snapshot."""
@@ -571,15 +596,26 @@ class AwarenessLoop:
 
         return float(np.clip(scalar, 0.0, 1.0))
 
-    def _extract_recent_text(self, window: int = 32) -> str:
-        """Extract recent text from percepts."""
-        texts = [
+    def _extract_recent_text(self, window: int = 64) -> str:
+        """Extract recent text from percepts.
+
+        Args:
+            window: Max number of text percepts to extract (default 64)
+
+        Returns:
+            Concatenated text from recent user/token percepts
+        """
+        # Filter ALL percepts for user/token kinds, then take last N
+        text_percepts = [
             p.payload.get("text", "")
-            for p in list(self.percepts)[-window:]
-            if p.kind in ("token", "user")
+            for p in self.percepts
+            if p.kind in ("token", "user") and p.payload.get("text")
         ]
 
-        return " ".join(texts)
+        # Take last N text percepts (not last N of all percepts)
+        recent_texts = text_percepts[-window:]
+
+        return " ".join(recent_texts).strip()
 
     def _cosine_sim(self, a: np.ndarray, b: np.ndarray) -> float:
         """Compute cosine similarity."""
