@@ -44,6 +44,13 @@ data/vector_index/
 data/vector_index_short_term/
 data/vector_index_long_term/
 data/vector_index_self/
+data/vector_index_beliefs/
+
+# Runtime awareness and learning state
+data/awareness_state*.ndjson
+data/awareness_state*.ndjson.gz
+data/awareness_state.json
+data/self_knowledge_index.json
 
 # Testing
 .pytest_cache/
