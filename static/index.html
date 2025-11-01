@@ -114,30 +114,7 @@
             line-height: 1.6;
         }
 
-        .memories {
-            margin-top: 10px;
-            margin-left: 42px;
-            font-size: 13px;
-        }
-
-        .memory-item {
-            background: #fff9e6;
-            border-left: 3px solid #ffd700;
-            padding: 10px;
-            margin-top: 8px;
-            border-radius: 6px;
-            font-size: 12px;
-        }
-
-        .memory-item strong {
-            color: #764ba2;
-        }
-
-        .memory-meta {
-            color: #666;
-            font-size: 11px;
-            margin-top: 4px;
-        }
+        /* Memory display removed from conversation per user feedback */
 
         .input-area {
             padding: 20px 30px;
@@ -495,7 +472,7 @@
             margin-right: 8px;
         }
 
-        .memory-type.interaction {
+        .memory-type.occurrence {
             background: #d0ebff;
             color: #1864ab;
         }
@@ -503,6 +480,21 @@
         .memory-type.observation {
             background: #d3f9d8;
             color: #2b8a3e;
+        }
+
+        .memory-type.self_definition {
+            background: #ffe3e3;
+            color: #c92a2a;
+        }
+
+        .memory-type.dissonance_event {
+            background: #fff3bf;
+            color: #e67700;
+        }
+
+        .memory-type.web_observation {
+            background: #e7f5ff;
+            color: #1971c2;
         }
 
         .memory-valence {
@@ -707,6 +699,30 @@
             border-color: #667eea;
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
         }
+
+        /* Memory Filter Buttons */
+        .memory-filter-btn {
+            padding: 8px 16px;
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: #495057;
+        }
+
+        .memory-filter-btn:hover {
+            border-color: #667eea;
+            background: #f8f9fa;
+        }
+
+        .memory-filter-btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-color: #667eea;
+        }
     </style>
 </head>
 <body>
@@ -784,6 +800,28 @@
                 <h2>Memory Browser</h2>
                 <button class="modal-close" onclick="closeMemoryBrowser()">×</button>
             </div>
+            <div style="padding: 15px 30px; background: #f8f9fa; border-bottom: 1px solid #e0e0e0;">
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <button class="memory-filter-btn active" data-filter="all" onclick="filterMemories('all')">
+                        All
+                    </button>
+                    <button class="memory-filter-btn" data-filter="occurrence" onclick="filterMemories('occurrence')">
+                        💬 Conversations
+                    </button>
+                    <button class="memory-filter-btn" data-filter="self_definition" onclick="filterMemories('self_definition')">
+                        🎭 Self-Definitions
+                    </button>
+                    <button class="memory-filter-btn" data-filter="dissonance_event" onclick="filterMemories('dissonance_event')">
+                        ⚠️ Dissonance
+                    </button>
+                    <button class="memory-filter-btn" data-filter="observation" onclick="filterMemories('observation')">
+                        💭 Reflections
+                    </button>
+                    <button class="memory-filter-btn" data-filter="web_observation" onclick="filterMemories('web_observation')">
+                        🌐 Web Content
+                    </button>
+                </div>
+            </div>
             <div class="modal-body" id="memory-list">
                 <div class="loading-spinner">Loading memories...</div>
             </div>
@@ -839,6 +877,8 @@
         let isProcessing = false;
         let conversationHistory = [];  // Track conversation for context
         let selectedModel = null;  // Track selected model
+        let allMemories = [];  // Store all memories for filtering
+        let currentMemoryFilter = 'all';  // Track current filter
 
         // Load available models on page load
         async function loadModels() {
@@ -1002,27 +1042,8 @@
                 <div class="message-content">${escapeHtml(content)}</div>
             `;
 
-            // Add memories if present
-            if (memories && memories.length > 0) {
-                const memoriesDiv = document.createElement('div');
-                memoriesDiv.className = 'memories';
-                memoriesDiv.innerHTML = '<strong>📝 Context from memory:</strong>';
-
-                memories.forEach((mem, idx) => {
-                    const memDiv = document.createElement('div');
-                    memDiv.className = 'memory-item';
-                    memDiv.innerHTML = `
-                        <strong>Memory ${idx + 1}:</strong> "${truncate(mem.prompt, 60)}"
-                        <div class="memory-meta">
-                            Similarity: ${(mem.similarity_score * 100).toFixed(0)}% |
-                            Recency: ${(mem.recency_score * 100).toFixed(0)}%
-                        </div>
-                    `;
-                    memoriesDiv.appendChild(memDiv);
-                });
-
-                messageDiv.appendChild(memoriesDiv);
-            }
+            // Memories are still retrieved for AI context but not displayed in conversation
+            // (User feedback: memory references add zero value to conversation flow)
 
             chatArea.appendChild(messageDiv);
             chatArea.scrollTop = chatArea.scrollHeight;
@@ -1146,13 +1167,23 @@
             memoryList.innerHTML = '<div class="loading-spinner">Loading memories...</div>';
 
             try {
-                const response = await fetch('/api/memories?limit=50');
+                const response = await fetch('/api/memories?limit=100');
                 const memories = await response.json();
 
                 if (memories.length === 0) {
                     memoryList.innerHTML = '<div class="loading-spinner">No memories yet</div>';
                     return;
                 }
+
+                // Store memories globally for filtering
+                allMemories = memories;
+                currentMemoryFilter = 'all';
+
+                // Reset filter buttons
+                document.querySelectorAll('.memory-filter-btn').forEach(btn => {
+                    btn.classList.remove('active');
+                    if (btn.dataset.filter === 'all') btn.classList.add('active');
+                });
 
                 // Render memories
                 memoryList.innerHTML = '';
