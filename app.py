@@ -1616,6 +1616,10 @@ async def persona_chat(request: ChatRequest):
         # Normal response (tuple unpacking)
         response_text, reconciliation = result
 
+        # Feed agent response to awareness loop
+        if awareness_loop and awareness_loop.running:
+            await awareness_loop.observe("token", {"text": response_text})
+
         # Check if response contains dissonance resolutions
         resolution_data = active_persona_service.parse_resolution_response(response_text)
         if resolution_data and resolution_data.get("has_resolutions"):
@@ -1655,6 +1659,11 @@ async def persona_chat(request: ChatRequest):
             else:
                 logger.warning("⚠️ Could not extract belief statements from conversation history")
                 print("⚠️ Could not extract belief statements from history - resolutions not applied")
+
+        # Feed user message to awareness loop
+        if awareness_loop and awareness_loop.running:
+            user_valence_pre = affect_detector.detect_vad(request.message)[0]
+            await awareness_loop.observe("user", {"text": request.message, "valence": user_valence_pre})
 
         # Store the interaction in memory so persona can learn from it
         # Use full VAD detection on user message
