@@ -281,11 +281,11 @@ class BeliefLifecycleManager:
             # Log to identity ledger
             append_event(LedgerEvent(
                 ts=datetime.now(timezone.utc).timestamp(),
-                kind="belief_auto_formed",
-                belief_id=belief_id,
-                confidence_val=pattern.confidence,
+                schema=2,  # Current schema version
+                event="belief_auto_formed",
+                beliefs_touched=[belief_id],
                 evidence_refs=pattern.evidence_ids,
-                meta={"category": pattern.category, "evidence_count": pattern.evidence_count()},
+                meta={"category": pattern.category, "evidence_count": pattern.evidence_count(), "confidence": pattern.confidence},
             ))
 
             self._action_counters["formations"] += 1
