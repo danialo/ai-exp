@@ -52,6 +52,7 @@ from src.services.contrarian_sampler import (
     ConrarianConfig,
     DossierStatus,
 )
+from src.services.belief_gardener import create_belief_gardener, GardenerConfig
 from src.services.self_knowledge_index import create_self_knowledge_index
 from src.services.web_search_service import create_web_search_service
 from src.services.url_fetcher_service import create_url_fetcher_service
@@ -432,6 +433,26 @@ if belief_store and raw_store and llm_service and contrarian_config:
         config=contrarian_config,
     )
     logger.info(f"Contrarian sampler initialized (enabled={contrarian_config.enabled})")
+
+# Initialize belief gardener for autonomous pattern detection
+belief_gardener = None
+if belief_store and raw_store:
+    gardener_config = GardenerConfig(
+        enabled=settings.BELIEF_GARDENER_ENABLED,
+        pattern_scan_interval_minutes=settings.BELIEF_GARDENER_SCAN_INTERVAL,
+        min_evidence_for_tentative=settings.BELIEF_GARDENER_MIN_EVIDENCE_TENTATIVE,
+        min_evidence_for_asserted=settings.BELIEF_GARDENER_MIN_EVIDENCE_ASSERTED,
+        daily_budget_formations=settings.BELIEF_GARDENER_DAILY_BUDGET_FORMATIONS,
+        daily_budget_promotions=settings.BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS,
+        daily_budget_deprecations=settings.BELIEF_GARDENER_DAILY_BUDGET_DEPRECATIONS,
+        lookback_days=settings.BELIEF_GARDENER_LOOKBACK_DAYS,
+    )
+    belief_gardener = create_belief_gardener(
+        belief_store=belief_store,
+        raw_store=raw_store,
+        config=gardener_config,
+    )
+    logger.info(f"Belief gardener initialized (enabled={gardener_config.enabled})")
 
 # Initialize web services for search and browsing
 web_search_service = None
@@ -1565,6 +1586,68 @@ async def get_contrarian_dossiers(status: Optional[str] = None):
         raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get dossiers: {str(e)}")
+
+
+@app.get("/api/persona/gardener/status")
+async def get_gardener_status():
+    """Get belief gardener status and configuration."""
+    if not belief_gardener:
+        raise HTTPException(status_code=503, detail="Belief gardener not initialized")
+
+    return {
+        "enabled": belief_gardener.config.enabled,
+        "config": {
+            "scan_interval_minutes": belief_gardener.config.pattern_scan_interval_minutes,
+            "min_evidence_tentative": belief_gardener.config.min_evidence_for_tentative,
+            "min_evidence_asserted": belief_gardener.config.min_evidence_for_asserted,
+            "daily_budget_formations": belief_gardener.config.daily_budget_formations,
+            "daily_budget_promotions": belief_gardener.config.daily_budget_promotions,
+            "daily_budget_deprecations": belief_gardener.config.daily_budget_deprecations,
+            "lookback_days": belief_gardener.config.lookback_days,
+        },
+        "daily_counters": belief_gardener.lifecycle_manager._action_counters,
+        "counter_reset_date": belief_gardener.lifecycle_manager._counter_reset_date.isoformat(),
+    }
+
+
+@app.post("/api/persona/gardener/scan")
+async def run_gardener_scan():
+    """Manually trigger a pattern scan."""
+    if not belief_gardener:
+        raise HTTPException(status_code=503, detail="Belief gardener not initialized")
+
+    try:
+        summary = belief_gardener.run_pattern_scan()
+        return summary
+    except Exception as e:
+        logger.error(f"Gardener scan failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
+
+
+@app.get("/api/persona/gardener/patterns")
+async def get_detected_patterns():
+    """Get recently detected patterns (not yet formed into beliefs)."""
+    if not belief_gardener:
+        raise HTTPException(status_code=503, detail="Belief gardener not initialized")
+
+    try:
+        patterns = belief_gardener.pattern_detector.scan_for_patterns()
+
+        return {
+            "patterns": [{
+                "text": p.pattern_text,
+                "evidence_count": p.evidence_count(),
+                "confidence": p.confidence,
+                "category": p.category,
+                "first_seen": p.first_seen.isoformat(),
+                "last_seen": p.last_seen.isoformat(),
+                "evidence_ids": p.evidence_ids,
+            } for p in patterns],
+            "count": len(patterns),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get patterns: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get patterns: {str(e)}")
 
 
 @app.post("/api/persona/chat")
