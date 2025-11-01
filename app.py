@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict
 from pathlib import Path
 import uvicorn
@@ -417,12 +417,86 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
 
 # Request/Response models
 class ChatRequest(BaseModel):
-    """Request model for chat endpoint."""
-    message: str
-    retrieve_memories: bool = True
-    top_k: int = 3
-    conversation_history: List[Dict[str, str]] = []  # List of {"role": "user"|"assistant", "content": "..."}
-    model: Optional[str] = None  # Optional model override (format: "provider:model" e.g., "openai:gpt-4o")
+    """Request model for chat endpoint with security validation."""
+    message: str = Field(
+        ...,
+        min_length=1,
+        max_length=10000,
+        description="User message (1-10000 characters)"
+    )
+    retrieve_memories: bool = Field(
+        default=True,
+        description="Whether to retrieve relevant memories"
+    )
+    top_k: int = Field(
+        default=3,
+        ge=1,
+        le=50,
+        description="Number of memories to retrieve (1-50)"
+    )
+    conversation_history: List[Dict[str, str]] = Field(
+        default=[],
+        max_length=100,
+        description="Conversation history (max 100 messages)"
+    )
+    model: Optional[str] = Field(
+        default=None,
+        pattern=r'^[a-z]+:[a-z0-9\-\.]+$',
+        description="Model override in format 'provider:model'"
+    )
+
+    @field_validator('conversation_history')
+    @classmethod
+    def validate_conversation_history(cls, v):
+        """Validate conversation history structure and content."""
+        for idx, msg in enumerate(v):
+            # Check required fields
+            if 'role' not in msg or 'content' not in msg:
+                raise ValueError(f"Message {idx} must have 'role' and 'content' fields")
+
+            # Validate role
+            if msg['role'] not in ('user', 'assistant', 'system'):
+                raise ValueError(f"Message {idx} has invalid role: {msg['role']}")
+
+            # Validate content length
+            if not isinstance(msg['content'], str):
+                raise ValueError(f"Message {idx} content must be a string")
+
+            if len(msg['content']) > 10000:
+                raise ValueError(f"Message {idx} content exceeds 10000 characters")
+
+            if len(msg['content']) == 0:
+                raise ValueError(f"Message {idx} content cannot be empty")
+
+        return v
+
+    @field_validator('model')
+    @classmethod
+    def validate_model_format(cls, v):
+        """Validate model format if provided."""
+        if v is None:
+            return v
+
+        # Must match provider:model format
+        if ':' not in v:
+            raise ValueError("Model must be in format 'provider:model'")
+
+        parts = v.split(':')
+        if len(parts) != 2:
+            raise ValueError("Model must have exactly one colon separator")
+
+        provider, model = parts
+
+        # Validate provider
+        allowed_providers = {'openai', 'anthropic', 'ollama', 'groq'}
+        if provider not in allowed_providers:
+            raise ValueError(f"Provider must be one of: {', '.join(allowed_providers)}")
+
+        # Validate model name (alphanumeric, hyphens, dots only)
+        if not model or len(model) > 100:
+            raise ValueError("Model name must be 1-100 characters")
+
+        return v
 
 
 class Memory(BaseModel):

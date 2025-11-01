@@ -11,6 +11,7 @@ This service coordinates:
 
 import json
 import logging
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List, Any
@@ -96,6 +97,11 @@ class PersonaService:
         self.search_count = 0
         self.url_fetch_count = 0
 
+        # Dissonance resolution tracking (prevent infinite loops)
+        self.dissonance_attempts = {}  # Maps query hash -> attempt count
+        self.max_dissonance_attempts = 3
+        self.dissonance_attempt_window = 3600  # 1 hour window for tracking
+
         # Anti-meta-talk system
         self.enable_anti_metatalk = enable_anti_metatalk
         self.auto_rewrite = auto_rewrite
@@ -180,21 +186,63 @@ class PersonaService:
                                 ]
 
                                 if high_severity_patterns:
-                                    # Generate resolution prompt and block response
-                                    resolution_prompt = self.belief_consistency_checker.generate_resolution_prompt(
-                                        query=user_message,
-                                        dissonance_patterns=high_severity_patterns,
-                                    )
-                                    logger.warning(f"BLOCKING response due to {len(high_severity_patterns)} high-severity dissonance patterns")
-                                    print(f"🚫 BLOCKING: {len(high_severity_patterns)} high-severity dissonance patterns require resolution")
+                                    # Check if we should block or bypass (prevent infinite loops)
+                                    query_hash = hashlib.md5(user_message.encode()).hexdigest()[:16]
 
-                                    # Return resolution prompt as the response
-                                    return {
-                                        "response": resolution_prompt,
-                                        "resolution_required": True,
-                                        "dissonance_count": len(high_severity_patterns),
-                                        "tool_calls": [],
+                                    # Clean up old attempts (older than window)
+                                    current_time = datetime.now().timestamp()
+                                    self.dissonance_attempts = {
+                                        k: v for k, v in self.dissonance_attempts.items()
+                                        if current_time - v['last_attempt'] < self.dissonance_attempt_window
                                     }
+
+                                    # Get or initialize attempt tracking for this query
+                                    if query_hash not in self.dissonance_attempts:
+                                        self.dissonance_attempts[query_hash] = {
+                                            'count': 0,
+                                            'first_attempt': current_time,
+                                            'last_attempt': current_time
+                                        }
+
+                                    attempts = self.dissonance_attempts[query_hash]
+                                    attempts['count'] += 1
+                                    attempts['last_attempt'] = current_time
+
+                                    # Check if we've exceeded max attempts
+                                    if attempts['count'] > self.max_dissonance_attempts:
+                                        logger.warning(
+                                            f"FORCING BYPASS after {attempts['count']} dissonance resolution attempts for query hash {query_hash}"
+                                        )
+                                        print(f"⚠️ Forcing bypass after {attempts['count']} failed dissonance resolution attempts")
+
+                                        # Clear this query from tracking
+                                        del self.dissonance_attempts[query_hash]
+
+                                        # Continue with normal response generation (bypass blocking)
+                                    else:
+                                        # Block and require resolution
+                                        resolution_prompt = self.belief_consistency_checker.generate_resolution_prompt(
+                                            query=user_message,
+                                            dissonance_patterns=high_severity_patterns,
+                                        )
+                                        logger.warning(
+                                            f"BLOCKING response due to {len(high_severity_patterns)} high-severity dissonance patterns "
+                                            f"(attempt {attempts['count']}/{self.max_dissonance_attempts})"
+                                        )
+                                        print(
+                                            f"🚫 BLOCKING: {len(high_severity_patterns)} high-severity dissonance patterns require resolution "
+                                            f"(attempt {attempts['count']}/{self.max_dissonance_attempts})"
+                                        )
+
+                                        # Return resolution prompt as the response
+                                        return {
+                                            "response": resolution_prompt,
+                                            "resolution_required": True,
+                                            "dissonance_count": len(high_severity_patterns),
+                                            "attempt_count": attempts['count'],
+                                            "max_attempts": self.max_dissonance_attempts,
+                                            "tool_calls": [],
+                                        }
                         except Exception as e:
                             logger.error(f"Failed to check consistency: {e}")
 
