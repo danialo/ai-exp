@@ -725,6 +725,9 @@
                 <button class="memory-browser-btn" onclick="openMemoryBrowser()">
                     📚 Browse Memories
                 </button>
+                <button class="memory-browser-btn" onclick="openConversationBrowser()">
+                    💬 Conversations
+                </button>
                 <button class="memory-browser-btn" onclick="openFileBrowser()">
                     📁 Browse Files
                 </button>
@@ -825,6 +828,19 @@
             </div>
             <div class="modal-body" id="file-content">
                 <div class="loading-spinner">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Conversation Browser Modal -->
+    <div class="modal" id="conversation-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>💬 Conversation History</h2>
+                <button class="modal-close" onclick="closeConversationBrowser()">×</button>
+            </div>
+            <div class="modal-body" id="conversation-list">
+                <div class="loading-spinner">Loading conversations...</div>
             </div>
         </div>
     </div>
@@ -1447,6 +1463,68 @@
             const i = Math.floor(Math.log(bytes) / Math.log(k));
             return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
         }
+
+        // Conversation Browser Functions
+        async function openConversationBrowser() {
+            const modal = document.getElementById('conversation-modal');
+            const conversationList = document.getElementById('conversation-list');
+
+            // Show modal
+            modal.classList.add('open');
+
+            // Load conversations
+            conversationList.innerHTML = '<div class="loading-spinner">Loading conversations...</div>';
+
+            try {
+                const response = await fetch('/api/conversations?limit=10');
+                const conversations = await response.json();
+
+                if (conversations.length === 0) {
+                    conversationList.innerHTML = '<div class="loading-spinner">No conversations yet</div>';
+                    return;
+                }
+
+                // Render conversations
+                conversationList.innerHTML = '';
+                conversations.forEach(conv => {
+                    const item = document.createElement('div');
+                    item.className = 'memory-list-item';
+
+                    const dateStr = new Date(conv.timestamp).toLocaleString();
+
+                    item.innerHTML = `
+                        <div class="memory-header">
+                            <div class="memory-meta">
+                                <span class="memory-type interaction">conversation</span>
+                                <span style="margin-left: 8px;">${dateStr}</span>
+                            </div>
+                        </div>
+                        <div class="memory-text">
+                            <div class="memory-prompt"><strong>You:</strong> ${escapeHtml(conv.user_message)}</div>
+                            <div class="memory-response"><strong>Astra:</strong> ${escapeHtml(truncate(conv.agent_response, 200))}</div>
+                        </div>
+                    `;
+
+                    conversationList.appendChild(item);
+                });
+
+            } catch (error) {
+                console.error('Failed to load conversations:', error);
+                conversationList.innerHTML = '<div class="loading-spinner">Failed to load conversations</div>';
+            }
+        }
+
+        function closeConversationBrowser() {
+            const modal = document.getElementById('conversation-modal');
+            modal.classList.remove('open');
+        }
+
+        // Close modal on background click
+        document.getElementById('conversation-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'conversation-modal') {
+                closeConversationBrowser();
+            }
+        });
     </script>
 </body>
 </html>
