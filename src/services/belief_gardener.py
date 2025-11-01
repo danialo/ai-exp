@@ -251,11 +251,11 @@ class BeliefLifecycleManager:
             return None
 
         # Check if similar belief already exists
-        existing = self.belief_store.get_all_beliefs()
+        existing = self.belief_store.get_current()
         for belief in existing.values():
-            # Simple text similarity check
-            if belief["statement"].lower() == pattern.pattern_text.lower():
-                logger.info(f"Belief already exists: {belief['id']}")
+            # Simple text similarity check (BeliefVersion is a dataclass)
+            if belief.statement.lower() == pattern.pattern_text.lower():
+                logger.info(f"Belief already exists: {belief.belief_id}")
                 return None
 
         # Create tentative belief
@@ -264,11 +264,15 @@ class BeliefLifecycleManager:
         try:
             self.belief_store.create_belief(
                 belief_id=belief_id,
-                domain=pattern.category,
+                belief_type="experiential",  # Default for auto-generated beliefs
                 statement=pattern.pattern_text,
+                state="tentative",  # Auto-generated beliefs start tentative
                 confidence=pattern.confidence,
                 evidence_refs=pattern.evidence_ids,
-                metadata={"auto_generated": True, "pattern_first_seen": pattern.first_seen.isoformat()},
+                immutable=False,  # Auto-generated beliefs can be modified
+                rationale=f"Auto-detected pattern with {pattern.evidence_count()} supporting experiences",
+                metadata={"auto_generated": True, "pattern_first_seen": pattern.first_seen.isoformat(), "category": pattern.category},
+                updated_by="gardener",
             )
 
             # Store pattern as LEARNING_PATTERN experience
