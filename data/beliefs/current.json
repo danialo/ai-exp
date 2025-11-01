@@ -135,5 +135,36 @@
       "original_last_reinforced": "2025-10-30T03:22:37.702287+00:00"
     },
     "hash": "43824fdc1cff39935e3461420213ce5d198c57075d08a88a16946762db571912"
+  },
+  "auto.emotional.[internal-emotional-": {
+    "belief_id": "auto.emotional.[internal-emotional-",
+    "ver": 1,
+    "statement": "[Internal Emotional Assessment: I feel reflective and intrigued by this topic",
+    "state": "tentative",
+    "confidence": 1.0,
+    "evidence_refs": [
+      "exp_2025-10-30T03:21:30Z_012a",
+      "exp_2025-10-29T18:17:28Z_265b",
+      "exp_2025-10-29T04:46:03Z_2687",
+      "exp_2025-10-29T03:09:43Z_12b3",
+      "exp_2025-10-29T02:30:40Z_1f20",
+      "exp_2025-10-29T02:22:52Z_1223",
+      "exp_2025-10-29T02:18:05Z_14ee",
+      "exp_2025-10-29T00:46:53Z_05dd",
+      "exp_2025-10-28T22:42:46Z_1963",
+      "exp_2025-10-28T22:41:46Z_1772",
+      "exp_2025-10-28T22:24:36Z_06b3"
+    ],
+    "updated_by": "gardener",
+    "ts": 1762005341.6654172,
+    "belief_type": "experiential",
+    "immutable": false,
+    "rationale": "Auto-detected pattern with 11 supporting experiences",
+    "metadata": {
+      "auto_generated": true,
+      "pattern_first_seen": "2025-10-28T22:24:36.612352+00:00",
+      "category": "emotional"
+    },
+    "hash": "eb9bf5d1baad05831494b84e47a815cdd0c1ae198cd106ce74d63200814aa3ab"
   }
 }
