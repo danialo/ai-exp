@@ -23,7 +23,8 @@ from config.settings import settings
 from src.memory.raw_store import create_raw_store
 from src.memory.vector_store import create_vector_store
 from src.memory.embedding import create_embedding_provider
-from src.memory.models import ExperienceType
+from src.memory.models import ExperienceType, experience_to_model, Experience
+from sqlmodel import Session, select
 from src.pipeline.ingest import create_ingestion_pipeline, InteractionPayload
 from src.pipeline.lens import create_experience_lens
 from src.pipeline.reflection import create_reflection_writer
@@ -899,8 +900,6 @@ async def get_conversations(limit: int = 10):
 
     Returns the last N conversation exchanges (user message + agent response pairs).
     """
-    from src.memory.models import Experience, Actor
-
     with Session(raw_store.engine) as session:
         # Get recent occurrence-type experiences with user actor
         statement = (
