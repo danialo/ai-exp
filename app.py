@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import time
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
@@ -53,7 +55,11 @@ from src.services.contrarian_sampler import (
     DossierStatus,
 )
 from src.services.belief_gardener import create_belief_gardener, GardenerConfig
+from src.services.tag_injector import create_tag_injector
 from src.services.self_knowledge_index import create_self_knowledge_index
+from src.services.provenance_trust import create_provenance_trust, TrustConfig
+from src.services.outcome_evaluator import create_outcome_evaluator, OutcomeConfig
+from src.services.feedback_aggregator_enhanced import EnhancedFeedbackAggregator, FeedbackConfig
 from src.services.web_search_service import create_web_search_service
 from src.services.url_fetcher_service import create_url_fetcher_service
 from src.services.web_interpretation_service import create_web_interpretation_service
@@ -434,9 +440,70 @@ if belief_store and raw_store and llm_service and contrarian_config:
     )
     logger.info(f"Contrarian sampler initialized (enabled={contrarian_config.enabled})")
 
+# Initialize outcome-driven trust system
+provenance_trust = None
+outcome_evaluator = None
+enhanced_feedback_aggregator = None
+
+if belief_store and raw_store:
+    # Initialize provenance trust manager
+    trust_config = TrustConfig(
+        enabled=True,
+        alpha_0=0.3,
+        k_samples=50,
+        r_min=0.1,
+    )
+    provenance_trust = create_provenance_trust(
+        data_dir=Path(settings.AWARENESS_DATA_DIR),
+        config=trust_config,
+    )
+    logger.info("Provenance trust manager initialized")
+
+    # Initialize outcome evaluator (will wire awareness_loop later in startup)
+    outcome_config = OutcomeConfig(
+        enabled=True,
+        w_coherence=0.4,
+        w_conflict=0.2,
+        w_stability=0.2,
+        w_validation=0.2,
+        horizon_short_hours=2.0,
+        horizon_long_hours=24.0,
+    )
+    outcome_evaluator = create_outcome_evaluator(
+        provenance_trust=provenance_trust,
+        awareness_loop=None,  # Will wire after awareness_loop starts
+        belief_store=belief_store,
+        raw_store=raw_store,
+        config=outcome_config,
+    )
+    logger.info("Outcome evaluator initialized")
+
+    # Initialize enhanced feedback aggregator
+    feedback_config = FeedbackConfig(
+        enabled=True,
+        window_hours=24,
+        cache_ttl_secs=300,
+        min_samples=2,
+        alpha_align=1.5,
+        conviction_base=0.5,
+        conviction_scale=1.5,
+        dedup_window_secs=120,
+        dedup_similarity_threshold=0.9,
+    )
+    enhanced_feedback_aggregator = EnhancedFeedbackAggregator(
+        raw_store=raw_store,
+        provenance_trust=provenance_trust,
+        awareness_loop=None,  # Will wire after awareness_loop starts
+        belief_store=belief_store,
+        outcome_evaluator=outcome_evaluator,
+        embedding_provider=embedding_provider,
+        config=feedback_config,
+    )
+    logger.info("Enhanced feedback aggregator initialized with dynamic weighting")
+
 # Initialize belief gardener for autonomous pattern detection
 belief_gardener = None
-if belief_store and raw_store:
+if belief_store and raw_store and enhanced_feedback_aggregator:
     gardener_config = GardenerConfig(
         enabled=settings.BELIEF_GARDENER_ENABLED,
         pattern_scan_interval_minutes=settings.BELIEF_GARDENER_SCAN_INTERVAL,
@@ -450,9 +517,19 @@ if belief_store and raw_store:
     belief_gardener = create_belief_gardener(
         belief_store=belief_store,
         raw_store=raw_store,
+        feedback_aggregator=enhanced_feedback_aggregator,  # Use enhanced version
         config=gardener_config,
     )
-    logger.info(f"Belief gardener initialized (enabled={gardener_config.enabled})")
+    logger.info(f"Belief gardener initialized with outcome-driven feedback (enabled={gardener_config.enabled})")
+
+# Initialize tag injector for feedback tagging
+tag_injector = None
+if belief_store and llm_service:
+    tag_injector = create_tag_injector(
+        belief_store=belief_store,
+        llm_service=llm_service,
+    )
+    logger.info("Tag injector initialized for feedback tagging")
 
 # Initialize web services for search and browsing
 web_search_service = None
@@ -517,11 +594,41 @@ redis_client: Optional[Redis] = None
 if settings.AWARENESS_ENABLED:
     logger.info("Awareness loop enabled - initializing Redis and components")
 
+# Background gardener tick
+gardener_task: Optional[asyncio.Task] = None
+gardener_last_scan: float = 0.0
+
+async def gardener_tick_loop():
+    """Background task for periodic belief gardener scans."""
+    global gardener_last_scan
+
+    if not belief_gardener or not settings.BELIEF_GARDENER_ENABLED:
+        return
+
+    SCAN_SECS = 60 * settings.BELIEF_GARDENER_SCAN_INTERVAL
+    logger.info(f"Gardener tick loop started (interval={SCAN_SECS}s)")
+
+    while True:
+        try:
+            await asyncio.sleep(30)  # Check every 30 seconds
+
+            now = time.time()
+            if now - gardener_last_scan >= SCAN_SECS:
+                logger.info("Running scheduled gardener scan")
+                belief_gardener.run_pattern_scan()
+                gardener_last_scan = now
+
+        except asyncio.CancelledError:
+            logger.info("Gardener tick loop cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Gardener tick failed: {e}")
+
 
 @app.on_event("startup")
 async def startup_awareness():
     """Start awareness loop on application startup."""
-    global awareness_loop, awareness_task, redis_client
+    global awareness_loop, awareness_task, redis_client, gardener_task
 
     if not settings.AWARENESS_ENABLED:
         logger.info("Awareness loop disabled")
@@ -579,6 +686,43 @@ async def startup_awareness():
             persona_service.set_awareness_loop(awareness_loop)
             logger.info("Awareness loop wired to persona service")
 
+        # Wire awareness loop to outcome-driven trust system
+        if outcome_evaluator:
+            outcome_evaluator.awareness_loop = awareness_loop
+            logger.info("Awareness loop wired to outcome evaluator")
+
+        if enhanced_feedback_aggregator:
+            enhanced_feedback_aggregator.awareness_loop = awareness_loop
+            logger.info("Awareness loop wired to enhanced feedback aggregator")
+
+        # Start outcome evaluation background task
+        if outcome_evaluator:
+            async def outcome_evaluation_loop():
+                """Background task for delayed outcome evaluations."""
+                logger.info("Outcome evaluation loop started (interval=30min)")
+                while True:
+                    try:
+                        await asyncio.sleep(1800)  # Every 30 minutes
+                        completed = await outcome_evaluator.run_pending_evaluations()
+                        if completed > 0:
+                            logger.info(f"Completed {completed} outcome evaluations")
+                            # Persist updated trust state
+                            if provenance_trust:
+                                provenance_trust.persist()
+                    except asyncio.CancelledError:
+                        logger.info("Outcome evaluation loop cancelled")
+                        break
+                    except Exception as e:
+                        logger.error(f"Outcome evaluation failed: {e}")
+
+            outcome_eval_task = asyncio.create_task(outcome_evaluation_loop())
+            logger.info("Outcome evaluation background task started")
+
+        # Start belief gardener background task
+        if belief_gardener and settings.BELIEF_GARDENER_ENABLED:
+            gardener_task = asyncio.create_task(gardener_tick_loop())
+            logger.info("Belief gardener background task started")
+
     except Exception as e:
         logger.error(f"Failed to start awareness loop: {e}")
         # Don't crash the app if awareness fails
@@ -591,8 +735,17 @@ async def startup_awareness():
 
 @app.on_event("shutdown")
 async def shutdown_awareness():
-    """Stop awareness loop on application shutdown."""
-    global awareness_loop, awareness_task, redis_client
+    """Stop awareness loop and gardener on application shutdown."""
+    global awareness_loop, awareness_task, redis_client, gardener_task
+
+    if gardener_task and not gardener_task.done():
+        logger.info("Stopping gardener tick loop...")
+        gardener_task.cancel()
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await gardener_task
+
+        logger.info("Gardener tick loop stopped")
 
     if awareness_task and not awareness_task.done():
         logger.info("Stopping awareness loop...")
@@ -829,15 +982,33 @@ async def chat(request: ChatRequest):
     # Weight: 50% user affect, 50% memory context
     combined_valence = (user_valence + blended_valence) / 2.0
 
-    # Step 6: Store the interaction with combined valence
+    # Step 6: Inject feedback tags for belief lifecycle
+    metadata = {}
+    if tag_injector:
+        try:
+            tag_result = tag_injector.inject_tags(
+                prompt=request.message,
+                response=response_text,
+                enable_llm=False,  # Use fast heuristic mode for now
+            )
+            if tag_result.tags or tag_result.global_tags:
+                metadata["tags"] = tag_result.tags + tag_result.global_tags
+                metadata["belief_ids"] = tag_result.belief_ids
+                logger.info(f"Tagged with {len(metadata['tags'])} tags for {len(tag_result.belief_ids)} beliefs")
+                print(f"🏷️  Tags: {metadata['tags']} (beliefs: {len(tag_result.belief_ids)})")
+        except Exception as e:
+            logger.error(f"Tag injection failed: {e}")
+
+    # Step 7: Store the interaction with combined valence
     interaction = InteractionPayload(
         prompt=request.message,
         response=response_text,
         valence=combined_valence,
+        metadata=metadata,
     )
     result = ingestion_pipeline.ingest_interaction(interaction)
 
-    # Step 7: Record reflection about what memories were helpful
+    # Step 8: Record reflection about what memories were helpful
     reflection_writer.record_reflection(
         interaction_id=result.experience_id,
         prompt=request.message,
@@ -846,10 +1017,10 @@ async def chat(request: ChatRequest):
         blended_valence=blended_valence,
     )
 
-    # Step 8: Link experience to session
+    # Step 9: Link experience to session
     session_tracker.add_experience(session.id, result.experience_id)
 
-    # Step 9: Initialize decay metrics for new experience
+    # Step 10: Initialize decay metrics for new experience
     exp = raw_store.get_experience(result.experience_id)
     if exp:
         decay_calculator.initialize_metrics(exp)
@@ -1607,6 +1778,19 @@ async def get_gardener_status():
         },
         "daily_counters": belief_gardener.lifecycle_manager._action_counters,
         "counter_reset_date": belief_gardener.lifecycle_manager._counter_reset_date.isoformat(),
+        "telemetry": {
+            "last_scan_ts": datetime.fromtimestamp(belief_gardener.last_scan_ts, tz=timezone.utc).isoformat() if belief_gardener.last_scan_ts else None,
+            "skips_since_boot": belief_gardener.skips_since_boot,
+            "formed_today": belief_gardener.lifecycle_manager._action_counters["formations"],
+            "promoted_today": belief_gardener.lifecycle_manager._action_counters["promotions"],
+            "deprecated_today": belief_gardener.lifecycle_manager._action_counters["deprecations"],
+            "feedback": belief_gardener.feedback_aggregator.get_telemetry() if belief_gardener.feedback_aggregator else None,
+            "feedback_samples": {
+                b.belief_id: {"feedback": belief_gardener.feedback_aggregator.score(b.belief_id)[0],
+                             "negative": belief_gardener.feedback_aggregator.score(b.belief_id)[1]}
+                for b in list(belief_store.get_current().values())[:6]
+            } if belief_gardener.feedback_aggregator else {},
+        },
     }
 
 
@@ -1622,6 +1806,25 @@ async def run_gardener_scan():
     except Exception as e:
         logger.error(f"Gardener scan failed: {e}")
         raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
+
+
+@app.get("/api/persona/trust/status")
+async def get_trust_status():
+    """Get outcome-driven trust system status."""
+    if not provenance_trust:
+        raise HTTPException(status_code=503, detail="Trust system not initialized")
+
+    response = {
+        "provenance_trust": provenance_trust.get_telemetry(),
+    }
+
+    if outcome_evaluator:
+        response["outcome_evaluator"] = outcome_evaluator.get_telemetry()
+
+    if enhanced_feedback_aggregator:
+        response["enhanced_feedback"] = enhanced_feedback_aggregator.get_telemetry()
+
+    return response
 
 
 @app.get("/api/persona/gardener/patterns")
