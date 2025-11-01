@@ -127,6 +127,7 @@ class AwarenessLoop:
         # Presence state
         self.last_presence_vec: Optional[np.ndarray] = None
         self.last_presence_scalar: float = 0.0
+        self.last_text: str = ""  # Track last extracted text
         self.anchors: Dict[str, np.ndarray] = {}
         self.notes: Deque[str] = deque(maxlen=config.notes_max)
 
@@ -136,6 +137,8 @@ class AwarenessLoop:
         self.last_sim_live: float = 0.0  # Similarity to live anchor (for coherence)
         self.last_sim_origin: float = 0.0  # Similarity to origin anchor (for drift)
         self.last_coherence_drop: float = 0.0
+        self.last_buf_len: int = 0  # Text percept count from slow tick
+        self.meta_version: int = 0  # Version counter to detect races
 
         # Watchdog
         self.slow_tick_count = 0
@@ -305,15 +308,27 @@ class AwarenessLoop:
         """Execute fast tick."""
         self.tick_id += 1
 
-        # Drain queue (non-blocking)
+        # Drain queue (non-blocking) with deduplication
         percepts_added = 0
+        batch = []
         try:
             while True:
                 p = self.percept_queue.get_nowait()
-                self.percepts.append(p)
+                batch.append(p)
                 percepts_added += 1
         except asyncio.QueueEmpty:
             pass
+
+        # Deduplicate batch (keep unique by kind + text prefix)
+        if batch:
+            seen = set()
+            for p in batch:
+                # Create signature for deduplication
+                text = p.payload.get("text", "")[:256]  # First 256 chars
+                sig = (p.kind, text)
+                if sig not in seen:
+                    seen.add(sig)
+                    self.percepts.append(p)
 
         # Compute cheap stats
         entropy = self._compute_entropy()
@@ -325,6 +340,7 @@ class AwarenessLoop:
         scalar = self._compute_presence_scalar(entropy)
 
         # Update blackboard (preserve slow-loop computed metrics)
+        self.meta_version += 1
         meta = {
             "mode": self.mode,
             "entropy": entropy,
@@ -334,6 +350,9 @@ class AwarenessLoop:
             "sim_self_origin": self.last_sim_origin,
             "coherence_drop": self.last_coherence_drop,
             "tick": self.tick_id,
+            "buf_len": int(self.last_buf_len),  # Preserved from slow tick
+            "buf_ver": self.meta_version,
+            "buf_writer": "fast",
         }
 
         await self.blackboard.update_presence(scalar, cur_vec, meta)
@@ -356,15 +375,21 @@ class AwarenessLoop:
 
     async def _slow_tick(self) -> None:
         """Execute slow tick."""
+        # Count text percepts in buffer
+        text_percept_count = sum(
+            1 for p in self.percepts
+            if p.kind in ("user", "token") and p.payload.get("text")
+        )
+
         # Extract recent text
         recent_text = self._extract_recent_text()
 
         if not recent_text:
-            print(f"⚠️  [SLOW TICK] No text extracted from {len(self.percepts)} percepts")
+            print(f"⚠️  [SLOW TICK] No text extracted from {len(self.percepts)} percepts ({text_percept_count} text)")
             logger.debug(f"[SLOW] No recent text extracted from {len(self.percepts)} percepts")
             return
 
-        print(f"✓ [SLOW TICK] Extracted {len(recent_text)} chars from {len(self.percepts)} percepts")
+        print(f"✓ [SLOW TICK] Extracted {len(recent_text)} chars from {text_percept_count} text percepts")
         logger.debug(f"[SLOW] Extracted {len(recent_text)} chars from {len(self.percepts)} percepts")
 
         # Get embedding (uses cache when possible)
@@ -379,8 +404,9 @@ class AwarenessLoop:
 
         logger.debug(f"[SLOW] Got embedding, computing novelty (last_vec exists: {self.last_presence_vec is not None})")
 
-        # Compute novelty (similarity to previous)
+        # Compute novelty (similarity to previous) BEFORE overwriting
         novelty = 0.0
+        sim_prev = 0.0
         if self.last_presence_vec is not None:
             sim_prev = self._cosine_sim(embedding, self.last_presence_vec)
             novelty = max(0.0, 1.0 - sim_prev)
@@ -407,8 +433,10 @@ class AwarenessLoop:
         if self.last_sim_live > 0.0:
             coherence_drop = max(0.0, self.last_sim_live - sim_live)
 
-        # Update embedding
-        self.last_presence_vec = embedding
+        # Update embedding only if text changed
+        if recent_text != self.last_text:
+            self.last_presence_vec = embedding
+            self.last_text = recent_text
 
         # Recompute presence scalar (use sim_live, not sim_origin)
         entropy = self._compute_entropy()
@@ -416,26 +444,31 @@ class AwarenessLoop:
 
         logger.debug(f"[SLOW] Computed: novelty={novelty:.3f}, sim_live={sim_live:.3f}, sim_origin={sim_origin:.3f}, coherence_drop={coherence_drop:.3f}, scalar={scalar:.3f}")
 
-        # Update blackboard
-        meta = {
-            "mode": self.mode,
-            "entropy": entropy,
-            "novelty": novelty,
-            "sim_prev": 1.0 - novelty if self.last_presence_vec is not None else 0.0,
-            "sim_self_live": sim_live,
-            "sim_self_origin": sim_origin,
-            "coherence_drop": coherence_drop,
-            "tick": self.tick_id,
-        }
-
-        await self.blackboard.update_presence(scalar, embedding, meta)
-
-        # Persist computed metrics for fast loop
+        # Persist computed metrics for fast loop BEFORE updating blackboard
         self.last_novelty = novelty
         self.last_sim_prev = 1.0 - novelty if self.last_presence_vec is not None else 0.0
         self.last_sim_live = sim_live
         self.last_sim_origin = sim_origin
         self.last_coherence_drop = coherence_drop
+        self.last_buf_len = int(text_percept_count)
+        self.meta_version += 1
+
+        # Update blackboard
+        meta = {
+            "mode": self.mode,
+            "entropy": entropy,
+            "novelty": novelty,
+            "sim_prev": sim_prev,
+            "sim_self_live": sim_live,
+            "sim_self_origin": sim_origin,
+            "coherence_drop": coherence_drop,
+            "tick": self.tick_id,
+            "buf_len": int(text_percept_count),
+            "buf_ver": self.meta_version,
+            "buf_writer": "slow",
+        }
+
+        await self.blackboard.update_presence(scalar, embedding, meta)
 
     async def _introspection_loop(self) -> None:
         """Introspection loop (30s ± jitter): LLM introspection."""
@@ -618,10 +651,19 @@ class AwarenessLoop:
         return " ".join(recent_texts).strip()
 
     def _cosine_sim(self, a: np.ndarray, b: np.ndarray) -> float:
-        """Compute cosine similarity."""
-        a_norm = a / (np.linalg.norm(a) + 1e-9)
-        b_norm = b / (np.linalg.norm(b) + 1e-9)
-        return float(np.clip(a_norm @ b_norm, -1.0, 1.0))
+        """Compute cosine similarity with zero-norm guards."""
+        if a is None or b is None:
+            return 0.0
+
+        na = np.linalg.norm(a)
+        nb = np.linalg.norm(b)
+
+        # Guard against zero-norm vectors
+        if na < 1e-6 or nb < 1e-6:
+            return 0.0
+
+        # Normalize and compute dot product
+        return float(np.clip((a / na) @ (b / nb), -1.0, 1.0))
 
     def _check_introspection_budget(self) -> bool:
         """Check if introspection budget allows execution."""

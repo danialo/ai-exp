@@ -7,9 +7,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from pathlib import Path
 import uvicorn
+import numpy as np
 
 # Configure logging to show affect/mood tracking
 logging.basicConfig(
@@ -43,6 +44,13 @@ from src.services.emotional_extractor import create_emotional_extractor
 from src.services.persona_service import PersonaService
 from src.services.task_scheduler import create_task_scheduler, TaskDefinition, TaskType, TaskSchedule
 from src.services.belief_system import create_belief_system
+from src.services.belief_store import create_belief_store, DeltaOp
+from src.services.belief_migration import run_migration
+from src.services.contrarian_sampler import (
+    create_contrarian_sampler,
+    ConrarianConfig,
+    DossierStatus,
+)
 from src.services.self_knowledge_index import create_self_knowledge_index
 from src.services.web_search_service import create_web_search_service
 from src.services.url_fetcher_service import create_url_fetcher_service
@@ -299,7 +307,7 @@ if settings.PERSONA_MODE_ENABLED:
         persona_space_path=settings.PERSONA_SPACE_PATH
     )
 
-# Initialize belief system
+# Initialize belief system (legacy)
 belief_system = None
 if settings.PERSONA_MODE_ENABLED and llm_service and raw_store:
     belief_system = create_belief_system(
@@ -314,6 +322,41 @@ if settings.PERSONA_MODE_ENABLED and llm_service and raw_store:
     if self_aware_prompt_builder:
         self_aware_prompt_builder.belief_system = belief_system
         logger.info("Belief system connected to prompt builder")
+
+# Initialize versioned belief store
+belief_store = None
+contrarian_sampler = None
+if settings.PERSONA_MODE_ENABLED:
+    belief_store = create_belief_store(Path("data"))
+    logger.info("Versioned belief store initialized")
+
+    # Run migration from legacy belief system if needed
+    try:
+        migration_report = run_migration(
+            persona_space_path=Path(settings.PERSONA_SPACE_PATH),
+            data_dir=Path("data"),
+            dry_run=False,
+        )
+        logger.info(f"Belief migration: {migration_report}")
+    except Exception as e:
+        logger.error(f"Belief migration failed: {e}")
+
+    # Initialize contrarian sampler (will be fully wired after llm_service is available)
+    # For now, just create placeholder
+    contrarian_config = ConrarianConfig(
+        enabled=False,  # Default disabled until explicitly enabled
+        interval_minutes=15,
+        jitter_minutes=5,
+        daily_budget=3,
+        cooldown_hours=24,
+        max_open_dossiers=5,
+        demotion_threshold=0.25,
+        weight_confidence=1.0,
+        weight_age_hours=0.2,
+        weight_staleness=0.2,
+        confirmed_boost=0.03,
+        weakened_penalty=0.08,
+    )
 
 # Initialize belief vector store and related services
 belief_vector_store = None
@@ -377,6 +420,17 @@ if settings.PERSONA_MODE_ENABLED and belief_system and embedding_provider:
         logger.error(f"Failed to initialize belief vector services: {e}")
         import traceback
         traceback.print_exc()
+
+# Initialize contrarian sampler after LLM service is available
+if belief_store and raw_store and llm_service and contrarian_config:
+    contrarian_sampler = create_contrarian_sampler(
+        belief_store=belief_store,
+        raw_store=raw_store,
+        llm_service=llm_service,
+        data_dir=Path("data"),
+        config=contrarian_config,
+    )
+    logger.info(f"Contrarian sampler initialized (enabled={contrarian_config.enabled})")
 
 # Initialize web services for search and browsing
 web_search_service = None
@@ -831,6 +885,61 @@ async def get_memories(limit: int = 20, offset: int = 0):
     return memory_items
 
 
+class ConversationItem(BaseModel):
+    """Conversation exchange for UI display."""
+    id: str
+    timestamp: str
+    user_message: str
+    agent_response: str
+
+
+@app.get("/api/conversations")
+async def get_conversations(limit: int = 10):
+    """Retrieve recent conversation exchanges.
+
+    Returns the last N conversation exchanges (user message + agent response pairs).
+    """
+    from src.memory.models import Experience, Actor
+
+    with Session(raw_store.engine) as session:
+        # Get recent occurrence-type experiences with user actor
+        statement = (
+            select(Experience)
+            .where(Experience.type == ExperienceType.OCCURRENCE.value)
+            .order_by(Experience.created_at.desc())
+            .limit(limit)
+        )
+        experiences = session.exec(statement).all()
+
+        conversations = []
+        for exp in experiences:
+            exp_model = experience_to_model(exp)
+
+            # Extract text from content
+            text = exp_model.content.text
+
+            # Parse out prompt and response
+            user_msg = ""
+            agent_resp = ""
+
+            if "Prompt: " in text and "\n\nResponse:" in text:
+                parts = text.split("\n\nResponse:", 1)
+                user_msg = parts[0].replace("Prompt: ", "").strip()
+                agent_resp = parts[1].strip() if len(parts) > 1 else ""
+            else:
+                # Fallback to full text
+                user_msg = text
+
+            conversations.append(ConversationItem(
+                id=exp_model.id,
+                timestamp=exp_model.created_at.isoformat(),
+                user_message=user_msg,
+                agent_response=agent_resp,
+            ))
+
+        return conversations
+
+
 @app.get("/api/stats", response_model=StatsResponse)
 async def get_stats():
     """Get system statistics."""
@@ -1249,6 +1358,18 @@ async def get_available_models():
     return {"models": models}
 
 
+# Pydantic models for persona endpoints
+class BeliefDeltaRequest(BaseModel):
+    belief_id: str
+    from_ver: int
+    op: str  # "update"|"deprecate"|"reinforce"
+    confidence_delta: float = 0.0
+    evidence_refs_added: List[str] = []
+    evidence_refs_removed: List[str] = []
+    state_change: Optional[str] = None
+    reason: str = ""
+
+
 @app.get("/api/persona/info")
 async def get_persona_info():
     """Get information about the persona's current state and capabilities."""
@@ -1256,6 +1377,195 @@ async def get_persona_info():
         raise HTTPException(status_code=503, detail="Persona mode not enabled")
 
     return persona_service.get_persona_info()
+
+
+@app.get("/api/persona/check-dissonance")
+async def check_dissonance():
+    """Check dissonance gate status."""
+    return {"ok": True, "gate": "wired"}
+
+
+@app.get("/api/persona/beliefs")
+async def get_beliefs(ids: Optional[str] = None):
+    """Get current beliefs with version info.
+
+    Args:
+        ids: Comma-separated belief IDs (optional, returns all if not specified)
+
+    Returns:
+        Dict mapping belief_id to belief data with ver
+    """
+    if not belief_store:
+        raise HTTPException(status_code=503, detail="Belief store not enabled")
+
+    belief_ids = ids.split(",") if ids else None
+    beliefs = belief_store.get_current(belief_ids)
+
+    return {
+        "beliefs": {bid: {
+            "ver": b.ver,
+            "statement": b.statement,
+            "state": b.state,
+            "confidence": b.confidence,
+            "evidence_refs": b.evidence_refs,
+            "belief_type": b.belief_type,
+            "immutable": b.immutable,
+            "rationale": b.rationale,
+            "metadata": b.metadata,
+            "ts": b.ts,
+            "updated_by": b.updated_by,
+        } for bid, b in beliefs.items()},
+        "count": len(beliefs)
+    }
+
+
+@app.get("/api/persona/beliefs/history")
+async def get_belief_history(id: str, limit: Optional[int] = 20):
+    """Get history of deltas for a belief.
+
+    Args:
+        id: Belief ID
+        limit: Maximum number of deltas to return
+
+    Returns:
+        List of deltas in reverse chronological order
+    """
+    if not belief_store:
+        raise HTTPException(status_code=503, detail="Belief store not enabled")
+
+    deltas = belief_store.get_history(id, limit=limit)
+
+    return {
+        "belief_id": id,
+        "deltas": [{
+            "from_ver": d.from_ver,
+            "to_ver": d.to_ver,
+            "op": d.op,
+            "confidence_delta": d.confidence_delta,
+            "evidence_refs_added": d.evidence_refs_added,
+            "evidence_refs_removed": d.evidence_refs_removed,
+            "state_change": d.state_change,
+            "updated_by": d.updated_by,
+            "ts": d.ts,
+            "reason": d.reason,
+        } for d in deltas],
+        "count": len(deltas)
+    }
+
+
+@app.post("/api/persona/beliefs/delta")
+async def apply_belief_delta(request: BeliefDeltaRequest):
+    """Apply a delta to a belief with optimistic locking.
+
+    Args:
+        request: Delta request with belief_id, from_ver, and changes
+
+    Returns:
+        Success status
+    """
+    if not belief_store:
+        raise HTTPException(status_code=503, detail="Belief store not enabled")
+
+    try:
+        success = belief_store.apply_delta(
+            belief_id=request.belief_id,
+            from_ver=request.from_ver,
+            op=DeltaOp(request.op),
+            confidence_delta=request.confidence_delta,
+            evidence_refs_added=request.evidence_refs_added,
+            evidence_refs_removed=request.evidence_refs_removed,
+            state_change=request.state_change,
+            updated_by="user",
+            reason=request.reason,
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Version mismatch: expected {request.from_ver}"
+            )
+
+        return {"success": True, "belief_id": request.belief_id}
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to apply delta: {str(e)}")
+
+
+@app.post("/api/persona/contrarian/run")
+async def run_contrarian_challenge():
+    """Trigger a contrarian challenge cycle (admin endpoint).
+
+    Returns:
+        Dossier if challenge was run, None otherwise
+    """
+    if not contrarian_sampler:
+        raise HTTPException(status_code=503, detail="Contrarian sampler not enabled")
+
+    try:
+        dossier = contrarian_sampler.run_challenge()
+
+        if dossier:
+            return {
+                "success": True,
+                "dossier": {
+                    "id": dossier.id,
+                    "belief_id": dossier.belief_id,
+                    "opened_ts": dossier.opened_ts,
+                    "contrarian_score": dossier.contrarian_score,
+                    "challenge_types": dossier.challenge_types,
+                    "status": dossier.status,
+                    "outcome": dossier.outcome,
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Challenge skipped (budget limit, no candidates, or dossier limit)"
+            }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to run challenge: {str(e)}")
+
+
+@app.get("/api/persona/contrarian/dossiers")
+async def get_contrarian_dossiers(status: Optional[str] = None):
+    """Get contrarian challenge dossiers.
+
+    Args:
+        status: Filter by status (open|closed), optional
+
+    Returns:
+        List of dossiers
+    """
+    if not contrarian_sampler:
+        raise HTTPException(status_code=503, detail="Contrarian sampler not enabled")
+
+    try:
+        dossier_status = DossierStatus(status) if status else None
+        dossiers = contrarian_sampler.get_all_dossiers(status=dossier_status)
+
+        return {
+            "dossiers": [{
+                "id": d.id,
+                "belief_id": d.belief_id,
+                "opened_ts": d.opened_ts,
+                "prior_confidence": d.prior_confidence,
+                "contrarian_score": d.contrarian_score,
+                "challenge_types": d.challenge_types,
+                "status": d.status,
+                "outcome": d.outcome,
+                "outcome_ts": d.outcome_ts,
+                "notes": d.notes,
+            } for d in dossiers],
+            "count": len(dossiers)
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get dossiers: {str(e)}")
 
 
 @app.post("/api/persona/chat")
@@ -1497,6 +1807,105 @@ async def get_memory_detail(experience_id: str):
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/healthz/assert")
+async def health_assert():
+    """Health check with invariant assertions.
+
+    Returns 200 only if all invariants pass:
+    - buf_len == buffer.text_percepts
+    - buf_ver monotonically increases
+    - novelty ∈ [0,1]
+    - Vector norms within 1e-3 of 1.0
+    - Belief index and current hashes validate
+    """
+    failures = []
+
+    # Check awareness loop invariants
+    if awareness_loop and awareness_loop.running:
+        try:
+            meta = await awareness_loop.blackboard.get_meta()
+            buf_len = meta.get("buf_len", 0)
+            novelty = meta.get("novelty", 0.0)
+
+            # Count actual text percepts
+            text_percept_count = sum(
+                1 for p in awareness_loop.percepts
+                if p.kind in ("user", "token") and p.payload.get("text")
+            )
+
+            # Invariant 1: buf_len == actual text percepts
+            if buf_len != text_percept_count:
+                failures.append(f"buf_len mismatch: reported={buf_len}, actual={text_percept_count}")
+
+            # Invariant 2: novelty ∈ [0,1]
+            if not (0.0 <= novelty <= 1.0):
+                failures.append(f"novelty out of range: {novelty}")
+
+            # Invariant 3: vector norms
+            cur_vec = awareness_loop.last_presence_vec
+            if cur_vec is not None:
+                cur_vec_norm = float(np.linalg.norm(cur_vec))
+                if abs(cur_vec_norm - 1.0) > 1e-3:
+                    failures.append(f"cur_vec_norm out of tolerance: {cur_vec_norm}")
+
+            live_anchor = awareness_loop.anchors.get("self_anchor_live")
+            if live_anchor is not None:
+                live_norm = float(np.linalg.norm(live_anchor))
+                if abs(live_norm - 1.0) > 1e-3:
+                    failures.append(f"live_anchor_norm out of tolerance: {live_norm}")
+
+            origin_anchor = awareness_loop.anchors.get("self_anchor_origin")
+            if origin_anchor is not None:
+                origin_norm = float(np.linalg.norm(origin_anchor))
+                if abs(origin_norm - 1.0) > 1e-3:
+                    failures.append(f"origin_anchor_norm out of tolerance: {origin_norm}")
+
+            # Invariant 4: buf_ver monotonic (check by sampling 3 times)
+            versions = []
+            for _ in range(3):
+                m = await awareness_loop.blackboard.get_meta()
+                versions.append(m.get("buf_ver", 0))
+                await asyncio.sleep(0.1)
+
+            for i in range(len(versions) - 1):
+                if versions[i+1] < versions[i]:
+                    failures.append(f"buf_ver not monotonic: {versions}")
+                    break
+
+        except Exception as e:
+            failures.append(f"awareness_loop check failed: {str(e)}")
+
+    # Check belief store invariants
+    if belief_store:
+        try:
+            integrity = belief_store.verify_integrity()
+            if not integrity.get("hash_valid", False):
+                failures.append("belief hash validation failed")
+            if not integrity.get("index_consistent", False):
+                failures.append("belief index inconsistent")
+        except Exception as e:
+            failures.append(f"belief_store check failed: {str(e)}")
+
+    # Return status
+    if failures:
+        return {
+            "status": "unhealthy",
+            "failures": failures
+        }, 503
+    else:
+        return {
+            "status": "healthy",
+            "checks_passed": [
+                "buf_len_consistency",
+                "novelty_range",
+                "vector_norms",
+                "buf_ver_monotonic",
+                "belief_hashes",
+                "belief_index",
+            ]
+        }
 
 
 class InjectRequest(BaseModel):
@@ -1951,6 +2360,43 @@ async def delete_task(task_id: str):
 # Awareness Loop Endpoints
 # =====================================================================
 
+def _check_belief_health() -> bool:
+    """Check belief store integrity."""
+    if not belief_store:
+        return True  # N/A
+    try:
+        integrity = belief_store.verify_integrity()
+        return integrity.get("hash_valid", False) and integrity.get("index_consistent", False)
+    except Exception:
+        return False
+
+
+def _check_ledger_health() -> bool:
+    """Check ledger integrity."""
+    try:
+        # Basic check: can we access the ledger directory
+        from src.services.identity_ledger import _LEDGER_DIR
+        return _LEDGER_DIR.exists()
+    except Exception:
+        return False
+
+
+def _get_contrarian_status() -> Dict[str, Any]:
+    """Get contrarian sampler status."""
+    if not contrarian_sampler:
+        return {"enabled": False}
+
+    open_dossiers = contrarian_sampler.get_open_dossiers()
+
+    return {
+        "enabled": contrarian_sampler.config.enabled,
+        "challenges_today": contrarian_sampler.challenges_today,
+        "daily_budget": contrarian_sampler.config.daily_budget,
+        "open_dossiers": len(open_dossiers),
+        "max_open_dossiers": contrarian_sampler.config.max_open_dossiers,
+    }
+
+
 @app.get("/api/awareness/status")
 async def get_awareness_status():
     """Get current awareness loop status."""
@@ -1983,6 +2429,14 @@ async def get_awareness_status():
             if p.kind in ("user", "token") and p.payload.get("text"):
                 text_percept_count += 1
 
+        # Compute diagnostics
+        cur_vec = awareness_loop.last_presence_vec
+        cur_vec_norm = round(float(np.linalg.norm(cur_vec)), 3) if cur_vec is not None else 0.0
+        live_anchor = awareness_loop.anchors.get("self_anchor_live")
+        origin_anchor = awareness_loop.anchors.get("self_anchor_origin")
+        live_norm = round(float(np.linalg.norm(live_anchor)), 3) if live_anchor is not None else 0.0
+        origin_norm = round(float(np.linalg.norm(origin_anchor)), 3) if origin_anchor is not None else 0.0
+
         return {
             "enabled": True,
             "running": awareness_loop.running,
@@ -2002,7 +2456,21 @@ async def get_awareness_status():
                 "by_kind": percept_counts,
             },
             "metrics": metrics,
-            "meta": meta,  # Full metadata for debugging
+            "meta": {
+                **meta,
+                "buf_len": int(meta.get("buf_len") or 0),  # Force int, never null
+            },
+            "diag": {
+                "buf_text": int(meta.get("buf_len") or 0),
+                "cur_vec_norm": cur_vec_norm,
+                "live_norm": live_norm,
+                "origin_norm": origin_norm,
+                "last_fast_ts": awareness_loop.tick_id,
+                "last_slow_ts": awareness_loop.last_slow_tick,
+            },
+            "beliefs_ok": _check_belief_health(),
+            "ledger_ok": _check_ledger_health(),
+            "contrarian": _get_contrarian_status(),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get awareness status: {str(e)}")

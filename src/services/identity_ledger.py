@@ -5,9 +5,11 @@ Provides forensic visibility into identity evolution with:
 - Daily NDJSON.gz rotation
 - Schema versioning
 - Thread-safe append operations
+- Rolling SHA-256 chain for integrity verification
 """
 
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -19,8 +21,12 @@ from typing import Any, Dict, List, Optional
 
 _LEDGER_DIR = Path(os.getenv("ASTRA_LEDGER_DIR", "data/identity"))
 _LEDGER_DIR.mkdir(parents=True, exist_ok=True)
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2  # Incremented for SHA chain support
 _LOCK = threading.RLock()
+_CHAIN_STATE_FILE = _LEDGER_DIR / "chain_state.json"
+
+# In-memory cache of last SHA for current day
+_last_sha_cache: Dict[str, str] = {}
 
 
 def _day_stamp(ts: Optional[float] = None) -> str:
@@ -71,20 +77,85 @@ class LedgerEvent:
     beliefs_touched: Optional[List[str]] = None
     cost_named: Optional[str] = None
     sims_before_after: Optional[Dict[str, float]] = None  # {"sim_live_before":0.71,"sim_live_after":0.73,"sim_origin":0.66}
+    belief_ver_from: Optional[int] = None  # For belief_versioned events
+    belief_ver_to: Optional[int] = None
+    evidence_refs: Optional[List[str]] = None
+    coherence_drop: Optional[float] = None
     meta: Optional[Dict[str, Any]] = None  # freeform, scrubbed
+    prev_sha: Optional[str] = None  # SHA of previous entry in chain
+    sha: Optional[str] = None  # SHA of this entry (computed after serialization)
+
+
+def _compute_sha(rec: Dict[str, Any]) -> str:
+    """Compute SHA-256 hash of ledger record (excluding sha field)."""
+    data = {k: v for k, v in rec.items() if k != "sha"}
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _get_chain_tail(day: str) -> Optional[str]:
+    """Get SHA of last entry in day's ledger."""
+    # Check cache first
+    if day in _last_sha_cache:
+        return _last_sha_cache[day]
+
+    # Read from file
+    path = _file_for_day(day)
+    if not path.exists():
+        return None
+
+    try:
+        with gzip.open(path, "rt") as f:
+            last_line = None
+            for line in f:
+                last_line = line
+
+            if last_line:
+                rec = json.loads(last_line)
+                return rec.get("sha")
+    except Exception:
+        return None
+
+    return None
+
+
+def _get_prev_day_tail(day: str) -> Optional[str]:
+    """Get SHA of last entry from previous day."""
+    import datetime as dt
+    d = dt.datetime.strptime(day, "%Y%m%d")
+    prev_d = d - dt.timedelta(days=1)
+    prev_day = prev_d.strftime("%Y%m%d")
+    return _get_chain_tail(prev_day)
 
 
 def append_event(ev: LedgerEvent) -> None:
-    """Append event to daily ledger with PII scrubbing."""
-    rec = asdict(ev)
-    rec["schema"] = _SCHEMA_VERSION
-    rec = _scrub(rec)
+    """Append event to daily ledger with PII scrubbing and SHA chain."""
     day = _day_stamp(ev.ts)
-    path = _file_for_day(day)
-    line = (json.dumps(rec, separators=(",", ":")) + "\n").encode("utf-8")
+
     with _LOCK:
+        # Get previous SHA (from cache or last entry in current day, or previous day tail)
+        prev_sha = _get_chain_tail(day)
+        if prev_sha is None:
+            # First entry of the day - link to previous day
+            prev_sha = _get_prev_day_tail(day) or "genesis"
+
+        rec = asdict(ev)
+        rec["schema"] = _SCHEMA_VERSION
+        rec["prev_sha"] = prev_sha
+        rec = _scrub(rec)
+
+        # Compute SHA
+        sha = _compute_sha(rec)
+        rec["sha"] = sha
+
+        # Write to file
+        path = _file_for_day(day)
+        line = (json.dumps(rec, separators=(",", ":")) + "\n").encode("utf-8")
         with _open_gz_append(path) as f:
             f.write(line)
+
+        # Update cache
+        _last_sha_cache[day] = sha
 
 
 def anchor_update_event(
@@ -93,9 +164,11 @@ def anchor_update_event(
     sim_origin: float,
     strategy: str,
     beliefs_touched: List[str],
-    cost_named: str = ""
+    cost_named: str = "",
+    coherence_drop: float = 0.0,
+    evidence_refs: Optional[List[str]] = None,
 ) -> None:
-    """Log anchor update event."""
+    """Log anchor update event with belief linking."""
     ev = LedgerEvent(
         ts=time.time(),
         schema=_SCHEMA_VERSION,
@@ -108,20 +181,35 @@ def anchor_update_event(
             "sim_live_after": round(sim_live_after, 3),
             "sim_origin": round(sim_origin, 3)
         },
+        coherence_drop=round(coherence_drop, 3) if coherence_drop else None,
+        evidence_refs=evidence_refs,
         meta=None,
+        prev_sha=None,  # Will be filled by append_event
+        sha=None,
     )
     append_event(ev)
 
 
 def belief_versioned_event(
     belief_id: str,
-    prev_version: int,
-    new_version: int,
+    from_ver: int,
+    to_ver: int,
     reason_changed: str,
     confidence: float,
-    cause: str
+    cause: str,
+    evidence_refs: Optional[List[str]] = None,
+    sim_live: Optional[float] = None,
+    sim_origin: Optional[float] = None,
+    coherence_drop: Optional[float] = None,
 ) -> None:
-    """Log belief version change."""
+    """Log belief version change with full context."""
+    sims = None
+    if sim_live is not None and sim_origin is not None:
+        sims = {
+            "sim_live": round(sim_live, 3),
+            "sim_origin": round(sim_origin, 3),
+        }
+
     ev = LedgerEvent(
         ts=time.time(),
         schema=_SCHEMA_VERSION,
@@ -129,14 +217,18 @@ def belief_versioned_event(
         strategy=None,
         beliefs_touched=[belief_id],
         cost_named=None,
-        sims_before_after=None,
+        sims_before_after=sims,
+        belief_ver_from=from_ver,
+        belief_ver_to=to_ver,
+        evidence_refs=evidence_refs,
+        coherence_drop=round(coherence_drop, 3) if coherence_drop else None,
         meta={
-            "prev_version": prev_version,
-            "new_version": new_version,
             "reason_changed": reason_changed,
             "confidence": round(confidence, 3),
-            "cause": cause
-        }
+            "cause": cause,
+        },
+        prev_sha=None,  # Will be filled by append_event
+        sha=None,
     )
     append_event(ev)
 
