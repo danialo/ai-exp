@@ -845,6 +845,19 @@
         </div>
     </div>
 
+    <!-- Conversation Detail Modal -->
+    <div class="modal" id="conversation-detail-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>💬 Conversation Details</h2>
+                <button class="modal-close" onclick="closeConversationDetail()">×</button>
+            </div>
+            <div class="modal-body" id="conversation-detail-content">
+                <div class="loading-spinner">Loading...</div>
+            </div>
+        </div>
+    </div>
+
     <script>
         const chatArea = document.getElementById('chat-area');
         const messageInput = document.getElementById('message-input');
@@ -1488,7 +1501,8 @@
                 conversationList.innerHTML = '';
                 conversations.forEach(conv => {
                     const item = document.createElement('div');
-                    item.className = 'memory-list-item';
+                    item.className = 'memory-list-item clickable-memory';
+                    item.onclick = () => viewConversationDetail(conv);
 
                     const dateStr = new Date(conv.timestamp).toLocaleString();
 
@@ -1523,6 +1537,71 @@
         document.getElementById('conversation-modal').addEventListener('click', (e) => {
             if (e.target.id === 'conversation-modal') {
                 closeConversationBrowser();
+            }
+        });
+
+        // Conversation Detail Functions
+        function viewConversationDetail(conv) {
+            const modal = document.getElementById('conversation-detail-modal');
+            const content = document.getElementById('conversation-detail-content');
+
+            modal.classList.add('open');
+
+            const dateStr = new Date(conv.timestamp).toLocaleString();
+            const conversationText = `You: ${conv.user_message}\n\nAstra: ${conv.agent_response}`;
+
+            content.innerHTML = `
+                <div class="memory-detail-section">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h3>Full Conversation</h3>
+                        <button class="memory-browser-btn" onclick="copyConversation('${conv.id}')" style="padding: 6px 12px; font-size: 12px;">
+                            📋 Copy
+                        </button>
+                    </div>
+                    <div class="memory-detail-text" id="conv-text-${conv.id}">${escapeHtml(conversationText)}</div>
+                </div>
+
+                <div class="memory-detail-meta">
+                    <div class="memory-detail-stat">
+                        <div class="memory-detail-stat-label">Timestamp</div>
+                        <div class="memory-detail-stat-value" style="font-size: 12px;">${dateStr}</div>
+                    </div>
+                    <div class="memory-detail-stat">
+                        <div class="memory-detail-stat-label">ID</div>
+                        <div class="memory-detail-stat-value" style="font-size: 10px;">${conv.id}</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function closeConversationDetail() {
+            document.getElementById('conversation-detail-modal').classList.remove('open');
+        }
+
+        function copyConversation(convId) {
+            const textElement = document.getElementById(`conv-text-${convId}`);
+            if (!textElement) return;
+
+            const text = textElement.textContent;
+            navigator.clipboard.writeText(text).then(() => {
+                // Visual feedback
+                const button = event.target;
+                const originalText = button.innerHTML;
+                button.innerHTML = '✓ Copied!';
+                button.style.background = '#51cf66';
+                setTimeout(() => {
+                    button.innerHTML = originalText;
+                    button.style.background = '';
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy:', err);
+                alert('Failed to copy to clipboard');
+            });
+        }
+
+        document.getElementById('conversation-detail-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'conversation-detail-modal') {
+                closeConversationDetail();
             }
         });
     </script>
