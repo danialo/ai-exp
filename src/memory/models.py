@@ -32,6 +32,7 @@ class ExperienceType(str, Enum):
     SELF_DEFINITION = "self_definition"  # Emergent self-concept patterns
     WEB_OBSERVATION = "web_observation"  # Web content interpretations
     DISSONANCE_EVENT = "dissonance_event"  # Cognitive dissonance detected
+    LEARNING_PATTERN = "learning_pattern"  # Detected pattern for belief formation
 
 
 class Actor(str, Enum):
