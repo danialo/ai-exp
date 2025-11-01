@@ -343,14 +343,15 @@ class PersonaService:
                     "content": tool_result
                 })
 
-        # Combine all assistant responses (use first substantive one, not meta-statements)
-        # Prefer the first response as it usually has the actual content
-        raw_response = assistant_responses[0] if assistant_responses else ""
+        # Use the LAST assistant response - this is the final answer after tool execution
+        # When tools are used, the flow is: acknowledgment -> tool execution -> final answer
+        # We want the final answer, not the acknowledgment
+        raw_response = assistant_responses[-1] if assistant_responses else ""
 
         # Debug logging
         logger.info(f"Assistant responses collected: {len(assistant_responses)}")
         if assistant_responses:
-            logger.info(f"First response length: {len(assistant_responses[0])}")
+            logger.info(f"Using final response (index {len(assistant_responses)-1}), length: {len(assistant_responses[-1])}")
         else:
             logger.warning("No assistant responses collected - response will be empty!")
 
