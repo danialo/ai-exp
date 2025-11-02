@@ -149,8 +149,8 @@ class AwarenessLoop:
 
         # Introspection telemetry
         self.last_ctx_source: str = "empty"  # "buffer", "memory", "empty"
-        self.last_ctx_chars: int = 0
-        self.last_prompt_chars: int = 0
+        self.last_ctx_tokens: int = 0
+        self.last_prompt_tokens: int = 0
         self.last_ctx_preview: str = ""
 
         # Tasks
@@ -527,7 +527,7 @@ class AwarenessLoop:
 
             # Track telemetry
             self.last_ctx_source = ctx_source
-            self.last_ctx_chars = len(ctx_block)
+            self.last_ctx_tokens = self._rough_token_count(ctx_block)
             self.last_ctx_preview = ctx_block[:200] if ctx_block else ""
 
             # Call LLM with context
@@ -790,8 +790,8 @@ class AwarenessLoop:
             else:
                 full_prompt = prompt
 
-            # Track prompt size
-            self.last_prompt_chars = len(full_prompt)
+            # Track prompt size in tokens
+            self.last_prompt_tokens = self._rough_token_count(full_prompt)
 
             messages = [{"role": "user", "content": full_prompt}]
 

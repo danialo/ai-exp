@@ -2764,8 +2764,8 @@ async def get_awareness_status():
             },
             "introspection": {
                 "ctx_source": awareness_loop.last_ctx_source,
-                "ctx_chars": awareness_loop.last_ctx_chars,
-                "prompt_chars": awareness_loop.last_prompt_chars,
+                "ctx_tokens": awareness_loop.last_ctx_tokens,
+                "prompt_tokens": awareness_loop.last_prompt_tokens,
                 "ctx_preview": awareness_loop.last_ctx_preview,
                 "notes_count": len(awareness_loop.notes),
             },
