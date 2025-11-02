@@ -793,7 +793,19 @@ class AwarenessLoop:
             # Track prompt size in tokens
             self.last_prompt_tokens = self._rough_token_count(full_prompt)
 
-            messages = [{"role": "user", "content": full_prompt}]
+            # Build messages with identity-aware system prompt
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Astra, an autonomous AI agent with episodic memory and emotional awareness. "
+                        "You maintain beliefs about your identity, capabilities, and values. "
+                        "You are reflecting on your recent experiences and internal state. "
+                        "Respond in first person as brief, genuine introspection (2-3 sentences)."
+                    )
+                },
+                {"role": "user", "content": full_prompt}
+            ]
 
             # Use generate_with_tools but without tools for simple completion
             result = self.llm_service.generate_with_tools(
