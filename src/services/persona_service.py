@@ -1048,7 +1048,7 @@ This revision represents growth in my self-understanding. My past statements wer
                             },
                             "num_results": {
                                 "type": "integer",
-                                "description": "Number of results to return (default: 5, max: 10)",
+                                "description": "Number of results to return. You can request anywhere from 1-10 results. Use more results (8-10) for comprehensive research. Default: 5, Max: 10",
                                 "default": 5
                             }
                         },
@@ -1091,7 +1091,7 @@ This revision represents growth in my self-understanding. My past statements wer
                             },
                             "top_k": {
                                 "type": "integer",
-                                "description": "Number of beliefs to return (default: 5)",
+                                "description": "Number of beliefs to return. You can request 5, 10, 20, or more depending on how comprehensive you want the search to be. Default: 5",
                                 "default": 5
                             }
                         },
