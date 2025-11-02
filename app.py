@@ -2762,6 +2762,13 @@ async def get_awareness_status():
                 "last_fast_ts": awareness_loop.tick_id,
                 "last_slow_ts": awareness_loop.last_slow_tick,
             },
+            "introspection": {
+                "ctx_source": awareness_loop.last_ctx_source,
+                "ctx_chars": awareness_loop.last_ctx_chars,
+                "prompt_chars": awareness_loop.last_prompt_chars,
+                "ctx_preview": awareness_loop.last_ctx_preview,
+                "notes_count": len(awareness_loop.notes),
+            },
             "beliefs_ok": _check_belief_health(),
             "ledger_ok": _check_ledger_health(),
             "contrarian": _get_contrarian_status(),

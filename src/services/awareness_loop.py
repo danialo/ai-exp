@@ -16,7 +16,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Deque
+from typing import Any, Dict, List, Optional, Deque, Tuple
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -146,6 +146,12 @@ class AwarenessLoop:
         # Introspection budget
         self.introspection_tokens_used = 0
         self.last_budget_reset = time.time()
+
+        # Introspection telemetry
+        self.last_ctx_source: str = "empty"  # "buffer", "memory", "empty"
+        self.last_ctx_chars: int = 0
+        self.last_prompt_chars: int = 0
+        self.last_ctx_preview: str = ""
 
         # Tasks
         self._tasks: List[asyncio.Task] = []
@@ -512,8 +518,20 @@ class AwarenessLoop:
         t0 = time.perf_counter()
 
         try:
-            # Call LLM (short response)
-            response = await self._call_llm_for_introspection(prompt)
+            # Build context (reserve 1000 tokens for full conversation context)
+            ctx_source, ctx_block = await self.build_introspection_context(
+                reply_budget_tokens=1000,
+                buf_win=32,
+                mem_k=5
+            )
+
+            # Track telemetry
+            self.last_ctx_source = ctx_source
+            self.last_ctx_chars = len(ctx_block)
+            self.last_ctx_preview = ctx_block[:200] if ctx_block else ""
+
+            # Call LLM with context
+            response = await self._call_llm_for_introspection(prompt, ctx_block)
 
             if response:
                 # Redact PII
@@ -528,8 +546,11 @@ class AwarenessLoop:
                 # Track tokens (estimate)
                 self.introspection_tokens_used += len(response.split())
 
-        except Exception:
-            pass  # Best effort
+                # Track telemetry counter by source
+                awareness_metrics.increment_counter(f"introspection_ctx_{ctx_source}")
+
+        except Exception as e:
+            logger.error(f"[INTRO] Error in introspection tick: {e}")
 
         dt = time.perf_counter() - t0
         awareness_metrics.record_introspection_time(dt * 1000)
@@ -650,6 +671,81 @@ class AwarenessLoop:
 
         return " ".join(recent_texts).strip()
 
+    def _rough_token_count(self, s: str) -> int:
+        """Fast heuristic for token counting (~4 chars per token)."""
+        return max(1, len(s) // 4)
+
+    def _format_block(self, tag: str, lines: List[str]) -> str:
+        """Format context block with header."""
+        if not lines:
+            return ""
+        header = f"{tag}:\n"
+        body = "\n".join(lines)
+        return f"{header}{body}\n"
+
+    async def _get_recent_memories(self, limit: int = 5) -> List[str]:
+        """Fetch recent memories for introspection context."""
+        if not hasattr(self, "memory_store") or self.memory_store is None:
+            return []
+
+        try:
+            # Get recent episodic memories
+            memories = await self.memory_store.search(
+                query="recent thoughts and experiences",
+                limit=limit,
+                memory_type="episodic"
+            )
+            return [m.content for m in memories]
+        except Exception as e:
+            logger.warning(f"Failed to fetch memories for introspection: {e}")
+            return []
+
+    async def build_introspection_context(
+        self,
+        reply_budget_tokens: int,
+        buf_win: int = 32,
+        mem_k: int = 5
+    ) -> Tuple[str, str]:
+        """
+        Build context from buffer or memories.
+
+        Args:
+            reply_budget_tokens: Tokens to reserve for reply
+            buf_win: Window size for buffer text extraction
+            mem_k: Number of memories to fetch if buffer empty
+
+        Returns:
+            Tuple of (source, context_block) where source is "buffer", "memory", or "empty"
+        """
+        # Try buffer first
+        buf_text = self._extract_recent_text(window=buf_win)
+
+        if buf_text:
+            # Truncate to budget if needed
+            budget_chars = reply_budget_tokens * 4  # ~4 chars per token
+            if len(buf_text) > budget_chars:
+                buf_text = buf_text[-budget_chars:]
+
+            context = self._format_block("Recent conversation", [buf_text])
+            return ("buffer", context)
+
+        # Fallback to memories
+        mem_lines = await self._get_recent_memories(limit=mem_k)
+
+        if mem_lines:
+            # Truncate to budget
+            budget_chars = reply_budget_tokens * 4
+            mem_text = "\n".join(mem_lines)
+            if len(mem_text) > budget_chars:
+                mem_text = mem_text[-budget_chars:]
+                mem_lines = mem_text.split("\n")
+
+            context = self._format_block("Recent memories", mem_lines)
+            return ("memory", context)
+
+        # No context available
+        return ("empty", "")
+
     def _cosine_sim(self, a: np.ndarray, b: np.ndarray) -> float:
         """Compute cosine similarity with zero-norm guards."""
         if a is None or b is None:
@@ -676,28 +772,44 @@ class AwarenessLoop:
 
         return self.introspection_tokens_used < self.config.introspection_budget_per_min
 
-    async def _call_llm_for_introspection(self, prompt: str) -> Optional[str]:
-        """Call LLM for introspection."""
+    async def _call_llm_for_introspection(self, prompt: str, context: str = "") -> Optional[str]:
+        """Call LLM for introspection with context.
+
+        Args:
+            prompt: Introspection question
+            context: Context block (conversation or memories)
+
+        Returns:
+            LLM response or None
+        """
         if not self.llm_service:
             logger.warning("[INTRO] No LLM service available for introspection")
             return None
 
         try:
-            # Call LLM with short introspection prompt
-            messages = [{"role": "user", "content": prompt}]
+            # Build full prompt with context
+            if context:
+                full_prompt = f"{context}\n{prompt}"
+            else:
+                full_prompt = prompt
+
+            # Track prompt size
+            self.last_prompt_chars = len(full_prompt)
+
+            messages = [{"role": "user", "content": full_prompt}]
 
             # Use generate_with_tools but without tools for simple completion
             result = self.llm_service.generate_with_tools(
                 messages=messages,
                 tools=[],  # No tools needed
                 temperature=0.7,
-                max_tokens=150,  # Keep short to respect budget
+                max_tokens=300,  # Allow fuller introspection with context
             )
 
             response = result["message"].content
 
             # Track token usage (approximate)
-            self.introspection_tokens_used += len(prompt.split()) + len(response.split())
+            self.introspection_tokens_used += len(full_prompt.split()) + len(response.split())
 
             logger.debug(f"[INTRO] Generated note: {response[:100]}")
             return response
