@@ -518,9 +518,9 @@ class AwarenessLoop:
         t0 = time.perf_counter()
 
         try:
-            # Build context (reserve 1000 tokens for full conversation context)
+            # Build context (1000 tokens max for full conversation context)
             ctx_source, ctx_block = await self.build_introspection_context(
-                reply_budget_tokens=1000,
+                max_context_tokens=1000,
                 buf_win=32,
                 mem_k=5
             )
@@ -545,9 +545,6 @@ class AwarenessLoop:
 
                 # Track tokens (estimate)
                 self.introspection_tokens_used += len(response.split())
-
-                # Track telemetry counter by source
-                awareness_metrics.increment_counter(f"introspection_ctx_{ctx_source}")
 
         except Exception as e:
             logger.error(f"[INTRO] Error in introspection tick: {e}")
@@ -702,7 +699,7 @@ class AwarenessLoop:
 
     async def build_introspection_context(
         self,
-        reply_budget_tokens: int,
+        max_context_tokens: int,
         buf_win: int = 32,
         mem_k: int = 5
     ) -> Tuple[str, str]:
@@ -710,7 +707,7 @@ class AwarenessLoop:
         Build context from buffer or memories.
 
         Args:
-            reply_budget_tokens: Tokens to reserve for reply
+            max_context_tokens: Maximum tokens for context (using ~4 chars/token heuristic)
             buf_win: Window size for buffer text extraction
             mem_k: Number of memories to fetch if buffer empty
 
@@ -721,9 +718,9 @@ class AwarenessLoop:
         buf_text = self._extract_recent_text(window=buf_win)
 
         if buf_text:
-            # Truncate to budget if needed
-            budget_chars = reply_budget_tokens * 4  # ~4 chars per token
-            if len(buf_text) > budget_chars:
+            # Truncate to token budget if needed
+            if self._rough_token_count(buf_text) > max_context_tokens:
+                budget_chars = max_context_tokens * 4  # ~4 chars per token
                 buf_text = buf_text[-budget_chars:]
 
             context = self._format_block("Recent conversation", [buf_text])
@@ -733,10 +730,10 @@ class AwarenessLoop:
         mem_lines = await self._get_recent_memories(limit=mem_k)
 
         if mem_lines:
-            # Truncate to budget
-            budget_chars = reply_budget_tokens * 4
+            # Truncate to token budget
             mem_text = "\n".join(mem_lines)
-            if len(mem_text) > budget_chars:
+            if self._rough_token_count(mem_text) > max_context_tokens:
+                budget_chars = max_context_tokens * 4
                 mem_text = mem_text[-budget_chars:]
                 mem_lines = mem_text.split("\n")
 
@@ -789,7 +786,7 @@ class AwarenessLoop:
         try:
             # Build full prompt with context
             if context:
-                full_prompt = f"{context}\n{prompt}"
+                full_prompt = f"You are reflecting on your recent experiences. Based on the conversation below, provide a brief introspection (2-3 sentences).\n\n{context}\n\nReflection: {prompt}"
             else:
                 full_prompt = prompt
 
