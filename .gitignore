@@ -62,3 +62,4 @@ htmlcov/
 
 # Persona's private space (self-modifying files)
 persona_space/
+logs/

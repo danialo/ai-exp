@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 import time
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
@@ -14,12 +15,24 @@ from pathlib import Path
 import uvicorn
 import numpy as np
 
-# Configure logging to show affect/mood tracking
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Import multi-file logging system
+from src.utils.logging_config import get_multi_logger
+
+# Initialize multi-file logging system
+multi_logger = get_multi_logger()
+
+# Setup console logging for uvicorn/FastAPI
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(console_formatter)
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addHandler(console_handler)
+
 logger = logging.getLogger(__name__)
+logger.info("Multi-file logging system initialized")
 
 from config.settings import settings
 from src.memory.raw_store import create_raw_store
@@ -1863,6 +1876,12 @@ async def persona_chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:
+        # Log user message
+        multi_logger.log_conversation("user", request.message, metadata={
+            "retrieve_memories": request.retrieve_memories,
+            "top_k": request.top_k
+        })
+
         # Use the main persona service (model selection disabled to preserve belief system)
         active_persona_service = persona_service
 
@@ -1984,6 +2003,14 @@ async def persona_chat(request: ChatRequest):
 
         logger.info(f"Stored persona interaction: {result.experience_id}")
 
+        # Log assistant response
+        multi_logger.log_conversation("assistant", response_text, metadata={
+            "experience_id": result.experience_id,
+            "user_valence": user_valence,
+            "user_arousal": user_arousal,
+            "user_dominance": user_dominance
+        })
+
         # Return response with reconciliation data and detected user emotion
         return {
             "response": response_text,
@@ -1997,6 +2024,7 @@ async def persona_chat(request: ChatRequest):
             "user_dominance": user_dominance,  # Detected user control level
         }
     except Exception as e:
+        multi_logger.log_error(f"Persona generation error: {str(e)}", exception=e)
         raise HTTPException(status_code=500, detail=f"Persona generation error: {str(e)}")
 
 
