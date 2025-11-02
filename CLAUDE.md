@@ -1,1 +1,2 @@
 - think twice before modifying files in Astra's personal_space. this is an absolute lsat resort.
+- Astra lives here: /api/persona/chat. Coding should be performed for this endpoint first.
