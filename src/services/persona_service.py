@@ -551,13 +551,13 @@ class PersonaService:
                 "type": "function",
                 "function": {
                     "name": "search_web",
-                    "description": "Search the web for current information, facts, or knowledge you don't have. Use this when you need up-to-date information, news, specific facts, or when your knowledge might be outdated. Returns search results with titles, URLs, and snippets.",
+                    "description": "Search the web for current information that you don't have or that changes frequently. ALWAYS use this for: current time/date, weather, news, events, prices, or any real-time information. Also use for specific facts or knowledge you're uncertain about. You have no access to real-time data without using this tool. Returns search results with titles, URLs, and snippets.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "Search query (e.g., 'latest AI breakthroughs 2025', 'what is quantum computing')"
+                                "description": "Search query (e.g., 'current time MDT', 'weather today San Francisco', 'latest AI news 2025')"
                             },
                             "num_results": {
                                 "type": "integer",
