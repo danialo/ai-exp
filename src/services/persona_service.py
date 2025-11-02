@@ -551,7 +551,7 @@ class PersonaService:
                 "type": "function",
                 "function": {
                     "name": "search_web",
-                    "description": "Search the web for current information that you don't have or that changes frequently. ALWAYS use this for: current time/date, weather, news, events, prices, or any real-time information. Also use for specific facts or knowledge you're uncertain about. You have no access to real-time data without using this tool. Returns search results with titles, URLs, and snippets.",
+                    "description": "Search the web for ANY information you don't have in your training data or are uncertain about. You MUST use this tool when asked about facts, current events, specific data, or anything outside your core knowledge. Your training data has a knowledge cutoff and you have NO access to real-time or current information without this tool. If you're unsure whether you know something accurately, use this tool to verify. Returns search results with titles, URLs, and snippets.",
                     "parameters": {
                         "type": "object",
                         "properties": {
