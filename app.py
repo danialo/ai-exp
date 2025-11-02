@@ -1208,6 +1208,8 @@ async def get_persona_info():
 @app.post("/api/persona/chat")
 async def persona_chat(request: ChatRequest):
     """Chat with the persona directly - includes memory storage for continuity."""
+    global previous_user_valence
+
     if not persona_service:
         raise HTTPException(status_code=503, detail="Persona mode not enabled")
 
@@ -1267,6 +1269,42 @@ async def persona_chat(request: ChatRequest):
         # Use detected arousal and dominance (no reconciliation for these yet)
         arousal = user_arousal
         dominance = user_dominance
+
+        # Update agent mood based on this interaction
+        mood_before = agent_mood.current_mood
+        external_before = agent_mood.external_mood
+        internal_before = agent_mood.internal_mood
+
+        # Record external mood (how user is treating Astra)
+        agent_mood.record_external_interaction(user_valence)
+
+        # Record internal mood (Astra's competence/success)
+        # Detect success based on whether tools were used or positive feedback received
+        was_successful = success_detector.detect_success(
+            user_message=request.message,
+            user_valence=user_valence,
+            previous_valence=previous_user_valence,
+        )
+
+        if was_successful:
+            # Check for explicit positive feedback for bigger boost
+            feedback = success_detector.detect_feedback(request.message)
+            if feedback == "positive":
+                agent_mood.record_positive_feedback(boost=0.15)
+            else:
+                agent_mood.record_success(boost=0.1)
+
+        # Track mood changes
+        mood_after = agent_mood.current_mood
+        external_after = agent_mood.external_mood
+        internal_after = agent_mood.internal_mood
+
+        logger.info(f"Persona mood: {mood_before:.3f} → {mood_after:.3f} ({agent_mood.get_mood_description()})")
+        logger.info(f"External (user): {external_before:.3f} → {external_after:.3f}, Internal (self): {internal_before:.3f} → {internal_after:.3f}")
+        logger.info(f"Pissed: {agent_mood.is_pissed} | Success: {was_successful}")
+
+        # Update previous user valence for next interaction
+        previous_user_valence = user_valence
 
         interaction = InteractionPayload(
             prompt=request.message,
