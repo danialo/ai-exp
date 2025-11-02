@@ -15,6 +15,8 @@ from .models import (
 )
 from .workspace import WorkspaceManager, create_workspace_manager
 from .oracle import Oracle, create_oracle
+from .orchestrator import ExplorationOrchestrator, create_orchestrator
+from .job_manager import JobManager, create_job_manager
 
 __all__ = [
     # Models
@@ -35,4 +37,10 @@ __all__ = [
     # Oracle
     "Oracle",
     "create_oracle",
+    # Orchestrator
+    "ExplorationOrchestrator",
+    "create_orchestrator",
+    # Job Manager
+    "JobManager",
+    "create_job_manager",
 ]
