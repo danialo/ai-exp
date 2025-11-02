@@ -112,6 +112,61 @@
             margin-left: 42px;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
             line-height: 1.6;
+            position: relative;
+        }
+
+        .message-content[contenteditable="true"] {
+            outline: 2px dashed #667eea;
+            outline-offset: 2px;
+            cursor: text;
+        }
+
+        .message-content[contenteditable="true"]:focus {
+            outline: 2px solid #667eea;
+        }
+
+        .copy-button {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.2s, background 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .message:hover .copy-button {
+            opacity: 1;
+        }
+
+        .copy-button:hover {
+            background: #e9ecef;
+            border-color: #adb5bd;
+        }
+
+        .copy-button:active {
+            transform: scale(0.95);
+        }
+
+        .copy-button.copied {
+            background: #d4edda;
+            border-color: #c3e6cb;
+            color: #155724;
+        }
+
+        .edit-hint {
+            font-size: 11px;
+            color: #6c757d;
+            margin-top: 8px;
+            margin-left: 42px;
+            font-style: italic;
         }
 
         .memories {
@@ -1028,8 +1083,82 @@
                     <div class="${iconClass}">${icon}</div>
                     <span>${label}</span>
                 </div>
-                <div class="message-content">${escapeHtml(content)}</div>
+                <div class="message-content" ${isUser ? 'contenteditable="true"' : ''}>${escapeHtml(content)}<button class="copy-button" data-content="${escapeHtml(content).replace(/"/g, '&quot;')}">📋 Copy</button></div>
             `;
+
+            // Add edit hint for user messages
+            if (isUser) {
+                const editHint = document.createElement('div');
+                editHint.className = 'edit-hint';
+                editHint.textContent = 'Click to edit • Press Enter to resend';
+                messageDiv.appendChild(editHint);
+            }
+
+            // Add copy button functionality
+            const copyBtn = messageDiv.querySelector('.copy-button');
+            if (copyBtn) {
+                copyBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const textToCopy = copyBtn.getAttribute('data-content').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+                    // Use fallback method for HTTP (navigator.clipboard requires HTTPS)
+                    const textarea = document.createElement('textarea');
+                    textarea.value = textToCopy;
+                    textarea.style.position = 'fixed';
+                    textarea.style.opacity = '0';
+                    document.body.appendChild(textarea);
+                    textarea.select();
+
+                    try {
+                        const successful = document.execCommand('copy');
+                        if (successful) {
+                            const originalText = copyBtn.textContent;
+                            copyBtn.textContent = '✓ Copied!';
+                            copyBtn.classList.add('copied');
+                            setTimeout(() => {
+                                copyBtn.textContent = originalText;
+                                copyBtn.classList.remove('copied');
+                            }, 2000);
+                        } else {
+                            throw new Error('Copy command failed');
+                        }
+                    } catch (err) {
+                        console.error('Failed to copy:', err);
+                        copyBtn.textContent = '✗ Failed';
+                        setTimeout(() => {
+                            copyBtn.textContent = '📋 Copy';
+                        }, 2000);
+                    } finally {
+                        document.body.removeChild(textarea);
+                    }
+                });
+            }
+
+            // Add edit and resend functionality for user messages
+            if (isUser) {
+                const contentDiv = messageDiv.querySelector('.message-content');
+                contentDiv.addEventListener('keydown', async (e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        const editedText = contentDiv.textContent.replace('📋 Copy', '').trim();
+                        if (editedText && editedText !== content) {
+                            // Remove the edit hint temporarily
+                            const hint = messageDiv.querySelector('.edit-hint');
+                            if (hint) hint.remove();
+
+                            // Disable editing temporarily
+                            contentDiv.contentEditable = 'false';
+
+                            // Send the edited message
+                            await resendEditedMessage(editedText);
+
+                            // Re-enable editing
+                            contentDiv.contentEditable = 'true';
+                            if (hint) messageDiv.appendChild(hint);
+                        }
+                    }
+                });
+            }
 
             // Add memories if present
             if (memories && memories.length > 0) {
@@ -1130,6 +1259,73 @@
             } catch (error) {
                 console.error('Error:', error);
                 addError(`Failed to send message: ${error.message}`);
+            } finally {
+                isProcessing = false;
+                sendButton.disabled = false;
+                sendButton.textContent = 'Send';
+                messageInput.focus();
+            }
+        }
+
+        // Resend edited message
+        async function resendEditedMessage(editedText) {
+            if (!editedText || isProcessing) return;
+
+            isProcessing = true;
+            sendButton.disabled = true;
+            sendButton.innerHTML = '<span class="loading"></span>';
+
+            // Update conversation history with edited message
+            conversationHistory.push({role: 'user', content: editedText});
+
+            try {
+                const response = await fetch('/api/persona/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: editedText,
+                        retrieve_memories: true,
+                        top_k: 5,
+                        conversation_history: conversationHistory,
+                        model: selectedModel,
+                    }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                // Add assistant response
+                addMessage('assistant', data.response, []);
+
+                // Add assistant response to conversation history
+                conversationHistory.push({role: 'assistant', content: data.response});
+
+                // Keep only last 10 messages
+                if (conversationHistory.length > 10) {
+                    conversationHistory = conversationHistory.slice(-10);
+                }
+
+                // Update user valence indicator if VAD data is present
+                if (data.user_valence !== undefined) {
+                    updateUserValence(
+                        data.user_valence || 0,
+                        data.user_arousal || 0.5,
+                        data.user_dominance || 0.5
+                    );
+                }
+
+                // Update stats and mood
+                loadStats();
+                updateMood();
+
+            } catch (error) {
+                console.error('Error:', error);
+                addError(`Failed to send edited message: ${error.message}`);
             } finally {
                 isProcessing = false;
                 sendButton.disabled = false;
