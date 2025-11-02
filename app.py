@@ -46,6 +46,12 @@ from src.services.self_knowledge_index import create_self_knowledge_index
 from src.services.web_search_service import create_web_search_service
 from src.services.url_fetcher_service import create_url_fetcher_service
 from src.services.web_interpretation_service import create_web_interpretation_service
+from src.services.exploration import (
+    create_workspace_manager,
+    create_orchestrator,
+    create_job_manager,
+)
+from src.api import exploration_routes
 
 
 # Initialize FastAPI app
@@ -413,6 +419,28 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         url_fetcher_service=url_fetcher_service,  # Enable URL browsing
         web_interpretation_service=web_interpretation_service,  # Enable content interpretation
     )
+
+# Initialize exploration system
+exploration_workspace_manager = None
+exploration_orchestrator = None
+exploration_job_manager = None
+
+if settings.PERSONA_MODE_ENABLED and persona_service and llm_service:
+    try:
+        exploration_workspace_manager = create_workspace_manager()
+        exploration_orchestrator = create_orchestrator(
+            workspace_manager=exploration_workspace_manager,
+            persona_service=persona_service,
+            llm_service=llm_service,
+        )
+        exploration_job_manager = create_job_manager(
+            orchestrator=exploration_orchestrator
+        )
+        # Set job manager in routes
+        exploration_routes.set_job_manager(exploration_job_manager)
+        logger.info("Exploration system initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize exploration system: {e}")
 
 
 # Request/Response models
@@ -1863,6 +1891,8 @@ async def delete_task(task_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete task: {str(e)}")
 
+# Mount exploration routes
+app.include_router(exploration_routes.router)
 
 # Mount static files
 static_dir = Path(__file__).parent / "static"
