@@ -94,7 +94,6 @@ class PersonaService:
         self.web_interpretation_service = web_interpretation_service
 
         # Rate limiting for web operations (per conversation)
-        self.search_count = 0
         self.url_fetch_count = 0
 
         # Dissonance resolution tracking (prevent infinite loops)
@@ -422,7 +421,6 @@ class PersonaService:
 
     def reset_web_limits(self):
         """Reset web operation counters for a new conversation."""
-        self.search_count = 0
         self.url_fetch_count = 0
         logger.info("Web operation limits reset")
 
@@ -727,15 +725,12 @@ class PersonaService:
             elif tool_name == "search_web":
                 if not self.web_search_service:
                     result = "Search functionality not available (web_search_service not configured)"
-                elif self.search_count >= settings.MAX_SEARCHES_PER_CONVERSATION:
-                    result = f"Search limit reached ({settings.MAX_SEARCHES_PER_CONVERSATION} searches per conversation)"
                 else:
                     query = arguments.get("query")
                     num_results = min(arguments.get("num_results", 5), 10)  # Cap at 10
 
                     try:
                         search_results = self.web_search_service.search(query, num_results)
-                        self.search_count += 1
 
                         # Format results for persona
                         result = f"Found {len(search_results)} results for '{query}':\n\n"
@@ -743,8 +738,6 @@ class PersonaService:
                             result += f"{sr.position}. {sr.title}\n"
                             result += f"   URL: {sr.url}\n"
                             result += f"   {sr.snippet}\n\n"
-
-                        result += f"(Search {self.search_count}/{settings.MAX_SEARCHES_PER_CONVERSATION})"
 
                     except Exception as e:
                         result = f"Search failed: {str(e)}"
