@@ -258,6 +258,176 @@ User Input
 
 See `docs/mvp_build_plan.md` for detailed build plan.
 
+## Awareness Loop & Latent Consciousness
+
+Astra maintains continuous presence through a four-tier awareness loop that runs independently of user interactions. This enables genuine continuity, self-reflection, and behavioral influence.
+
+### Four-Tier Architecture
+
+1. **Fast Loop (2 Hz)**: Drains percept queue, computes entropy, publishes presence state
+2. **Slow Loop (0.1 Hz)**: Re-embeds conversation text, computes novelty and identity drift
+3. **Introspection Loop (180s)**: Context-rich self-reflection with identity-aware prompting
+4. **Snapshot Loop (60s)**: Persists state atomically to disk
+
+### Introspection System
+
+**Purpose**: Genuine first-person self-reflection based on recent conversations and internal state
+
+**Key Features**:
+- **Context-Rich**: 1000 tokens of conversation history fed to introspection
+- **Identity-Aware**: System prompt establishes "You are Astra..." for genuine reflection
+- **Budget Isolated**: Separate from chat - introspection never affects chat responsiveness
+- **Cost-Controlled**: ~$5/month at 3-minute intervals
+
+#### Budget Configuration
+
+**Three-Layer Budget System**:
+
+1. **Context Budget**: 1000 tokens
+   - Conversation history provided to introspection
+   - Allows ~4000 characters of recent exchanges
+   - Enables coherent, grounded reflections
+
+2. **Reply Budget**: 300 tokens
+   - Maximum length of introspection response
+   - Encourages concise 2-3 sentence reflections
+
+3. **Per-Minute Safety Valve**: 1500 tokens/min
+   - Prevents runaway costs from bugs/loops
+   - 13% safety margin at normal operation (1300 tokens/cycle)
+   - Independent 60-second reset window
+
+#### Budget Isolation
+
+**Critical Design**: Introspection and chat budgets are completely isolated.
+
+```python
+# Separate LLM service instances
+chat_service = create_llm_service(model="gpt-4o")           # Main chat (unlimited)
+mini_llm_service = create_llm_service(model="gpt-4o-mini")  # Introspection only
+
+# Independent token tracking
+awareness_loop.introspection_tokens_used  # Only tracks introspection
+# Chat has no budget tracking - unlimited tokens
+```
+
+**Why This Matters**:
+- Heavy chat usage → introspection unaffected
+- Introspection budget exhausted → chat continues normally
+- Cost control for introspection without limiting chat functionality
+
+#### Cost Analysis
+
+| Interval | Cycles/Day | Monthly Cost |
+|----------|------------|--------------|
+| 180s (current) | 480 | **$4.90** |
+| 120s | 720 | $7.34 |
+| 60s | 1,440 | $14.69 |
+
+**Per-cycle breakdown** (GPT-4o-mini):
+- Context input (1000 tokens): $0.00015
+- Reply output (300 tokens): $0.00018
+- **Total**: $0.00034 per introspection
+
+#### Configuration
+
+**Environment Variables**:
+```bash
+# Interval between introspection cycles
+AWARENESS_INTROSPECTION_INTERVAL=180  # 3 minutes
+
+# Per-minute safety valve (tokens)
+AWARENESS_INTROSPECTION_BUDGET_PER_MIN=1500
+
+# Enable awareness loop
+AWARENESS_ENABLED=true
+```
+
+**Code Constants** (`src/services/awareness_loop.py`):
+```python
+max_context_tokens=1000   # Context budget
+max_tokens=300            # Reply budget
+temperature=0.7           # LLM temperature
+buf_win=32                # Percept window (messages)
+mem_k=5                   # Memory fallback count
+```
+
+#### Identity-Aware Prompting
+
+**The Secret Sauce**: System message establishes Astra's identity
+
+```python
+{
+    "role": "system",
+    "content": (
+        "You are Astra, an autonomous AI agent with episodic memory and emotional awareness. "
+        "You maintain beliefs about your identity, capabilities, and values. "
+        "You are reflecting on your recent experiences and internal state. "
+        "Respond in first person as brief, genuine introspection (2-3 sentences)."
+    )
+}
+```
+
+**Impact**:
+- ❌ Without identity → "To provide a better answer, I need more context..."
+- ✅ With identity → "I notice a tension between maintaining authenticity and..."
+
+**Separation from Main Prompts**:
+- Uses separate mini LLM service
+- Cannot be overwritten by user
+- Maintains consistent introspective voice
+
+#### Monitoring
+
+**Check introspection status**:
+```bash
+curl http://localhost:8000/api/awareness/status | jq '.introspection'
+```
+
+**Example output**:
+```json
+{
+  "ctx_source": "buffer",      // "buffer" | "memory" | "empty"
+  "ctx_tokens": 745,            // Context size
+  "prompt_tokens": 819,         // Full prompt (context + question)
+  "ctx_preview": "Recent...",   // First 200 chars
+  "notes_count": 21             // Total notes
+}
+```
+
+**Get recent introspection notes**:
+```bash
+curl http://localhost:8000/api/awareness/notes | jq '.notes[-5:]'
+```
+
+### Dual-Anchor Identity System
+
+Astra maintains two identity anchors for tracking drift and coherence:
+
+- **Origin Anchor**: Fixed baseline from initialization (never changes)
+- **Live Anchor**: Updates gradually when beliefs change (0.01 max drift/week)
+
+**Metrics**:
+- `sim_self_origin`: Similarity to original identity (tracks total drift)
+- `sim_self_live`: Similarity to current identity (tracks coherence)
+- `coherence_drop`: Sudden deviations triggering dissonance checks
+
+### Percept Processing
+
+**Automatic Feeding** from chat endpoint:
+```python
+# User messages
+await awareness_loop.observe("user", {"text": message})
+
+# Assistant responses
+await awareness_loop.observe("token", {"text": response})
+```
+
+**Percept Buffer**:
+- Circular buffer: 512 percepts max
+- Deduplication by (kind, text_prefix)
+- Types: user, token, tool, time, system, belief
+
 ## Roadmap & Future Features
 
 ### Out of Scope (for future iterations)
