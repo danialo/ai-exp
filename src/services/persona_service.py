@@ -97,7 +97,6 @@ class PersonaService:
         self.awareness_loop = awareness_loop
 
         # Rate limiting for web operations (per conversation)
-        self.search_count = 0
         self.url_fetch_count = 0
 
         # Anti-meta-talk system
@@ -468,7 +467,6 @@ class PersonaService:
 
     def reset_web_limits(self):
         """Reset web operation counters for a new conversation."""
-        self.search_count = 0
         self.url_fetch_count = 0
         logger.info("Web operation limits reset")
 
@@ -1048,7 +1046,7 @@ This revision represents growth in my self-understanding. My past statements wer
                             },
                             "num_results": {
                                 "type": "integer",
-                                "description": "Number of results to return. You can request anywhere from 1-10 results. Use more results (8-10) for comprehensive research. Default: 5, Max: 10",
+                                "description": "Number of results to return. Request as many as needed for comprehensive research. Default: 5",
                                 "default": 5
                             }
                         },
@@ -1214,15 +1212,12 @@ This revision represents growth in my self-understanding. My past statements wer
             elif tool_name == "search_web":
                 if not self.web_search_service:
                     result = "Search functionality not available (web_search_service not configured)"
-                elif self.search_count >= settings.MAX_SEARCHES_PER_CONVERSATION:
-                    result = f"Search limit reached ({settings.MAX_SEARCHES_PER_CONVERSATION} searches per conversation)"
                 else:
                     query = arguments.get("query")
-                    num_results = min(arguments.get("num_results", 5), 10)  # Cap at 10
+                    num_results = arguments.get("num_results", 5)
 
                     try:
                         search_results = self.web_search_service.search(query, num_results)
-                        self.search_count += 1
 
                         # Format results for persona
                         result = f"Found {len(search_results)} results for '{query}':\n\n"
@@ -1230,8 +1225,6 @@ This revision represents growth in my self-understanding. My past statements wer
                             result += f"{sr.position}. {sr.title}\n"
                             result += f"   URL: {sr.url}\n"
                             result += f"   {sr.snippet}\n\n"
-
-                        result += f"(Search {self.search_count}/{settings.MAX_SEARCHES_PER_CONVERSATION})"
 
                     except Exception as e:
                         result = f"Search failed: {str(e)}"
