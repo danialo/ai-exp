@@ -262,6 +262,10 @@ See `docs/mvp_build_plan.md` for detailed build plan.
 
 Astra maintains continuous presence through a four-tier awareness loop that runs independently of user interactions. This enables genuine continuity, self-reflection, and behavioral influence.
 
+📖 **Detailed Documentation**:
+- [Awareness Loop Implementation](docs/AWARENESS_LOOP_IMPLEMENTATION.md) - Complete architecture
+- [Introspection System](docs/INTROSPECTION_SYSTEM.md) - Budget isolation, prompting, cost analysis
+
 ### Four-Tier Architecture
 
 1. **Fast Loop (2 Hz)**: Drains percept queue, computes entropy, publishes presence state
@@ -428,6 +432,12 @@ await awareness_loop.observe("token", {"text": response})
 - Deduplication by (kind, text_prefix)
 - Types: user, token, tool, time, system, belief
 
+---
+
+**📚 Further Reading**:
+- [Complete Introspection System Documentation](docs/INTROSPECTION_SYSTEM.md) - Design rationale, implementation details, future enhancements
+- [Awareness Loop Architecture](docs/AWARENESS_LOOP_IMPLEMENTATION.md) - Multi-worker coordination, state management, performance benchmarks
+
 ## Roadmap & Future Features
 
 ### Out of Scope (for future iterations)
@@ -456,9 +466,21 @@ The following features are documented in `docs/experience_schema.md` but not imp
 
 ## Documentation
 
+### Core System
+- `README.md` - This file: setup, usage, and operations guide
 - `docs/experience_schema.md` - Complete schema and architecture specification
 - `docs/mvp_build_plan.md` - Stage-by-stage build plan and validation criteria
-- `README.md` - This file: setup, usage, and operations guide
+
+### Awareness & Introspection
+- `docs/AWARENESS_LOOP_IMPLEMENTATION.md` - Four-tier awareness architecture, distributed locking, persistence
+- `docs/INTROSPECTION_SYSTEM.md` - Context-rich self-reflection, budget isolation, identity-aware prompting
+- `docs/AWARENESS_TEST_REPORT.md` - Performance benchmarks and integration validation
+
+### Belief & Memory Systems
+- `docs/BELIEF_MEMORY_SYSTEM_IMPLEMENTATION.md` - Belief vector store, grounded reasoning, consistency checking
+- `docs/BELIEF_SYSTEM_STATUS.md` - Implementation status and integration points
+- `docs/OUTCOME_DRIVEN_TRUST_SYSTEM.md` - Learned provenance weighting and trust calibration
+- `docs/BELIEF_GARDENER.md` - Autonomous pattern detection and belief lifecycle management
 
 ## Troubleshooting
 
