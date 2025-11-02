@@ -10,7 +10,7 @@ Astra now has a continuous "latent awareness loop" - a background process that m
 
 1. **Fast Loop (2 Hz)**: Drain percept queue, compute cheap stats, publish to blackboard
 2. **Slow Loop (0.1 Hz)**: Re-embed text when delta > threshold, compute novelty/similarity
-3. **Introspection Loop (30s ± 5s jitter)**: LLM-generated introspection notes (budget-limited)
+3. **Introspection Loop (180s ± 5s jitter)**: Context-rich identity-aware introspection (see [INTROSPECTION_SYSTEM.md](./INTROSPECTION_SYSTEM.md))
 4. **Snapshot Loop (60s)**: Atomic persistence to disk
 
 ### Multi-Worker Coordination
@@ -155,7 +155,7 @@ AWARENESS_INTROSPECTION_INTERVAL=60  # Less frequent LLM calls
 - **Watchdog**: Degrades to minimal mode if 3 consecutive ticks > 250ms
 - **Backpressure**: Queue bounded at 2048, drops events on full
 - **Embedding cache**: Avoids redundant computation
-- **Introspection budget**: Max 100 tokens/min
+- **Introspection budget**: 1500 tokens/min safety valve (isolated from chat budget)
 
 ### Reliability
 
