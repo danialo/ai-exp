@@ -542,13 +542,24 @@ class BeliefLifecycleManager:
             return False
 
         try:
-            self.belief_store.update_belief(
+            # Calculate new confidence (capped at 0.85)
+            # Note: BeliefStore has MAX_CONFIDENCE_STEP=0.15, so use 0.1 which is within limit
+            target_confidence = min(0.85, belief.confidence + 0.1)
+            confidence_delta = round(target_confidence - belief.confidence, 6)  # Round to avoid float precision issues
+
+            success = self.belief_store.apply_delta(
                 belief_id=belief.belief_id,
-                state="asserted",
-                confidence=min(0.85, belief.confidence + 0.1),
-                rationale="Auto-promotion: evidence threshold met and positive feedback",
+                from_ver=belief.ver,
+                op=DeltaOp.UPDATE,
+                confidence_delta=confidence_delta,
+                state_change="tentative->asserted",
                 updated_by="gardener",
+                reason="Auto-promotion: evidence threshold met and positive feedback"
             )
+
+            if not success:
+                logger.warning(f"Failed to promote {belief.belief_id}: version mismatch")
+                return False
 
             append_event(LedgerEvent(
                 ts=datetime.now(timezone.utc).timestamp(),
@@ -563,7 +574,7 @@ class BeliefLifecycleManager:
             # Get feedback score for logging
             score = 0.0
             if self.feedback_aggregator:
-                score, _ = self.feedback_aggregator.score(belief.belief_id)
+                score, _, _ = self.feedback_aggregator.score(belief.belief_id)
 
             logger.info(f"PROMOTE belief_id={belief.belief_id[:40]} score={score:.2f} "
                        f"statement=\"{belief.statement[:60]}...\" reason=\"thresholds_met\"")
@@ -582,13 +593,27 @@ class BeliefLifecycleManager:
             return False
 
         try:
-            self.belief_store.update_belief(
+            # Calculate new confidence (floored at 0.2)
+            # Note: BeliefStore has MAX_CONFIDENCE_STEP=0.15, so cap the delta
+            target_confidence = max(0.2, belief.confidence - 0.15)
+            confidence_delta = round(target_confidence - belief.confidence, 6)  # Round to avoid float precision issues
+
+            # Determine state transition
+            state_change = f"{belief.state}->tentative"
+
+            success = self.belief_store.apply_delta(
                 belief_id=belief.belief_id,
-                state="tentative",
-                confidence=max(0.2, belief.confidence - 0.2),
-                rationale="Auto-deprecation: evidence decay or negative feedback",
+                from_ver=belief.ver,
+                op=DeltaOp.UPDATE,
+                confidence_delta=confidence_delta,
+                state_change=state_change,
                 updated_by="gardener",
+                reason="Auto-deprecation: evidence decay or negative feedback"
             )
+
+            if not success:
+                logger.warning(f"Failed to deprecate {belief.belief_id}: version mismatch")
+                return False
 
             append_event(LedgerEvent(
                 ts=datetime.now(timezone.utc).timestamp(),
