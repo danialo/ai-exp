@@ -635,7 +635,7 @@ async def gardener_tick_loop():
             logger.info("Gardener tick loop cancelled")
             break
         except Exception as e:
-            logger.error(f"Gardener tick failed: {e}")
+            logger.error(f"Gardener tick failed: {e}", exc_info=True)
 
 
 @app.on_event("startup")

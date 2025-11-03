@@ -520,7 +520,7 @@ class BeliefLifecycleManager:
 
         # Get negative feedback score from aggregator
         if self.feedback_aggregator:
-            _, neg_feedback = self.feedback_aggregator.score(belief_id)
+            _, neg_feedback, _ = self.feedback_aggregator.score(belief_id)
         else:
             # No aggregator available - use neutral score
             logger.warning(f"No feedback aggregator for {belief_id}, using neutral score")
