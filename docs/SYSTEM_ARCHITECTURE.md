@@ -169,6 +169,82 @@ Deduplication now works across entire buffer, not just within batch. Prevents ti
 - `dissonance_event` - Cognitive dissonance (6 records)
 - `reconciliation` - Belief updates (6 records)
 - `learning_pattern` - Detected patterns (1 record)
+- `task_execution` - **NEW:** Scheduled/manual task executions with full correlation
+
+#### D. Task Execution Tracking
+**Purpose:** End-to-end auditability for scheduled task executions
+**Implementation:** Phase 1 Complete (November 2025)
+**Files:** `src/pipeline/task_experience.py`, `src/services/task_scheduler.py`
+
+**Features:**
+- Every task execution stored as `TASK_EXECUTION` experience
+- Full correlation tracking (trace_id, span_id, idempotency_key)
+- Links to retrieved memories via `parents` field
+- Captures execution status (success/failed/partial)
+- Records timing, errors, files written, retrieval metadata
+- PII scrubbing on task responses
+- Idempotent insertion (safe to re-run without duplicates)
+
+**Structure:**
+```python
+{
+  "id": "task_exec_daily_reflection_2025-11-05T...",
+  "type": "TASK_EXECUTION",
+  "parents": ["exp_123", "exp_456"],  # Retrieved memories
+  "causes": [],  # Future: goals that triggered task
+  "content": {
+    "text": "Task response (PII scrubbed)",
+    "structured": {
+      "task_id": "daily_reflection",
+      "task_slug": "daily_reflection",
+      "status": "success",
+      "started_at_iso": "2025-11-05T18:29:12Z",
+      "ended_at_iso": "2025-11-05T18:29:13Z",
+      "duration_ms": 1042,
+      "trace_id": "550e8400-...",  # Correlation ID
+      "span_id": "f47ac10b-...",
+      "idempotency_key": "sha256:...",
+      "retrieval": {
+        "memory_count": 3,
+        "query": "recent reflections",
+        "latency_ms": 28
+      },
+      "io": {
+        "files_written": [],
+        "tool_calls": [],
+        "script_runs": []
+      },
+      "error": null  # or {"type": "...", "message": "..."}
+    }
+  }
+}
+```
+
+**Querying Task History:**
+```python
+# Last 20 runs of specific task
+task_runs = raw_store.list_task_executions(task_id="daily_reflection", limit=20)
+
+# Get specific execution by trace_id
+execution = raw_store.get_by_trace_id("550e8400-...")
+
+# Show DAG: parents → this task → effects
+for parent_id in execution.parents:
+    parent = raw_store.get_experience(parent_id)
+    print(f"Input: {parent.id}")
+```
+
+**Indexes:** SQLite indexes created on:
+- `type + created_at` (fast filtering by experience type)
+- `task_id + created_at` (task-specific history)
+- `trace_id` (correlation lookup)
+- `idempotency_key` (duplicate prevention)
+
+**Backfill:** Use `scripts/backfill_task_executions.py` to convert existing JSON results:
+```bash
+python scripts/backfill_task_executions.py --dry-run  # Preview
+python scripts/backfill_task_executions.py            # Execute
+```
 
 ---
 
