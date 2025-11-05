@@ -52,6 +52,14 @@ data/awareness_state*.ndjson.gz
 data/awareness_state.json
 data/self_knowledge_index.json
 
+# Belief system runtime state
+data/beliefs/current.json
+data/beliefs/index.json
+data/beliefs/log-*.ndjson.gz
+
+# Identity ledger runtime state
+data/identity/ledger-*.ndjson.gz
+
 # Testing
 .pytest_cache/
 .coverage
