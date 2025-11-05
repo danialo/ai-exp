@@ -325,7 +325,8 @@ current_session_id: Optional[str] = None
 task_scheduler = None
 if settings.PERSONA_MODE_ENABLED:
     task_scheduler = create_task_scheduler(
-        persona_space_path=settings.PERSONA_SPACE_PATH
+        persona_space_path=settings.PERSONA_SPACE_PATH,
+        raw_store=raw_store  # Enable task execution tracking (Phase 1)
     )
 
 # Initialize belief system (legacy)

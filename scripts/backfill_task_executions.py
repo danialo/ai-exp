@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.memory.raw_store import RawStore
 from src.pipeline.task_experience import create_task_execution_experience
-from src.settings import settings
+from config.settings import settings
 
 logging.basicConfig(
     level=logging.INFO,

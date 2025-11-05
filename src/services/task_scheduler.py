@@ -642,14 +642,18 @@ Document any new beliefs in your reflection, using the format: "I believe [state
         return results
 
 
-def create_task_scheduler(persona_space_path: str = "persona_space") -> TaskScheduler:
+def create_task_scheduler(
+    persona_space_path: str = "persona_space",
+    raw_store: Optional[RawStore] = None
+) -> TaskScheduler:
     """
     Factory function to create a TaskScheduler.
 
     Args:
         persona_space_path: Path to persona_space directory
+        raw_store: Optional RawStore for task execution tracking
 
     Returns:
         TaskScheduler instance
     """
-    return TaskScheduler(persona_space_path)
+    return TaskScheduler(persona_space_path, raw_store=raw_store)

@@ -9,6 +9,7 @@ MVP scope focuses on 'occurrence' type experiences with semantic embeddings
 and minimal affect tracking (user valence only).
 """
 
+import json
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
@@ -354,21 +355,38 @@ def experience_to_model(exp: Experience) -> ExperienceModel:
     """Convert SQLModel Experience to Pydantic ExperienceModel."""
     # SQLite doesn't preserve timezone info, so ensure created_at is UTC-aware
     created_at = exp.created_at
+
+    # Handle case where created_at is returned as string from raw SQL queries
+    if isinstance(created_at, str):
+        created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
+
+    # Handle JSON fields that may be returned as strings from raw SQL
+    content = exp.content if isinstance(exp.content, dict) else json.loads(exp.content)
+    provenance = exp.provenance if isinstance(exp.provenance, dict) else json.loads(exp.provenance)
+    confidence = exp.confidence if isinstance(exp.confidence, dict) else json.loads(exp.confidence)
+    embeddings = exp.embeddings if isinstance(exp.embeddings, dict) else json.loads(exp.embeddings)
+    affect = exp.affect if isinstance(exp.affect, dict) else json.loads(exp.affect)
+
+    # Handle list fields that may be returned as JSON strings from raw SQL
+    evidence_ptrs = exp.evidence_ptrs if isinstance(exp.evidence_ptrs, list) else json.loads(exp.evidence_ptrs)
+    parents = exp.parents if isinstance(exp.parents, list) else json.loads(exp.parents)
+    causes = exp.causes if isinstance(exp.causes, list) else json.loads(exp.causes)
 
     return ExperienceModel(
         id=exp.id,
         type=ExperienceType(exp.type),
         created_at=created_at,
-        content=ContentModel(**exp.content),
-        provenance=ProvenanceModel(**exp.provenance),
-        evidence_ptrs=exp.evidence_ptrs,
-        confidence=ConfidenceModel(**exp.confidence),
-        embeddings=EmbeddingPointers(**exp.embeddings),
-        affect=AffectModel(**exp.affect),
-        parents=exp.parents,
-        causes=exp.causes,
+        content=ContentModel(**content),
+        provenance=ProvenanceModel(**provenance),
+        evidence_ptrs=evidence_ptrs,
+        confidence=ConfidenceModel(**confidence),
+        embeddings=EmbeddingPointers(**embeddings),
+        affect=AffectModel(**affect),
+        parents=parents,
+        causes=causes,
         sign=exp.sign,
         ownership=Actor(exp.ownership),
         session_id=exp.session_id,
