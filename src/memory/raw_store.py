@@ -67,6 +67,70 @@ class RawStore:
         # Create all tables
         SQLModel.metadata.create_all(self.engine)
 
+        # Create task execution indexes
+        self._create_task_indexes()
+
+    def _create_task_indexes(self):
+        """Create SQLite indexes for efficient task execution queries.
+
+        These indexes use json_extract to index fields within the structured content,
+        enabling fast queries by task_id, task_slug, trace_id, and idempotency_key.
+        """
+        with Session(self.engine) as session:
+            from sqlalchemy import text
+
+            # Index for querying by experience type and creation time
+            session.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS ix_experiences_type_ts
+                    ON experience(type, created_at DESC)
+                    """
+                )
+            )
+
+            # Index for querying by task_id (extracted from JSON)
+            session.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS ix_experiences_task
+                    ON experience(json_extract(content, '$.structured.task_id'), created_at DESC)
+                    """
+                )
+            )
+
+            # Index for querying by task_slug (extracted from JSON)
+            session.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS ix_experiences_task_slug
+                    ON experience(json_extract(content, '$.structured.task_slug'), created_at DESC)
+                    """
+                )
+            )
+
+            # Index for querying by trace_id (for correlation)
+            session.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS ix_experiences_trace
+                    ON experience(json_extract(content, '$.structured.trace_id'))
+                    """
+                )
+            )
+
+            # Index for idempotency key lookup
+            session.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS ix_experiences_idempotency
+                    ON experience(json_extract(content, '$.structured.idempotency_key'))
+                    """
+                )
+            )
+
+            session.commit()
+
     def append_experience(self, experience: ExperienceModel) -> str:
         """Append new experience to raw store.
 
@@ -182,6 +246,154 @@ class RawStore:
             "Cannot delete experiences in immutable store. "
             "Use tombstone() for GDPR/erasure requests."
         )
+
+    def append_experience_idempotent(self, experience: ExperienceModel, idempotency_key: str) -> str:
+        """Append experience only if idempotency_key not seen before.
+
+        This enables safe re-execution of task scheduler without creating duplicates.
+
+        Args:
+            experience: Experience model to persist
+            idempotency_key: Unique key for idempotency check (usually hash of task_id + timestamp)
+
+        Returns:
+            Experience ID (existing if duplicate, newly created otherwise)
+        """
+        with Session(self.engine) as session:
+            # Query for existing experience with this idempotency_key
+            # Use json_extract to search structured content
+            from sqlalchemy import text
+
+            query = text(
+                """
+                SELECT id FROM experience
+                WHERE json_extract(content, '$.structured.idempotency_key') = :key
+                LIMIT 1
+                """
+            )
+            result = session.execute(query, {"key": idempotency_key}).first()
+
+            if result:
+                # Experience already exists, return existing ID
+                return result[0]
+
+            # Not found, create new experience
+            return self.append_experience(experience)
+
+    def list_task_executions(
+        self, task_id: Optional[str] = None, limit: int = 20
+    ) -> list[ExperienceModel]:
+        """List TASK_EXECUTION experiences, optionally filtered by task_id.
+
+        Args:
+            task_id: Filter by specific task_id (optional)
+            limit: Maximum number of experiences to return
+
+        Returns:
+            List of ExperienceModels, most recent first
+        """
+        with Session(self.engine) as session:
+            if task_id:
+                # Filter by both type and task_id
+                from sqlalchemy import text
+
+                query = text(
+                    """
+                    SELECT * FROM experience
+                    WHERE type = :exp_type
+                    AND json_extract(content, '$.structured.task_id') = :task_id
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                    """
+                )
+                experiences = session.execute(
+                    query,
+                    {
+                        "exp_type": ExperienceType.TASK_EXECUTION.value,
+                        "task_id": task_id,
+                        "limit": limit,
+                    },
+                ).all()
+            else:
+                # Just filter by type
+                statement = (
+                    select(Experience)
+                    .where(Experience.type == ExperienceType.TASK_EXECUTION.value)
+                    .order_by(Experience.created_at.desc())
+                    .limit(limit)
+                )
+                experiences = session.exec(statement).all()
+
+            # Convert SQL rows to ExperienceModel
+            if task_id:
+                # Manual conversion from Row objects
+                result = []
+                for row in experiences:
+                    exp = Experience(
+                        id=row.id,
+                        type=row.type,
+                        created_at=row.created_at,
+                        content=row.content,
+                        provenance=row.provenance,
+                        evidence_ptrs=row.evidence_ptrs,
+                        confidence=row.confidence,
+                        embeddings=row.embeddings,
+                        affect=row.affect,
+                        parents=row.parents,
+                        causes=row.causes,
+                        sign=row.sign,
+                        ownership=row.ownership,
+                        session_id=row.session_id,
+                        consolidated=row.consolidated,
+                    )
+                    result.append(experience_to_model(exp))
+                return result
+            else:
+                return [experience_to_model(exp) for exp in experiences]
+
+    def get_by_trace_id(self, trace_id: str) -> Optional[ExperienceModel]:
+        """Get experience by trace_id.
+
+        Args:
+            trace_id: Correlation/trace ID to search for
+
+        Returns:
+            ExperienceModel if found, None otherwise
+        """
+        with Session(self.engine) as session:
+            from sqlalchemy import text
+
+            query = text(
+                """
+                SELECT * FROM experience
+                WHERE json_extract(content, '$.structured.trace_id') = :trace_id
+                LIMIT 1
+                """
+            )
+            row = session.execute(query, {"trace_id": trace_id}).first()
+
+            if row is None:
+                return None
+
+            # Manual conversion from Row object
+            exp = Experience(
+                id=row.id,
+                type=row.type,
+                created_at=row.created_at,
+                content=row.content,
+                provenance=row.provenance,
+                evidence_ptrs=row.evidence_ptrs,
+                confidence=row.confidence,
+                embeddings=row.embeddings,
+                affect=row.affect,
+                parents=row.parents,
+                causes=row.causes,
+                sign=row.sign,
+                ownership=row.ownership,
+                session_id=row.session_id,
+                consolidated=row.consolidated,
+            )
+            return experience_to_model(exp)
 
     def tombstone(self, experience_id: str, reason: str) -> bool:
         """Mark experience as tombstoned (soft delete for GDPR compliance).

@@ -33,6 +33,7 @@ class ExperienceType(str, Enum):
     WEB_OBSERVATION = "web_observation"  # Web content interpretations
     DISSONANCE_EVENT = "dissonance_event"  # Cognitive dissonance detected
     LEARNING_PATTERN = "learning_pattern"  # Detected pattern for belief formation
+    TASK_EXECUTION = "task_execution"  # Scheduled or manual task execution
 
 
 class Actor(str, Enum):
@@ -50,6 +51,8 @@ class CaptureMethod(str, Enum):
     SCRAPE = "scrape"
     MODEL_INFER = "model_infer"
     RECONCILE = "reconcile"
+    SCHEDULED_TASK = "scheduled_task"  # Automated scheduled task execution
+    MANUAL_TASK = "manual_task"  # Manually triggered task execution
 
 
 class EmbeddingRole(str, Enum):
@@ -195,6 +198,7 @@ class ExperienceModel(BaseModel):
     embeddings: EmbeddingPointers = Field(default_factory=EmbeddingPointers)
     affect: AffectModel = Field(default_factory=AffectModel)
     parents: list[str] = Field(default_factory=list)
+    causes: list[str] = Field(default_factory=list)  # Causal triggers (goals, prior tasks)
     sign: Optional[str] = None  # Cryptographic signature
     ownership: Actor = Actor.USER  # Who "owns" this experience's emotional content
     session_id: Optional[str] = None  # Session tracking
@@ -273,6 +277,7 @@ class Experience(SQLModel, table=True):
         },
     )
     parents: list[str] = SQLField(sa_column=Column(JSON), default_factory=list)
+    causes: list[str] = SQLField(sa_column=Column(JSON), default_factory=list)
     sign: Optional[str] = SQLField(default=None)
     ownership: str = SQLField(default=Actor.USER.value)  # Who "owns" this experience's emotional content
     session_id: Optional[str] = SQLField(default=None, index=True)  # Session tracking
@@ -363,6 +368,7 @@ def experience_to_model(exp: Experience) -> ExperienceModel:
         embeddings=EmbeddingPointers(**exp.embeddings),
         affect=AffectModel(**exp.affect),
         parents=exp.parents,
+        causes=exp.causes,
         sign=exp.sign,
         ownership=Actor(exp.ownership),
         session_id=exp.session_id,
@@ -383,6 +389,7 @@ def model_to_experience(model: ExperienceModel) -> Experience:
         embeddings=model.embeddings.model_dump(),
         affect=model.affect.model_dump(),
         parents=model.parents,
+        causes=model.causes,
         sign=model.sign,
         ownership=model.ownership.value,
         session_id=model.session_id,
