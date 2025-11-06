@@ -18,6 +18,8 @@ from typing import Optional, Tuple, List
 from collections import deque
 import statistics
 
+from src.services.identity_ledger import decision_aborted_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -270,6 +272,23 @@ class AbortConditionMonitor:
         self.abort_timestamp = datetime.now(timezone.utc)
 
         logger.error(f"🚨 ABORT TRIGGERED: {reason}")
+
+        # Log to identity ledger
+        coherence_drop = None
+        if self.evaluator:
+            current_coh = self._get_current_coherence()
+            if current_coh is not None:
+                coherence_drop = self.evaluator.baselines.coherence - current_coh
+
+        decision_aborted_event(
+            abort_reason=reason,
+            decision_id=None,  # Could be enhanced to track which decision was blocked
+            coherence_drop=coherence_drop,
+            meta={
+                "timestamp": self.abort_timestamp.isoformat(),
+                "aborted": True
+            }
+        )
 
     def _check_recovery(self) -> bool:
         """

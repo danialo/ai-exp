@@ -13,6 +13,7 @@ from collections import defaultdict
 
 from src.services.decision_framework import DecisionRegistry, DecisionOutcome, get_decision_registry
 from src.services.success_signal_evaluator import SuccessSignalEvaluator
+from src.services.identity_ledger import parameter_adapted_event
 
 logger = logging.getLogger(__name__)
 
@@ -169,13 +170,37 @@ class ParameterAdapter:
                 applied[param_name] = success
 
             # Log adaptation
+            avg_success_score = sum(o.success_score for o in outcomes) / len(outcomes)
             self.adaptation_history.append({
                 "decision_id": decision_id,
                 "adjustments": adjustments,
                 "applied": applied,
                 "sample_count": len(outcomes),
-                "avg_success_score": sum(o.success_score for o in outcomes) / len(outcomes)
+                "avg_success_score": avg_success_score
             })
+
+            # Log to identity ledger
+            # Get old parameter values for comparison
+            old_params = self.registry.get_all_parameters(decision_id)
+            parameters_updated = {}
+            for param_name, new_value in adjustments.items():
+                old_value = old_params.get(param_name, 0.0)
+                parameters_updated[param_name] = {
+                    "old": old_value,
+                    "new": new_value
+                }
+
+            parameter_adapted_event(
+                decision_id=decision_id,
+                parameters_updated=parameters_updated,
+                success_score=avg_success_score,
+                sample_count=len(outcomes),
+                meta={
+                    "exploration_rate": self.exploration_rate,
+                    "adaptation_rate": self.adaptation_rate,
+                    "method": "epsilon_greedy"
+                }
+            )
 
         logger.info(
             f"Adapted {decision_id}: {len(adjustments)} parameters, "

@@ -6,10 +6,11 @@ registering decision points and recording decisions for outcome evaluation.
 """
 
 import logging
+from datetime import datetime
 from typing import Optional
 
 from src.services.belief_gardener import BeliefLifecycleManager, GardenerConfig
-from src.services.belief_store import BeliefStore
+from src.services.belief_store import BeliefStore, DeltaOp
 from src.memory.raw_store import RawStore
 from src.services.feedback_aggregator import FeedbackAggregator
 from src.services.decision_framework import (
@@ -19,6 +20,11 @@ from src.services.decision_framework import (
 )
 from src.services.abort_condition_monitor import AbortConditionMonitor
 from src.services.success_signal_evaluator import SuccessSignalEvaluator
+from src.services.identity_ledger import (
+    decision_made_event,
+    decision_aborted_event,
+    parameter_adapted_event
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +188,19 @@ class AdaptiveBeliefLifecycleManager(BeliefLifecycleManager):
 
             logger.debug(f"Recorded belief formation decision: {record_id}")
 
+            # Log to identity ledger
+            decision_made_event(
+                decision_id="belief_formation",
+                decision_record_id=record_id,
+                parameters_used=params or {},
+                beliefs_touched=[belief_id],
+                meta={
+                    "category": pattern.category,
+                    "evidence_count": pattern.evidence_count(),
+                    "confidence": pattern.confidence
+                }
+            )
+
             # Notify abort monitor of belief formation
             if self.abort_monitor:
                 self.abort_monitor.record_belief_formation()
@@ -257,6 +276,19 @@ class AdaptiveBeliefLifecycleManager(BeliefLifecycleManager):
 
             logger.debug(f"Recorded belief promotion decision: {record_id}")
 
+            # Log to identity ledger
+            decision_made_event(
+                decision_id="belief_promotion",
+                decision_record_id=record_id,
+                parameters_used=params or {},
+                beliefs_touched=[belief_id],
+                meta={
+                    "belief_confidence": belief.confidence,
+                    "feedback_score": feedback_score,
+                    "evidence_count": new_evidence
+                }
+            )
+
         return promoted
 
     def consider_deprecation(self, belief_id: str) -> bool:
@@ -317,6 +349,19 @@ class AdaptiveBeliefLifecycleManager(BeliefLifecycleManager):
             )
 
             logger.info(f"Deprecated belief {belief_id}, recorded decision: {record_id}")
+
+            # Log to identity ledger
+            decision_made_event(
+                decision_id="belief_deprecation",
+                decision_record_id=record_id,
+                parameters_used=params or {},
+                beliefs_touched=[belief_id],
+                meta={
+                    "belief_confidence": belief.confidence,
+                    "belief_age_days": (datetime.now() - belief.created_at).days if hasattr(belief, "created_at") else 0
+                }
+            )
+
             return True
 
         except Exception as e:

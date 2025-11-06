@@ -289,85 +289,116 @@ class RawStore:
             # Not found, create new experience
             return self.append_experience(experience)
 
+    def _row_to_experience_model(self, row) -> ExperienceModel:
+        """Convert raw SQL row or ORM object to ExperienceModel."""
+
+        if isinstance(row, Experience):
+            return experience_to_model(row)
+
+        mapping = getattr(row, "_mapping", None)
+
+        def _get(attr: str):
+            if mapping is not None and attr in mapping:
+                return mapping[attr]
+            return getattr(row, attr)
+
+        exp = Experience(
+            id=_get("id"),
+            type=_get("type"),
+            created_at=_get("created_at"),
+            content=_get("content"),
+            provenance=_get("provenance"),
+            evidence_ptrs=_get("evidence_ptrs"),
+            confidence=_get("confidence"),
+            embeddings=_get("embeddings"),
+            affect=_get("affect"),
+            parents=_get("parents"),
+            causes=_get("causes"),
+            sign=_get("sign"),
+            ownership=_get("ownership"),
+            session_id=_get("session_id"),
+            consolidated=_get("consolidated"),
+        )
+        return experience_to_model(exp)
+
     def list_task_executions(
-        self, task_id: Optional[str] = None, limit: int = 20
+        self,
+        task_id: Optional[str] = None,
+        status: Optional[str] = None,
+        since: Optional[datetime] = None,
+        backfilled: Optional[bool] = None,
+        limit: int = 20,
     ) -> list[ExperienceModel]:
-        """List TASK_EXECUTION experiences, optionally filtered by task_id.
+        """List TASK_EXECUTION experiences with optional filters.
 
         Args:
             task_id: Filter by specific task_id (optional)
-            limit: Maximum number of experiences to return
+            status: Filter by execution status ("success" or "failed")
+            since: Filter by executions that started at or after this timestamp
+            backfilled: Filter by backfilled flag (True = only backfilled,
+                False = only live). None returns all.
+            limit: Maximum number of experiences to return (default 20)
 
         Returns:
-            List of ExperienceModels, most recent first
+            List of ExperienceModels ordered by most recent start time
         """
+        limit = max(1, min(limit, 101))  # Allow slight headroom for has_more checks
+
         with Session(self.engine) as session:
+            from sqlalchemy import text
+
+            query = [
+                "SELECT * FROM experience",
+                "WHERE type = :exp_type",
+            ]
+            params: dict[str, object] = {
+                "exp_type": ExperienceType.TASK_EXECUTION.value,
+                "limit": limit,
+            }
+
             if task_id:
-                # Filter by both type and task_id
-                from sqlalchemy import text
+                query.append("AND json_extract(content, '$.structured.task_id') = :task_id")
+                params["task_id"] = task_id
 
-                query = text(
-                    """
-                    SELECT * FROM experience
-                    WHERE type = :exp_type
-                    AND json_extract(content, '$.structured.task_id') = :task_id
-                    ORDER BY created_at DESC
-                    LIMIT :limit
-                    """
+            if status:
+                query.append("AND json_extract(content, '$.structured.status') = :status")
+                params["status"] = status
+
+            if since is not None:
+                if since.tzinfo is None:
+                    since = since.replace(tzinfo=timezone.utc)
+                query.append(
+                    "AND json_extract(content, '$.structured.started_at_ts') >= :since_ts"
                 )
-                experiences = session.execute(
-                    query,
-                    {
-                        "exp_type": ExperienceType.TASK_EXECUTION.value,
-                        "task_id": task_id,
-                        "limit": limit,
-                    },
-                ).all()
-            else:
-                # Just filter by type
-                statement = (
-                    select(Experience)
-                    .where(Experience.type == ExperienceType.TASK_EXECUTION.value)
-                    .order_by(Experience.created_at.desc())
-                    .limit(limit)
+                params["since_ts"] = since.timestamp()
+
+            backfilled_expr = "json_extract(content, '$.structured.backfilled')"
+            if backfilled is True:
+                query.append(
+                    f"AND {backfilled_expr} IN ('true', 'TRUE', 1)"
                 )
-                experiences = session.exec(statement).all()
+            elif backfilled is False:
+                query.append(
+                    f"AND ({backfilled_expr} IS NULL OR {backfilled_expr} IN ('false', 'FALSE', 0))"
+                )
 
-            # Convert SQL rows to ExperienceModel
-            if task_id:
-                # Manual conversion from Row objects
-                result = []
-                for row in experiences:
-                    exp = Experience(
-                        id=row.id,
-                        type=row.type,
-                        created_at=row.created_at,
-                        content=row.content,
-                        provenance=row.provenance,
-                        evidence_ptrs=row.evidence_ptrs,
-                        confidence=row.confidence,
-                        embeddings=row.embeddings,
-                        affect=row.affect,
-                        parents=row.parents,
-                        causes=row.causes,
-                        sign=row.sign,
-                        ownership=row.ownership,
-                        session_id=row.session_id,
-                        consolidated=row.consolidated,
-                    )
-                    result.append(experience_to_model(exp))
-                return result
-            else:
-                return [experience_to_model(exp) for exp in experiences]
+            query.append(
+                "ORDER BY json_extract(content, '$.structured.started_at_ts') DESC LIMIT :limit"
+            )
 
-    def get_by_trace_id(self, trace_id: str) -> Optional[ExperienceModel]:
-        """Get experience by trace_id.
+            statement = text("\n".join(query))
+            rows = session.execute(statement, params).all()
+
+            return [self._row_to_experience_model(row) for row in rows]
+
+    def get_by_trace_id(self, trace_id: str) -> list[ExperienceModel]:
+        """Get TASK_EXECUTION experiences by trace_id (ordered by attempt).
 
         Args:
             trace_id: Correlation/trace ID to search for
 
         Returns:
-            ExperienceModel if found, None otherwise
+            List of ExperienceModels ordered by attempt number (empty if none)
         """
         with Session(self.engine) as session:
             from sqlalchemy import text
@@ -375,34 +406,20 @@ class RawStore:
             query = text(
                 """
                 SELECT * FROM experience
-                WHERE json_extract(content, '$.structured.trace_id') = :trace_id
-                LIMIT 1
+                WHERE type = :exp_type
+                AND json_extract(content, '$.structured.trace_id') = :trace_id
+                ORDER BY json_extract(content, '$.structured.attempt') ASC
                 """
             )
-            row = session.execute(query, {"trace_id": trace_id}).first()
+            rows = session.execute(
+                query,
+                {
+                    "exp_type": ExperienceType.TASK_EXECUTION.value,
+                    "trace_id": trace_id,
+                },
+            ).all()
 
-            if row is None:
-                return None
-
-            # Manual conversion from Row object
-            exp = Experience(
-                id=row.id,
-                type=row.type,
-                created_at=row.created_at,
-                content=row.content,
-                provenance=row.provenance,
-                evidence_ptrs=row.evidence_ptrs,
-                confidence=row.confidence,
-                embeddings=row.embeddings,
-                affect=row.affect,
-                parents=row.parents,
-                causes=row.causes,
-                sign=row.sign,
-                ownership=row.ownership,
-                session_id=row.session_id,
-                consolidated=row.consolidated,
-            )
-            return experience_to_model(exp)
+            return [self._row_to_experience_model(row) for row in rows]
 
     def tombstone(self, experience_id: str, reason: str) -> bool:
         """Mark experience as tombstoned (soft delete for GDPR compliance).
