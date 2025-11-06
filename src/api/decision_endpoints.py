@@ -10,7 +10,7 @@ Provides:
 """
 
 from typing import Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from src.services.decision_framework import get_decision_registry
@@ -132,14 +132,14 @@ async def update_parameter(request: ParameterUpdateRequest):
 
 
 @router.get("/success_signals")
-async def get_success_signals(
-    evaluator: SuccessSignalEvaluator = None
-):
+async def get_success_signals(request: Request):
     """
     Get success signal baselines and targets.
 
-    Note: Requires success_evaluator to be passed from app context
+    Note: Requires success_evaluator in app.state
     """
+    evaluator = getattr(request.app.state, "success_evaluator", None)
+
     if not evaluator:
         # Return defaults
         from src.services.success_signal_evaluator import SuccessSignalBaselines, SuccessSignalTargets
@@ -165,14 +165,14 @@ async def get_success_signals(
 
 
 @router.get("/abort_status")
-async def get_abort_status(
-    monitor: AbortConditionMonitor = None
-):
+async def get_abort_status(request: Request):
     """
     Get abort condition monitoring status.
 
-    Note: Requires abort_monitor to be passed from app context
+    Note: Requires abort_monitor in app.state
     """
+    monitor = getattr(request.app.state, "abort_monitor", None)
+
     if not monitor:
         return {
             "aborted": False,
@@ -183,14 +183,14 @@ async def get_abort_status(
 
 
 @router.post("/abort_status/reset")
-async def reset_abort_status(
-    monitor: AbortConditionMonitor = None
-):
+async def reset_abort_status(request: Request):
     """
     Reset abort condition (admin override).
 
-    Note: Requires abort_monitor to be passed from app context
+    Note: Requires abort_monitor in app.state
     """
+    monitor = getattr(request.app.state, "abort_monitor", None)
+
     if not monitor:
         raise HTTPException(status_code=503, detail="Abort monitor not initialized")
 
