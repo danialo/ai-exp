@@ -4,12 +4,7 @@
 
 ## In Progress
 
-- [ ] **Complete decision audit logging** (CURRENT)
-  - [x] Add logging to form_belief_from_pattern()
-  - [ ] Add logging to consider_promotion()
-  - [ ] Add logging to consider_deprecation()
-  - [ ] Add abort logging to abort_condition_monitor.py
-  - [ ] Add adaptation logging to parameter_adapter.py
+None - Ready for next task!
 
 ## Ready to Start
 
@@ -25,7 +20,7 @@
 - [ ] **MCP integration (Phase 2A)**
   - Tooling + tests landed in `src/mcp/task_execution_server.py`
   - Install `modelcontextprotocol` in active runtime and smoke test
-  - Add CLI/service entrypoint to expose the server in deployment
+  - [x] Add CLI/service entrypoint to expose the server in deployment (`scripts/run_task_execution_mcp.py`)
   - Spec remains in `.claude/tasks/prompt-008-mcp-task-execution.md`
 
 - [ ] **Identity boundary definition**
@@ -40,7 +35,8 @@
 
 ## Completed ✅
 
-- [x] **Adaptive Decision Framework (Phases 1-4)** - Complete implementation
+- [x] **Decision audit logging to identity ledger** - All decision events logged with SHA-256 chain
+- [x] **Adaptive Decision Framework (Phases 1-4)** - Complete implementation (~3,700 lines)
 - [x] **End-to-end task tracking for auditability (Phase 1)** - Full correlation system
 - [x] **Wire adaptive framework into app.py** - Integrated with feature flag
 - [x] **HTTPS setup with self-signed certificates** - Working on port 8443
