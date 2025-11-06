@@ -661,7 +661,7 @@ async def gardener_tick_loop():
 @app.on_event("startup")
 async def startup_awareness():
     """Start awareness loop and decision framework on application startup."""
-    global awareness_loop, awareness_task, redis_client, gardener_task
+    global awareness_loop, awareness_task, redis_client, gardener_task, belief_gardener
     global decision_registry, success_evaluator, abort_monitor, parameter_adapter, outcome_task
 
     if not settings.AWARENESS_ENABLED:
@@ -813,6 +813,33 @@ async def startup_awareness():
                 )
                 await outcome_task.start()
                 logger.info("Outcome evaluation task started")
+
+                # 6. Create adaptive belief lifecycle manager (replaces regular gardener)
+                if belief_gardener and belief_store and raw_store:
+                    logger.info("Creating adaptive belief lifecycle manager...")
+                    gardener_config = GardenerConfig(
+                        enabled=settings.BELIEF_GARDENER_ENABLED,
+                        pattern_scan_interval_minutes=settings.BELIEF_GARDENER_SCAN_INTERVAL,
+                        min_evidence_for_tentative=settings.BELIEF_GARDENER_MIN_EVIDENCE_TENTATIVE,
+                        min_evidence_for_asserted=settings.BELIEF_GARDENER_MIN_EVIDENCE_ASSERTED,
+                        daily_budget_formations=settings.BELIEF_GARDENER_DAILY_BUDGET_FORMATIONS,
+                        daily_budget_promotions=settings.BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS,
+                        daily_budget_deprecations=settings.BELIEF_GARDENER_DAILY_BUDGET_DEPRECATIONS,
+                        lookback_days=settings.BELIEF_GARDENER_LOOKBACK_DAYS,
+                    )
+
+                    adaptive_gardener = create_adaptive_belief_lifecycle_manager(
+                        belief_store=belief_store,
+                        raw_store=raw_store,
+                        config=gardener_config,
+                        feedback_aggregator=enhanced_feedback_aggregator,
+                        awareness_loop=awareness_loop,
+                        belief_consistency_checker=None
+                    )
+
+                    # Replace the regular gardener with adaptive one
+                    belief_gardener = adaptive_gardener
+                    logger.info("✅ Adaptive belief lifecycle manager created and activated")
 
                 # Store in app state for endpoint access
                 app.state.decision_registry = decision_registry

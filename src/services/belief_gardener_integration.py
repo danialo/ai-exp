@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from src.services.belief_gardener import BeliefLifecycleManager, GardenerConfig
+from src.services.belief_gardener import BeliefLifecycleManager, GardenerConfig, BeliefGardener
 from src.services.belief_store import BeliefStore, DeltaOp
 from src.memory.raw_store import RawStore
 from src.services.feedback_aggregator import FeedbackAggregator
@@ -291,11 +291,15 @@ class AdaptiveBeliefLifecycleManager(BeliefLifecycleManager):
 
         return promoted
 
-    def consider_deprecation(self, belief_id: str) -> bool:
+    def consider_deprecation(self, belief_id: str, decay_evidence: int = 0) -> bool:
         """
         Consider deprecation with decision tracking.
 
         Extends parent method (if it exists) to add decision framework integration.
+
+        Args:
+            belief_id: ID of belief to consider for deprecation
+            decay_evidence: Evidence count for decay (ignored, for compatibility)
         """
         # Check abort conditions
         if self.abort_monitor:
@@ -334,9 +338,9 @@ class AdaptiveBeliefLifecycleManager(BeliefLifecycleManager):
 
         # Perform deprecation
         try:
-            self.belief_store.update_belief(
+            self.belief_store.deprecate_belief(
                 belief_id=belief_id,
-                delta_op=DeltaOp.DEPRECATE,
+                from_ver=belief.version,
                 updated_by="gardener_adaptive"
             )
 
@@ -418,6 +422,17 @@ def create_adaptive_belief_lifecycle_manager(
         success_evaluator=success_evaluator
     )
 
+    # Create BeliefGardener with standard lifecycle manager first
+    gardener = BeliefGardener(
+        belief_store=belief_store,
+        raw_store=raw_store,
+        config=config,
+        feedback_aggregator=feedback_aggregator
+    )
+
+    # Replace the lifecycle_manager with our adaptive version
+    gardener.lifecycle_manager = manager
+
     logger.info("Created adaptive belief lifecycle manager with decision framework integration")
 
-    return manager
+    return gardener
