@@ -173,13 +173,17 @@ class RawStore:
             return experience_to_model(exp)
 
     def list_recent(
-        self, limit: int = 10, experience_type: Optional[ExperienceType] = None
+        self,
+        limit: int = 10,
+        experience_type: Optional[ExperienceType] = None,
+        since: Optional[datetime] = None,
     ) -> list[ExperienceModel]:
         """List recent experiences ordered by creation time.
 
         Args:
             limit: Maximum number of experiences to return
             experience_type: Filter by experience type (optional)
+            since: Only include experiences created at or after this timestamp
 
         Returns:
             List of ExperienceModels, most recent first
@@ -189,6 +193,11 @@ class RawStore:
 
             if experience_type:
                 statement = statement.where(Experience.type == experience_type.value)
+
+            if since is not None:
+                if since.tzinfo is None:
+                    since = since.replace(tzinfo=timezone.utc)
+                statement = statement.where(Experience.created_at >= since)
 
             experiences = session.exec(statement).all()
             return [experience_to_model(exp) for exp in experiences]

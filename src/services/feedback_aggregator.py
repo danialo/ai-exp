@@ -114,15 +114,16 @@ class FeedbackAggregator:
         # Get cutoff time for trailing window
         cutoff_dt = datetime.fromtimestamp(now, tz=timezone.utc) - timedelta(hours=self.config.window_hours)
 
-        # Query recent conversation experiences
+        # Query recent conversation experiences within the analysis window
         try:
-            experiences = self.raw_store.list_recent(limit=200, experience_type=ExperienceType.OCCURRENCE)
+            recent = self.raw_store.list_recent(
+                limit=200,
+                experience_type=ExperienceType.OCCURRENCE,
+                since=cutoff_dt,
+            )
         except Exception as e:
             logger.error(f"Failed to query experiences: {e}")
             return 0.0, 0.0
-
-        # Filter by time window
-        recent = [exp for exp in experiences if exp.created_at >= cutoff_dt]
 
         # Extract tags related to this belief
         tag_counts = defaultdict(int)
@@ -240,13 +241,14 @@ class FeedbackAggregator:
         cutoff_dt = datetime.fromtimestamp(now, tz=timezone.utc) - timedelta(hours=self.config.window_hours)
 
         try:
-            experiences = self.raw_store.list_recent(limit=200, experience_type=ExperienceType.OCCURRENCE)
+            recent = self.raw_store.list_recent(
+                limit=200,
+                experience_type=ExperienceType.OCCURRENCE,
+                since=cutoff_dt,
+            )
         except Exception as e:
             logger.error(f"Failed to query experiences for global score: {e}")
             return 0.0, 0.0
-
-        # Filter by time window
-        recent = [exp for exp in experiences if exp.created_at >= cutoff_dt]
 
         # Extract all tags (global, not belief-specific)
         tag_counts = defaultdict(int)

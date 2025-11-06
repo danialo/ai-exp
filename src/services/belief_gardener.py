@@ -125,11 +125,11 @@ class PatternDetector:
 
         # Get recent experiences
         # For now, simplified: scan all OCCURRENCE experiences
-        # TODO: Add date filtering to raw_store.list_recent()
-        experiences = self.raw_store.list_recent(limit=500, experience_type=ExperienceType.OCCURRENCE)
-
-        # Filter by date
-        recent_exps = [e for e in experiences if e.created_at >= cutoff_date]
+        recent_exps = self.raw_store.list_recent(
+            limit=500,
+            experience_type=ExperienceType.OCCURRENCE,
+            since=cutoff_date,
+        )
 
         # Extract self-statements (first-person claims)
         self_statements = self._extract_self_statements(recent_exps)
@@ -180,8 +180,11 @@ class PatternDetector:
 
         # Scan for patterns matching this belief's statement
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=self.config.lookback_days)
-        experiences = self.raw_store.list_recent(limit=500, experience_type=ExperienceType.OCCURRENCE)
-        recent_exps = [e for e in experiences if e.created_at >= cutoff_date]
+        recent_exps = self.raw_store.list_recent(
+            limit=500,
+            experience_type=ExperienceType.OCCURRENCE,
+            since=cutoff_date,
+        )
 
         # Extract statements and count matches
         normalized_belief = _normalize_statement(belief.statement)
