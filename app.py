@@ -77,6 +77,14 @@ from src.services.web_search_service import create_web_search_service
 from src.services.url_fetcher_service import create_url_fetcher_service
 from src.services.web_interpretation_service import create_web_interpretation_service
 
+# Adaptive Decision Framework imports
+from src.services.decision_framework import get_decision_registry
+from src.services.success_signal_evaluator import SuccessSignalEvaluator
+from src.services.abort_condition_monitor import AbortConditionMonitor
+from src.services.parameter_adapter import ParameterAdapter
+from src.services.outcome_evaluation_task import OutcomeEvaluationTask
+from src.services.belief_gardener_integration import create_adaptive_belief_lifecycle_manager
+
 # Awareness loop imports
 import contextlib
 from pathlib import Path
@@ -100,6 +108,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include decision framework API router
+from src.api.decision_endpoints import router as decision_router
+app.include_router(decision_router)
 
 # Initialize components
 raw_store = create_raw_store(settings.RAW_STORE_DB_PATH)
@@ -608,6 +620,13 @@ redis_client: Optional[Redis] = None
 if settings.AWARENESS_ENABLED:
     logger.info("Awareness loop enabled - initializing Redis and components")
 
+# Adaptive Decision Framework globals
+decision_registry = None
+success_evaluator = None
+abort_monitor = None
+parameter_adapter = None
+outcome_task = None
+
 # Background gardener tick
 gardener_task: Optional[asyncio.Task] = None
 gardener_last_scan: float = 0.0
@@ -641,8 +660,9 @@ async def gardener_tick_loop():
 
 @app.on_event("startup")
 async def startup_awareness():
-    """Start awareness loop on application startup."""
+    """Start awareness loop and decision framework on application startup."""
     global awareness_loop, awareness_task, redis_client, gardener_task
+    global decision_registry, success_evaluator, abort_monitor, parameter_adapter, outcome_task
 
     if not settings.AWARENESS_ENABLED:
         logger.info("Awareness loop disabled")
@@ -732,6 +752,80 @@ async def startup_awareness():
             outcome_eval_task = asyncio.create_task(outcome_evaluation_loop())
             logger.info("Outcome evaluation background task started")
 
+        # Initialize Adaptive Decision Framework
+        if settings.DECISION_FRAMEWORK_ENABLED:
+            logger.info("Initializing Adaptive Decision Framework...")
+
+            try:
+                # 1. Initialize decision registry (singleton)
+                decision_registry = get_decision_registry()
+                logger.info("Decision registry initialized")
+
+                # 2. Initialize success signal evaluator
+                success_evaluator = SuccessSignalEvaluator(
+                    awareness_loop=awareness_loop,
+                    belief_consistency_checker=None,  # Wire when available
+                    feedback_aggregator=enhanced_feedback_aggregator
+                )
+
+                # Set baselines from config or defaults
+                import os
+                success_evaluator.set_baselines(
+                    coherence=float(os.getenv("BASELINE_COHERENCE", "0.70")),
+                    dissonance=float(os.getenv("BASELINE_DISSONANCE", "0.20")),
+                    satisfaction=float(os.getenv("BASELINE_SATISFACTION", "0.60"))
+                )
+
+                success_evaluator.set_targets(
+                    coherence=float(os.getenv("TARGET_COHERENCE", "0.85")),
+                    dissonance=float(os.getenv("TARGET_DISSONANCE", "0.10")),
+                    satisfaction=float(os.getenv("TARGET_SATISFACTION", "0.80"))
+                )
+
+                logger.info("Success signal evaluator initialized")
+
+                # 3. Initialize abort condition monitor
+                abort_monitor = AbortConditionMonitor(
+                    awareness_loop=awareness_loop,
+                    belief_consistency_checker=None,  # Wire when available
+                    feedback_aggregator=enhanced_feedback_aggregator,
+                    belief_store=belief_store,
+                    success_evaluator=success_evaluator
+                )
+                logger.info("Abort condition monitor initialized")
+
+                # 4. Initialize parameter adapter
+                parameter_adapter = ParameterAdapter(
+                    decision_registry=decision_registry,
+                    success_evaluator=success_evaluator,
+                    min_samples=int(os.getenv("ADAPTATION_MIN_SAMPLES", "20")),
+                    exploration_rate=float(os.getenv("EXPLORATION_RATE", "0.10")),
+                    adaptation_rate=float(os.getenv("ADAPTATION_RATE", "0.15"))
+                )
+                logger.info("Parameter adapter initialized")
+
+                # 5. Start outcome evaluation task
+                outcome_task = OutcomeEvaluationTask(
+                    parameter_adapter=parameter_adapter,
+                    interval_minutes=int(os.getenv("OUTCOME_CHECK_INTERVAL_MINUTES", "30")),
+                    adaptation_interval_hours=int(os.getenv("ADAPTATION_INTERVAL_HOURS", "168")),
+                    enabled=True
+                )
+                await outcome_task.start()
+                logger.info("Outcome evaluation task started")
+
+                # Store in app state for endpoint access
+                app.state.decision_registry = decision_registry
+                app.state.success_evaluator = success_evaluator
+                app.state.abort_monitor = abort_monitor
+                app.state.parameter_adapter = parameter_adapter
+                app.state.outcome_task = outcome_task
+
+                logger.info("✅ Adaptive Decision Framework fully initialized")
+
+            except Exception as e:
+                logger.error(f"Failed to initialize decision framework: {e}", exc_info=True)
+
         # Start belief gardener background task
         if belief_gardener and settings.BELIEF_GARDENER_ENABLED:
             gardener_task = asyncio.create_task(gardener_tick_loop())
@@ -749,8 +843,14 @@ async def startup_awareness():
 
 @app.on_event("shutdown")
 async def shutdown_awareness():
-    """Stop awareness loop and gardener on application shutdown."""
-    global awareness_loop, awareness_task, redis_client, gardener_task
+    """Stop awareness loop, gardener, and decision framework on application shutdown."""
+    global awareness_loop, awareness_task, redis_client, gardener_task, outcome_task
+
+    # Stop outcome evaluation task
+    if outcome_task:
+        logger.info("Stopping outcome evaluation task...")
+        await outcome_task.stop()
+        logger.info("Outcome evaluation task stopped")
 
     if gardener_task and not gardener_task.done():
         logger.info("Stopping gardener tick loop...")
