@@ -340,7 +340,7 @@ class AdaptiveBeliefLifecycleManager(BeliefLifecycleManager):
         try:
             self.belief_store.deprecate_belief(
                 belief_id=belief_id,
-                from_ver=belief.version,
+                from_ver=belief.ver,
                 updated_by="gardener_adaptive"
             )
 
