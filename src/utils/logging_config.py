@@ -202,3 +202,50 @@ def get_multi_logger() -> MultiFileLogger:
     if _multi_logger is None:
         _multi_logger = MultiFileLogger()
     return _multi_logger
+
+
+def configure_root_logger():
+    """
+    Configure the root logger to route all module logs to appropriate files.
+
+    This ensures that all logging.getLogger(__name__) calls throughout the codebase
+    actually write to files instead of just going to console/nowhere.
+    """
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # Clear any existing handlers
+    root_logger.handlers.clear()
+
+    # Create main application log file
+    logs_dir = Path("logs")
+    logs_dir.mkdir(exist_ok=True)
+
+    main_handler = RotatingFileHandler(
+        logs_dir / "app" / "astra.log",
+        maxBytes=50 * 1024 * 1024,  # 50MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    main_handler.setFormatter(formatter)
+    root_logger.addHandler(main_handler)
+
+    # Also add console handler for important messages
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.WARNING)  # Only warnings/errors to console
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    # Silence noisy third-party loggers
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("chromadb").setLevel(logging.ERROR)
+    logging.getLogger("chromadb.telemetry").setLevel(logging.CRITICAL)  # Kill telemetry spam
+    logging.getLogger("openai").setLevel(logging.WARNING)
+
+    logging.info("Root logger configured - all logs writing to logs/app/astra.log")

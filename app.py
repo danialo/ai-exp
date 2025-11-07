@@ -16,23 +16,17 @@ import uvicorn
 import numpy as np
 
 # Import multi-file logging system
-from src.utils.logging_config import get_multi_logger
+from src.utils.logging_config import get_multi_logger, configure_root_logger
 
 # Initialize multi-file logging system
 multi_logger = get_multi_logger()
 
-# Setup console logging for uvicorn/FastAPI
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-console_handler.setFormatter(console_formatter)
+# Configure root logger to actually write to files
+configure_root_logger()
 
-root_logger = logging.getLogger()
-root_logger.setLevel(logging.INFO)
-root_logger.addHandler(console_handler)
-
+# Get logger for this module
 logger = logging.getLogger(__name__)
-logger.info("Multi-file logging system initialized")
+logger.info("Logging system initialized - writing to logs/app/astra.log")
 
 from config.settings import settings
 from src.memory.raw_store import create_raw_store
