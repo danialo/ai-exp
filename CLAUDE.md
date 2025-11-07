@@ -1,2 +1,3 @@
 - think twice before modifying files in Astra's personal_space. this is an absolute lsat resort.
 - If you are creating something new that is not adding to the current logic, ask yourself if it should be in a new branch.
+- we're building on https

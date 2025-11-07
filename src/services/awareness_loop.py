@@ -510,11 +510,15 @@ class AwarenessLoop:
         """Execute introspection tick."""
         # Check budget
         if not self._check_introspection_budget():
+            logger.warning(f"[INTROSPECT] Skipped - budget exceeded (used: {self.introspection_tokens_used}, limit: {self.config.introspection_budget_per_min})")
             awareness_metrics.increment_counter("introspection_skipped")
             return
 
         if self.llm_service is None:
+            logger.warning("[INTROSPECT] Skipped - no LLM service available")
             return
+
+        logger.info("[INTROSPECT] Starting introspection cycle...")
 
         # Choose prompt
         prompts = [
@@ -562,6 +566,7 @@ class AwarenessLoop:
 
         dt = time.perf_counter() - t0
         awareness_metrics.record_introspection_time(dt * 1000)
+        logger.info(f"[INTROSPECT] Completed in {dt*1000:.1f}ms (tokens used: {self.introspection_tokens_used}/{self.config.introspection_budget_per_min})")
 
     async def _snapshot_loop(self) -> None:
         """Snapshot loop (60s): atomic persistence."""
