@@ -503,8 +503,8 @@ class AwarenessLoop:
 
             try:
                 await self._introspection_tick()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Introspection tick failed: {e}", exc_info=True)
 
     async def _introspection_tick(self) -> None:
         """Execute introspection tick."""
