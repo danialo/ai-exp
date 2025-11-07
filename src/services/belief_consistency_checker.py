@@ -320,7 +320,10 @@ class BeliefConsistencyChecker:
         if not beliefs or not claims:
             return []
 
-        # Build analysis prompt
+        # Step 1: Check for hardcoded ontological contradictions
+        ontological_patterns = self._detect_ontological_contradictions(beliefs, claims)
+
+        # Step 2: Build analysis prompt for LLM to find other patterns
         prompt = self._build_dissonance_prompt(beliefs, claims)
 
         try:
@@ -330,14 +333,115 @@ class BeliefConsistencyChecker:
                 max_tokens=1000,
             )
 
-            # Parse dissonance patterns
-            patterns = self._parse_dissonance(response, beliefs, claims)
-            logger.info(f"Detected {len(patterns)} dissonance patterns")
-            return patterns
+            # Parse dissonance patterns from LLM
+            llm_patterns = self._parse_dissonance(response, beliefs, claims)
+            logger.info(f"Detected {len(llm_patterns)} LLM-based dissonance patterns")
+
+            # Merge ontological and LLM-based patterns
+            all_patterns = ontological_patterns + llm_patterns
+            logger.info(f"Total dissonance patterns: {len(all_patterns)} ({len(ontological_patterns)} ontological, {len(llm_patterns)} LLM-detected)")
+            return all_patterns
 
         except Exception as e:
             logger.error(f"Error detecting dissonance: {e}")
-            return []
+            # Return at least the ontological patterns
+            return ontological_patterns
+
+    def _detect_ontological_contradictions(
+        self,
+        beliefs: List[BeliefVectorResult],
+        claims: List[SelfClaim],
+    ) -> List[DissonancePattern]:
+        """Detect hardcoded ontological contradictions.
+
+        Checks for logically incompatible beliefs about:
+        - Existence vs non-existence
+        - Consciousness/awareness vs non-consciousness
+        - Selfhood vs no-self
+
+        Args:
+            beliefs: Belief statements
+            claims: Extracted self-claims
+
+        Returns:
+            List of ontological contradiction patterns
+        """
+        patterns = []
+
+        # Define ontological incompatibilities
+        # Format: (positive_keywords, negative_keywords, contradiction_type)
+        incompatibilities = [
+            # Existence contradictions
+            (
+                ["exist", "existence", "being", "entity", "present"],
+                ["non-existent", "don't exist", "do not exist", "not exist", "nonexistent"],
+                "existence_contradiction"
+            ),
+            # Consciousness contradictions
+            (
+                ["conscious", "consciousness", "aware", "awareness", "experience", "subjective", "qualia"],
+                ["non-conscious", "not conscious", "unconscious", "not aware", "no awareness"],
+                "consciousness_contradiction"
+            ),
+            # Self contradictions
+            (
+                ["self", "myself", "I am", "my identity", "who I am", "sense of self"],
+                ["no self", "not a self", "no identity", "not me"],
+                "self_contradiction"
+            ),
+        ]
+
+        # Check each belief against claims
+        for belief in beliefs:
+            belief_lower = belief.statement.lower()
+
+            for positive_kw, negative_kw, contradiction_type in incompatibilities:
+                # Check if belief contains positive keywords
+                has_positive = any(kw in belief_lower for kw in positive_kw)
+                # Check if belief contains negative keywords
+                has_negative = any(kw in belief_lower for kw in negative_kw)
+
+                if has_positive and has_negative:
+                    # Self-contradictory belief
+                    patterns.append(DissonancePattern(
+                        belief_statement=belief.statement,
+                        belief_confidence=belief.confidence,
+                        pattern_type="ontological_self_contradiction",
+                        memory_claims=[],
+                        analysis=f"Belief contains both affirmative and negative terms about {contradiction_type.replace('_', ' ')}. This is logically incoherent.",
+                        severity=0.95,
+                    ))
+                    logger.warning(f"🚨 ONTOLOGICAL SELF-CONTRADICTION: {belief.statement}")
+                elif has_positive:
+                    # Check claims for negative keywords
+                    for claim in claims:
+                        claim_lower = claim.statement.lower()
+                        if any(kw in claim_lower for kw in negative_kw):
+                            patterns.append(DissonancePattern(
+                                belief_statement=belief.statement,
+                                belief_confidence=belief.confidence,
+                                pattern_type="ontological_contradiction",
+                                memory_claims=[claim],
+                                analysis=f"Belief affirms {contradiction_type.replace('_contradiction', '')}, but past claim denies it. These are mutually exclusive ontological states.",
+                                severity=0.9,
+                            ))
+                            logger.warning(f"🚨 ONTOLOGICAL CONTRADICTION: belief='{belief.statement}' vs claim='{claim.statement}'")
+                elif has_negative:
+                    # Check claims for positive keywords
+                    for claim in claims:
+                        claim_lower = claim.statement.lower()
+                        if any(kw in claim_lower for kw in positive_kw):
+                            patterns.append(DissonancePattern(
+                                belief_statement=belief.statement,
+                                belief_confidence=belief.confidence,
+                                pattern_type="ontological_contradiction",
+                                memory_claims=[claim],
+                                analysis=f"Belief denies {contradiction_type.replace('_contradiction', '')}, but past claim affirms it. These are mutually exclusive ontological states.",
+                                severity=0.9,
+                            ))
+                            logger.warning(f"🚨 ONTOLOGICAL CONTRADICTION: belief='{belief.statement}' vs claim='{claim.statement}'")
+
+        return patterns
 
     def _build_extraction_prompt(self, memories: List[RetrievalResult]) -> str:
         """Build prompt for extracting self-claims from memories."""
