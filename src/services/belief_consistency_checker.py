@@ -366,6 +366,7 @@ class BeliefConsistencyChecker:
         Returns:
             List of ontological contradiction patterns
         """
+        logger.info(f"🔍 Checking {len(beliefs)} beliefs and {len(claims)} claims for ontological contradictions")
         patterns = []
 
         # Define ontological incompatibilities
