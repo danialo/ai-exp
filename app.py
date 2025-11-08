@@ -105,7 +105,9 @@ app.add_middleware(
 
 # Include decision framework API router
 from src.api.decision_endpoints import router as decision_router
+from src.api.goal_endpoints import router as goal_router
 app.include_router(decision_router)
+app.include_router(goal_router)
 
 # Initialize components
 raw_store = create_raw_store(settings.RAW_STORE_DB_PATH)
@@ -117,6 +119,11 @@ embedding_provider = create_embedding_provider(
     model_name=settings.EMBEDDING_MODEL,
     use_mock=False,
 )
+
+# Initialize GoalStore and attach to app state
+from src.services.goal_store import create_goal_store
+goal_store = create_goal_store(settings.RAW_STORE_DB_PATH)
+app.state.goal_store = goal_store
 
 # Initialize self-knowledge index early (needed by ingestion pipeline)
 self_knowledge_index = create_self_knowledge_index(
@@ -357,6 +364,8 @@ contrarian_sampler = None
 if settings.PERSONA_MODE_ENABLED:
     belief_store = create_belief_store(Path("data"))
     logger.info("Versioned belief store initialized")
+    # Expose to API endpoints
+    app.state.belief_store = belief_store
 
     # Run migration from legacy belief system if needed
     try:
@@ -443,6 +452,7 @@ if settings.PERSONA_MODE_ENABLED and belief_system and embedding_provider:
                 raw_store=raw_store,
             )
             logger.info("Belief consistency checker initialized with dissonance event storage")
+            app.state.belief_consistency_checker = belief_consistency_checker
 
     except Exception as e:
         logger.error(f"Failed to initialize belief vector services: {e}")

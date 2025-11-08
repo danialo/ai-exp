@@ -197,6 +197,10 @@ class Settings:
     # Adaptive Decision Framework configuration
     DECISION_FRAMEWORK_ENABLED: bool = os.getenv("DECISION_FRAMEWORK_ENABLED", "false").lower() == "true"
 
+    # Goal system flags (Phase 1)
+    GOAL_SYSTEM: bool = os.getenv("GOAL_SYSTEM", "false").lower() == "true"
+    GOAL_SHADOW: bool = os.getenv("GOAL_SHADOW", "true").lower() == "true"
+
     # Affect blending weights (user, memory, self)
     @staticmethod
     def get_affect_weights() -> Tuple[float, float, float]:

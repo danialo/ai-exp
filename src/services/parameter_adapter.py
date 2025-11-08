@@ -10,6 +10,7 @@ import logging
 import random
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
+from datetime import datetime, timezone
 
 from src.services.decision_framework import DecisionRegistry, DecisionOutcome, get_decision_registry
 from src.services.success_signal_evaluator import SuccessSignalEvaluator
@@ -215,6 +216,148 @@ class ParameterAdapter:
             "sample_count": len(outcomes),
             "avg_success_score": sum(o.success_score for o in outcomes) / len(outcomes),
             "dry_run": dry_run
+        }
+
+    def adapt_from_evaluated_decisions(
+        self,
+        decision_id: str,
+        since_hours: int = 24,
+        dry_run: bool = False
+    ) -> Dict:
+        """
+        Adapt parameters from already-evaluated decisions.
+
+        This is used for tasks where TaskOutcomeLinker has already
+        evaluated and updated decision outcomes.
+
+        Args:
+            decision_id: Decision type to adapt
+            since_hours: Look at decisions from last N hours
+            dry_run: If True, compute adaptations but don't apply
+
+        Returns:
+            Dictionary with adaptation results
+        """
+        # Get evaluated decisions
+        evaluated_decisions = self.registry.get_evaluated_decisions(
+            decision_id=decision_id,
+            since_hours=since_hours
+        )
+
+        # Check if we have enough samples
+        if len(evaluated_decisions) < self.min_samples:
+            logger.debug(
+                f"Not enough evaluated samples for {decision_id}: "
+                f"{len(evaluated_decisions)} < {self.min_samples}"
+            )
+            return {
+                "adapted": False,
+                "reason": "insufficient_samples",
+                "sample_count": len(evaluated_decisions),
+                "min_required": self.min_samples
+            }
+
+        # Convert to DecisionOutcome objects
+        outcomes = []
+        for dec in evaluated_decisions:
+            outcome_details = dec.get("outcome_details", {})
+            if outcome_details and "decision_record_id" in outcome_details:
+                # Reconstruct DecisionOutcome from stored details
+                outcome = DecisionOutcome(
+                    decision_record_id=outcome_details["decision_record_id"],
+                    success_score=dec["success_score"],
+                    coherence_delta=outcome_details.get("coherence_delta", 0.0),
+                    dissonance_delta=outcome_details.get("dissonance_delta", 0.0),
+                    satisfaction_delta=outcome_details.get("satisfaction_delta", 0.0),
+                    aborted=outcome_details.get("aborted", False),
+                    abort_reason=outcome_details.get("abort_reason"),
+                    evaluation_timestamp=datetime.fromisoformat(
+                        outcome_details["evaluation_timestamp"]
+                    )
+                )
+                outcomes.append(outcome)
+
+        if not outcomes:
+            logger.warning(f"No valid outcomes found for {decision_id}")
+            return {
+                "adapted": False,
+                "reason": "no_valid_outcomes",
+                "sample_count": len(evaluated_decisions)
+            }
+
+        # Compute parameter adjustments
+        adjustments = self._compute_adjustments(decision_id, outcomes)
+
+        if not adjustments:
+            logger.debug(f"No adjustments needed for {decision_id}")
+            return {
+                "adapted": False,
+                "reason": "no_adjustments",
+                "sample_count": len(outcomes),
+                "avg_success_score": sum(o.success_score for o in outcomes) / len(outcomes)
+            }
+
+        # Apply adjustments
+        applied = {}
+        if not dry_run:
+            for param_name, new_value in adjustments.items():
+                success = self.registry.update_parameter(
+                    decision_id=decision_id,
+                    param_name=param_name,
+                    new_value=new_value,
+                    reason="adaptive_learning_from_tasks",
+                    based_on_records=[o.decision_record_id for o in outcomes]
+                )
+                applied[param_name] = success
+
+            # Log adaptation
+            avg_success_score = sum(o.success_score for o in outcomes) / len(outcomes)
+            self.adaptation_history.append({
+                "decision_id": decision_id,
+                "adjustments": adjustments,
+                "applied": applied,
+                "sample_count": len(outcomes),
+                "avg_success_score": avg_success_score,
+                "method": "from_evaluated_decisions"
+            })
+
+            # Log to identity ledger
+            old_params = self.registry.get_all_parameters(decision_id)
+            parameters_updated = {}
+            for param_name, new_value in adjustments.items():
+                old_value = old_params.get(param_name, 0.0)
+                parameters_updated[param_name] = {
+                    "old": old_value,
+                    "new": new_value
+                }
+
+            parameter_adapted_event(
+                decision_id=decision_id,
+                parameters_updated=parameters_updated,
+                success_score=avg_success_score,
+                sample_count=len(outcomes),
+                meta={
+                    "exploration_rate": self.exploration_rate,
+                    "adaptation_rate": self.adaptation_rate,
+                    "method": "epsilon_greedy_from_tasks",
+                    "since_hours": since_hours
+                }
+            )
+
+        logger.info(
+            f"Adapted {decision_id} from evaluated decisions: "
+            f"{len(adjustments)} parameters, avg_score={sum(o.success_score for o in outcomes) / len(outcomes):.2f}"
+        )
+
+        return {
+            "adapted": True,
+            "decision_id": decision_id,
+            "adjustments": adjustments,
+            "applied": applied if not dry_run else None,
+            "sample_count": len(outcomes),
+            "avg_success_score": sum(o.success_score for o in outcomes) / len(outcomes),
+            "dry_run": dry_run,
+            "method": "from_evaluated_decisions"
         }
 
     def _evaluate_decisions(self, decisions: List[Dict]) -> List[DecisionOutcome]:

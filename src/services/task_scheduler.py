@@ -23,6 +23,7 @@ from uuid import uuid4
 
 from src.memory.raw_store import RawStore
 from src.pipeline.task_experience import create_task_execution_experience
+from src.services.decision_framework import Parameter
 
 logger = logging.getLogger(__name__)
 
@@ -85,19 +86,32 @@ class TaskResult:
 class TaskScheduler:
     """Manages scheduled tasks for the persona."""
 
-    def __init__(self, persona_space_path: str = "persona_space", raw_store: Optional[RawStore] = None):
+    def __init__(
+        self,
+        persona_space_path: str = "persona_space",
+        raw_store: Optional[RawStore] = None,
+        abort_monitor: Optional[Any] = None,
+        decision_framework: Optional[Any] = None,
+        parameter_adapter: Optional[Any] = None
+    ):
         """
         Initialize task scheduler.
 
         Args:
             persona_space_path: Path to persona's file space
             raw_store: Optional RawStore for creating task execution experiences
+            abort_monitor: Optional AbortConditionMonitor for safety checks
+            decision_framework: Optional DecisionFramework for adaptive task selection
+            parameter_adapter: Optional ParameterAdapter for learning from outcomes
         """
         self.persona_space = Path(persona_space_path)
         self.tasks_dir = self.persona_space / "tasks"
         self.tasks_config_path = self.tasks_dir / "tasks.json"
         self.results_dir = self.tasks_dir / "results"
         self.raw_store = raw_store
+        self.abort_monitor = abort_monitor
+        self.decision_framework = decision_framework
+        self.parameter_adapter = parameter_adapter
 
         # Ensure directories exist
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
@@ -110,6 +124,13 @@ class TaskScheduler:
         # Create default tasks if none exist
         if not self.tasks:
             self._create_default_tasks()
+
+        # Register task selection decision point
+        self._register_decision_point()
+
+        # Track adaptations
+        self.executions_since_adaptation = 0
+        self.adaptation_interval = 10  # Adapt every 10 task executions
 
     def _load_tasks(self):
         """Load tasks from configuration file."""
@@ -261,6 +282,41 @@ Document any new beliefs in your reflection, using the format: "I believe [state
         self._save_tasks()
         logger.info(f"Created {len(default_tasks)} default tasks")
 
+    def _register_decision_point(self):
+        """Register task_selected decision point with DecisionFramework."""
+        if not self.decision_framework:
+            return
+
+        # Define parameters for task selection decisions
+        parameters = {
+            "urgency_threshold": Parameter(
+                name="urgency_threshold",
+                current_value=0.7,
+                min_value=0.3,
+                max_value=0.95,
+                step_size=0.05,
+                adaptation_rate=0.15
+            ),
+            "coherence_required": Parameter(
+                name="coherence_required",
+                current_value=0.6,
+                min_value=0.4,
+                max_value=0.9,
+                step_size=0.05,
+                adaptation_rate=0.1
+            ),
+        }
+
+        self.decision_framework.registry.register_decision(
+            decision_id="task_selected",
+            subsystem="task_scheduler",
+            description="Autonomous task selection and execution",
+            parameters=parameters,
+            success_metrics=["coherence_delta", "dissonance_delta", "satisfaction_score"],
+            context_features=["task_type", "time_since_last_run", "current_coherence"]
+        )
+        logger.info("Registered task_selected decision point")
+
     def _update_next_run(self, task: TaskDefinition):
         """Update the next_run timestamp for a task based on its schedule."""
         if task.schedule == TaskSchedule.MANUAL:
@@ -310,12 +366,57 @@ Document any new beliefs in your reflection, using the format: "I believe [state
         if not task.enabled:
             raise ValueError(f"Task is disabled: {task_id}")
 
+        # Safety check: Abort if dangerous conditions detected
+        if self.abort_monitor:
+            should_abort, abort_reason = self.abort_monitor.check_abort_conditions()
+            if should_abort:
+                error_msg = f"Task execution aborted due to safety condition: {abort_reason}"
+                logger.warning(error_msg)
+                print(f"⚠️  {error_msg}")
+
+                # Return failed result
+                now = datetime.now(timezone.utc)
+                return TaskResult(
+                    task_id=task.id,
+                    task_name=task.name,
+                    started_at=now.isoformat(),
+                    completed_at=now.isoformat(),
+                    success=False,
+                    error=error_msg,
+                    metadata={
+                        "abort_reason": abort_reason,
+                        "safety_aborted": True
+                    }
+                )
+
         # Ensure UTC-aware timestamps
         started_at = datetime.now(timezone.utc)
 
         # Generate correlation IDs
         trace_id = str(uuid4())
         span_id = str(uuid4())
+
+        # Record task selection decision
+        decision_record_id = None
+        if self.decision_framework:
+            context = {
+                "task_type": task.type,
+                "task_id": task.id,
+                "time_since_last_run": (
+                    (started_at - datetime.fromisoformat(task.last_run)).total_seconds() / 3600
+                    if task.last_run else None
+                ),
+                "trace_id": trace_id
+            }
+            params = self.decision_framework.registry.get_all_parameters("task_selected")
+            if params:
+                decision_record_id = self.decision_framework.registry.record_decision(
+                    decision_id="task_selected",
+                    context=context,
+                    parameters_used=params,
+                    outcome_snapshot={}
+                )
+                logger.debug(f"Recorded task selection decision: {decision_record_id}")
 
         logger.info(f"Executing task: {task.name} ({task.id}) [trace_id={trace_id}]")
         print(f"⏰ Executing scheduled task: {task.name} [trace_id={trace_id[:8]}]")
@@ -362,6 +463,7 @@ Document any new beliefs in your reflection, using the format: "I believe [state
                     "task_type": task.type,
                     "trace_id": trace_id,
                     "span_id": span_id,
+                    "decision_record_id": decision_record_id,  # For linking to DecisionFramework
                 }
             )
 
@@ -393,6 +495,10 @@ Document any new beliefs in your reflection, using the format: "I believe [state
             logger.info(f"Task completed successfully: {task.name}")
             print(f"✅ Task completed: {task.name}")
 
+            # Increment execution counter and trigger adaptation if needed
+            self.executions_since_adaptation += 1
+            self.trigger_parameter_adaptation()
+
             return result
 
         except Exception as e:
@@ -418,6 +524,7 @@ Document any new beliefs in your reflection, using the format: "I believe [state
                 metadata={
                     "trace_id": trace_id,
                     "span_id": span_id,
+                    "decision_record_id": decision_record_id,  # For linking to DecisionFramework
                 }
             )
 
@@ -600,6 +707,41 @@ Document any new beliefs in your reflection, using the format: "I believe [state
         self._save_tasks()
         logger.info(f"Deleted task: {task_name}")
 
+    def trigger_parameter_adaptation(self, force: bool = False) -> Optional[Dict]:
+        """
+        Trigger parameter adaptation from task outcomes.
+
+        Args:
+            force: If True, adapt regardless of interval
+
+        Returns:
+            Adaptation results dict, or None if skipped
+        """
+        if not self.parameter_adapter or not self.decision_framework:
+            return None
+
+        # Check if adaptation should run
+        if not force and self.executions_since_adaptation < self.adaptation_interval:
+            logger.debug(
+                f"Skipping adaptation: {self.executions_since_adaptation}/{self.adaptation_interval}"
+            )
+            return None
+
+        logger.info("Triggering parameter adaptation from task outcomes")
+
+        # Adapt task_selected decision parameters
+        result = self.parameter_adapter.adapt_from_evaluated_decisions(
+            decision_id="task_selected",
+            since_hours=48,  # Look at last 48 hours of task executions
+            dry_run=False
+        )
+
+        # Reset counter
+        self.executions_since_adaptation = 0
+
+        logger.info(f"Parameter adaptation result: {result}")
+        return result
+
     def get_recent_results(self, task_id: Optional[str] = None, limit: int = 10) -> List[TaskResult]:
         """
         Get recent task execution results.
@@ -644,7 +786,10 @@ Document any new beliefs in your reflection, using the format: "I believe [state
 
 def create_task_scheduler(
     persona_space_path: str = "persona_space",
-    raw_store: Optional[RawStore] = None
+    raw_store: Optional[RawStore] = None,
+    abort_monitor: Optional[Any] = None,
+    decision_framework: Optional[Any] = None,
+    parameter_adapter: Optional[Any] = None
 ) -> TaskScheduler:
     """
     Factory function to create a TaskScheduler.
@@ -652,8 +797,17 @@ def create_task_scheduler(
     Args:
         persona_space_path: Path to persona_space directory
         raw_store: Optional RawStore for task execution tracking
+        abort_monitor: Optional AbortConditionMonitor for safety checks
+        decision_framework: Optional DecisionFramework for adaptive task selection
+        parameter_adapter: Optional ParameterAdapter for learning from outcomes
 
     Returns:
         TaskScheduler instance
     """
-    return TaskScheduler(persona_space_path, raw_store=raw_store)
+    return TaskScheduler(
+        persona_space_path,
+        raw_store=raw_store,
+        abort_monitor=abort_monitor,
+        decision_framework=decision_framework,
+        parameter_adapter=parameter_adapter
+    )

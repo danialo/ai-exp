@@ -68,6 +68,21 @@ class PendingEvaluation:
     scheduled_ts: float  # When to evaluate
 
 
+@dataclass
+class TaskOutcome:
+    """Outcome evaluation for a task execution."""
+    task_id: str
+    execution_id: str  # experience_id from TASK_EXECUTION
+    status: str  # "success", "failed", "partial"
+    coherence_delta: float  # Coherence change [-1, 1]
+    dissonance_delta: float  # Dissonance change [-1, 1] (inverted conflict)
+    satisfaction_score: float  # User satisfaction proxy [-1, 1]
+    duration_ms: int  # Task duration
+    composite_score: float  # Weighted composite [-1, 1]
+    horizon: str  # "short" or "long"
+    evaluated_at: float  # When evaluation occurred
+
+
 class OutcomeEvaluator:
     """
     Evaluates belief decisions and updates provenance trust.
@@ -455,6 +470,187 @@ class OutcomeEvaluator:
         recent = [c for t, c in self._coherence_history if t > ts - 3600]
         if recent:
             self.baseline_coherence = sum(recent) / len(recent)
+
+    async def evaluate_task_outcome(
+        self,
+        task_id: str,
+        execution_id: str,
+        status: str,
+        started_at: float,
+        ended_at: float,
+        horizon: str = "short"
+    ) -> TaskOutcome:
+        """
+        Evaluate outcome for a task execution.
+
+        Args:
+            task_id: Task identifier
+            execution_id: Experience ID from TASK_EXECUTION
+            status: Execution status ("success", "failed", "partial")
+            started_at: Task start timestamp
+            ended_at: Task end timestamp
+            horizon: Evaluation horizon ("short" or "long")
+
+        Returns:
+            TaskOutcome with computed scores
+        """
+        now = time.time()
+
+        # Compute outcome components
+        coherence_delta = await self._compute_coherence_delta_for_task(started_at, ended_at, now)
+        dissonance_delta = await self._compute_dissonance_delta_for_task(started_at, ended_at, now)
+        satisfaction_score = await self._compute_satisfaction_for_task(execution_id, started_at, now)
+
+        # Status penalty: failed tasks get negative base score
+        status_score = {
+            "success": 0.0,  # Neutral - let metrics speak
+            "partial": -0.2,  # Slight penalty
+            "failed": -0.5,  # Strong penalty
+        }.get(status, -0.5)
+
+        # Composite score (using same weights as belief evaluation)
+        composite_raw = (
+            self.config.w_coherence * coherence_delta +
+            self.config.w_conflict * dissonance_delta +
+            self.config.w_validation * satisfaction_score +
+            self.config.w_stability * status_score
+        )
+        composite_score = np.clip(composite_raw, -1.0, 1.0)
+
+        # Create outcome
+        outcome = TaskOutcome(
+            task_id=task_id,
+            execution_id=execution_id,
+            status=status,
+            coherence_delta=coherence_delta,
+            dissonance_delta=dissonance_delta,
+            satisfaction_score=satisfaction_score,
+            duration_ms=int((ended_at - started_at) * 1000),
+            composite_score=composite_score,
+            horizon=horizon,
+            evaluated_at=now
+        )
+
+        logger.info(
+            f"Task outcome ({horizon}): {task_id} → r={composite_score:.3f} "
+            f"(coh={coherence_delta:.2f}, diss={dissonance_delta:.2f}, "
+            f"sat={satisfaction_score:.2f}, status={status})"
+        )
+
+        return outcome
+
+    async def _compute_coherence_delta_for_task(
+        self,
+        started_at: float,
+        ended_at: float,
+        now: float
+    ) -> float:
+        """
+        Compute coherence delta around task execution.
+
+        Looks at coherence before task vs after task to see if the
+        task improved or degraded system coherence.
+
+        Args:
+            started_at: Task start timestamp
+            ended_at: Task end timestamp
+            now: Current timestamp
+
+        Returns:
+            Coherence delta, normalized to [-1, 1]
+        """
+        if not self.awareness_loop:
+            return 0.0
+
+        try:
+            # Get coherence before task (5 min window)
+            before_coherence = self._get_historical_coherence(started_at - 300)
+
+            # Get coherence after task (use current if recent)
+            if now - ended_at < 3600:  # Within 1 hour
+                after_coherence = self.awareness_loop.last_sim_live
+            else:
+                # Use historical data
+                after_coherence = self._get_historical_coherence(ended_at + 300)
+
+            if before_coherence is None or after_coherence is None:
+                return 0.0
+
+            delta_coh = after_coherence - before_coherence
+
+            # Subtract baseline drift
+            if self.baseline_coherence is not None:
+                baseline_delta = after_coherence - self.baseline_coherence
+                delta_coh -= baseline_delta * 0.5  # Partial correction
+
+            # Normalize to [-1, 1] (assume max delta is ~0.5)
+            normalized = np.clip(delta_coh / 0.5, -1.0, 1.0)
+
+            return normalized
+
+        except Exception as e:
+            logger.error(f"Coherence delta computation failed: {e}")
+            return 0.0
+
+    async def _compute_dissonance_delta_for_task(
+        self,
+        started_at: float,
+        ended_at: float,
+        now: float
+    ) -> float:
+        """
+        Compute dissonance delta around task execution.
+
+        Positive score means task reduced dissonance (good).
+        Negative score means task increased dissonance (bad).
+
+        Args:
+            started_at: Task start timestamp
+            ended_at: Task end timestamp
+            now: Current timestamp
+
+        Returns:
+            Dissonance reduction score, normalized to [-1, 1]
+        """
+        # TODO: Integrate with belief consistency checker
+        # For now, return neutral
+        # Future: Query BeliefConsistencyChecker for contradiction count before/after
+        return 0.0
+
+    async def _compute_satisfaction_for_task(
+        self,
+        execution_id: str,
+        started_at: float,
+        now: float
+    ) -> float:
+        """
+        Compute user satisfaction proxy for task execution.
+
+        Looks for user feedback in experiences following the task.
+
+        Args:
+            execution_id: Experience ID of task execution
+            started_at: Task start timestamp
+            now: Current timestamp
+
+        Returns:
+            Satisfaction score [-1, 1]
+        """
+        if not self.raw_store:
+            return 0.0
+
+        try:
+            # Query for user messages following task execution
+            window_end = started_at + self.config.validation_window_hours * 3600
+
+            # Look for positive/negative signals in user messages
+            # TODO: Implement sentiment analysis on user messages
+            # For now, return neutral
+            return 0.0
+
+        except Exception as e:
+            logger.error(f"Satisfaction score computation failed: {e}")
+            return 0.0
 
     def get_telemetry(self) -> Dict:
         """Get telemetry for status endpoint."""

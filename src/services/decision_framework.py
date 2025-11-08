@@ -434,6 +434,63 @@ class DecisionRegistry:
 
             return results
 
+    def get_evaluated_decisions(
+        self,
+        decision_id: Optional[str] = None,
+        since_hours: int = 24,
+        limit: Optional[int] = None
+    ) -> List[dict]:
+        """
+        Get decisions that have been evaluated.
+
+        Args:
+            decision_id: Filter by decision type (optional)
+            since_hours: Only get decisions from last N hours
+            limit: Maximum number to return (optional)
+
+        Returns:
+            List of decision records with outcomes
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+
+        with sqlite3.connect(self.db_path) as conn:
+            query = """
+                SELECT record_id, decision_id, timestamp, context, parameters_used,
+                       outcome_snapshot, success_score, outcome_details
+                FROM decision_history
+                WHERE evaluated = TRUE
+                AND timestamp >= ?
+            """
+            params = [cutoff.isoformat()]
+
+            if decision_id:
+                query += " AND decision_id = ?"
+                params.append(decision_id)
+
+            query += " ORDER BY timestamp DESC"
+
+            if limit:
+                query += " LIMIT ?"
+                params.append(limit)
+
+            cursor = conn.execute(query, params)
+            rows = cursor.fetchall()
+
+            results = []
+            for row in rows:
+                results.append({
+                    "record_id": row[0],
+                    "decision_id": row[1],
+                    "timestamp": row[2],
+                    "context": json.loads(row[3]),
+                    "parameters_used": json.loads(row[4]),
+                    "outcome_snapshot": json.loads(row[5]) if row[5] else {},
+                    "success_score": row[6],
+                    "outcome_details": json.loads(row[7]) if row[7] else {}
+                })
+
+            return results
+
     def _generate_record_id(self, decision_id: str, timestamp: datetime) -> str:
         """Generate unique record ID."""
         ts_str = timestamp.strftime("%Y%m%d%H%M%S%f")
