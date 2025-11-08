@@ -26,15 +26,15 @@ from typing import Any, Iterable, Optional
 
 from src.memory.raw_store import ExperienceModel, RawStore
 
-try:  # modelcontextprotocol is optional for testing environments
-    from modelcontextprotocol.server import Server
-    from modelcontextprotocol.types import TextContent, ToolResult
+try:  # mcp is optional for testing environments
+    from mcp.server import Server
+    from mcp.types import TextContent, Tool
 
     _MCP_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised only when dependency missing
     Server = None  # type: ignore[assignment]
     TextContent = None  # type: ignore[assignment]
-    ToolResult = None  # type: ignore[assignment]
+    Tool = None  # type: ignore[assignment]
     _MCP_AVAILABLE = False
 
 
