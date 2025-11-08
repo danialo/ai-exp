@@ -140,6 +140,14 @@ class Settings:
         "SELF_INDEX_PATH",
         str(PROJECT_ROOT / "data" / "vector_index_self"),
     )
+    BELIEFS_INDEX_PATH: str = os.getenv(
+        "BELIEFS_INDEX_PATH",
+        str(PROJECT_ROOT / "data" / "vector_index_beliefs"),
+    )
+
+    # Belief-memory retrieval configuration
+    BELIEF_MEMORY_WEIGHT: float = float(os.getenv("BELIEF_MEMORY_WEIGHT", "0.7"))  # Weight for beliefs in self-queries
+    MEMORY_WEIGHT: float = float(os.getenv("MEMORY_WEIGHT", "0.3"))  # Weight for memories in self-queries
 
     # Self-concept configuration
     SELF_EXTRACTION_FREQUENCY: int = int(os.getenv("SELF_EXTRACTION_FREQUENCY", "10"))  # After N narratives
@@ -148,6 +156,50 @@ class Settings:
     SURFACE_DECAY_DAYS: int = int(os.getenv("SURFACE_DECAY_DAYS", "7"))  # Days before surface traits decay
     CORE_TRAIT_LIMIT: int = int(os.getenv("CORE_TRAIT_LIMIT", "5"))  # Max core traits in prompt
     SURFACE_TRAIT_LIMIT: int = int(os.getenv("SURFACE_TRAIT_LIMIT", "3"))  # Max surface traits in prompt
+
+    # Redis configuration (for awareness loop)
+    REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+    REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
+    REDIS_PASSWORD: str | None = os.getenv("REDIS_PASSWORD")
+
+    # Awareness loop configuration
+    AWARENESS_ENABLED: bool = os.getenv("AWARENESS_ENABLED", "false").lower() == "true"
+    AWARENESS_TICK_RATE_FAST: float = float(os.getenv("AWARENESS_TICK_RATE_FAST", "2.0"))
+    AWARENESS_TICK_RATE_SLOW: float = float(os.getenv("AWARENESS_TICK_RATE_SLOW", "0.1"))
+    AWARENESS_INTROSPECTION_INTERVAL: int = int(os.getenv("AWARENESS_INTROSPECTION_INTERVAL", "180"))
+    AWARENESS_INTROSPECTION_JITTER: int = int(os.getenv("AWARENESS_INTROSPECTION_JITTER", "5"))
+    AWARENESS_SNAPSHOT_INTERVAL: int = int(os.getenv("AWARENESS_SNAPSHOT_INTERVAL", "60"))
+    AWARENESS_BUFFER_SIZE: int = int(os.getenv("AWARENESS_BUFFER_SIZE", "512"))
+    AWARENESS_QUEUE_MAXSIZE: int = int(os.getenv("AWARENESS_QUEUE_MAXSIZE", "2048"))
+    AWARENESS_NOTES_MAX: int = int(os.getenv("AWARENESS_NOTES_MAX", "100"))
+    AWARENESS_EMBEDDING_DIM: int = int(os.getenv("AWARENESS_EMBEDDING_DIM", "64"))
+    AWARENESS_EMBEDDING_CACHE_TTL: int = int(os.getenv("AWARENESS_EMBEDDING_CACHE_TTL", "300"))
+    AWARENESS_WATCHDOG_THRESHOLD_MS: float = float(os.getenv("AWARENESS_WATCHDOG_THRESHOLD_MS", "250"))
+    AWARENESS_WATCHDOG_STRIKES: int = int(os.getenv("AWARENESS_WATCHDOG_STRIKES", "3"))
+    AWARENESS_INTROSPECTION_BUDGET_PER_MIN: int = int(os.getenv("AWARENESS_INTROSPECTION_BUDGET_PER_MIN", "1500"))
+    AWARENESS_DATA_DIR: str = os.getenv("AWARENESS_DATA_DIR", str(PROJECT_ROOT / "data"))
+
+    # Identity anchor configuration (dual-anchor system)
+    IDENTITY_ANCHOR_BETA_WEEK_CAP: float = float(os.getenv("IDENTITY_ANCHOR_BETA_WEEK_CAP", "0.01"))
+    IDENTITY_LEDGER_DIR: str = os.getenv("IDENTITY_LEDGER_DIR", str(PROJECT_ROOT / "data" / "identity"))
+
+    # Autonomous belief gardener configuration
+    BELIEF_GARDENER_ENABLED: bool = os.getenv("BELIEF_GARDENER_ENABLED", "false").lower() == "true"
+    BELIEF_GARDENER_SCAN_INTERVAL: int = int(os.getenv("BELIEF_GARDENER_SCAN_INTERVAL", "60"))  # minutes
+    BELIEF_GARDENER_MIN_EVIDENCE_TENTATIVE: int = int(os.getenv("BELIEF_GARDENER_MIN_EVIDENCE_TENTATIVE", "3"))
+    BELIEF_GARDENER_MIN_EVIDENCE_ASSERTED: int = int(os.getenv("BELIEF_GARDENER_MIN_EVIDENCE_ASSERTED", "5"))
+    BELIEF_GARDENER_DAILY_BUDGET_FORMATIONS: int = int(os.getenv("BELIEF_GARDENER_DAILY_BUDGET_FORMATIONS", "3"))
+    BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS: int = int(os.getenv("BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS", "5"))
+    BELIEF_GARDENER_DAILY_BUDGET_DEPRECATIONS: int = int(os.getenv("BELIEF_GARDENER_DAILY_BUDGET_DEPRECATIONS", "3"))
+    BELIEF_GARDENER_LOOKBACK_DAYS: int = int(os.getenv("BELIEF_GARDENER_LOOKBACK_DAYS", "30"))
+
+    # Adaptive Decision Framework configuration
+    DECISION_FRAMEWORK_ENABLED: bool = os.getenv("DECISION_FRAMEWORK_ENABLED", "false").lower() == "true"
+
+    # Goal system flags (Phase 1)
+    GOAL_SYSTEM: bool = os.getenv("GOAL_SYSTEM", "false").lower() == "true"
+    GOAL_SHADOW: bool = os.getenv("GOAL_SHADOW", "true").lower() == "true"
 
     # Affect blending weights (user, memory, self)
     @staticmethod
@@ -173,6 +225,7 @@ class Settings:
         Path(cls.SHORT_TERM_INDEX_PATH).mkdir(parents=True, exist_ok=True)
         Path(cls.LONG_TERM_INDEX_PATH).mkdir(parents=True, exist_ok=True)
         Path(cls.SELF_INDEX_PATH).mkdir(parents=True, exist_ok=True)
+        Path(cls.BELIEFS_INDEX_PATH).mkdir(parents=True, exist_ok=True)
         if cls.PERSONA_MODE_ENABLED:
             Path(cls.PERSONA_SPACE_PATH).mkdir(parents=True, exist_ok=True)
 

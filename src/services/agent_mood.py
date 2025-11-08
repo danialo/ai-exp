@@ -137,6 +137,55 @@ class AgentMood:
 
         logger.debug(f"Autonomy moment: boost={boost:.3f}, internal_mood={self.internal_mood:.3f}")
 
+    def apply_presence_influence(
+        self,
+        presence_scalar: float,
+        presence_weight: float = 0.2,
+        cooldown_seconds: float = 15.0
+    ) -> bool:
+        """
+        Apply presence state influence to internal mood (with cooldown).
+
+        Args:
+            presence_scalar: Presence scalar from awareness [0, 1]
+            presence_weight: Weight for influence (max 0.2)
+            cooldown_seconds: Minimum time between influences (15s)
+
+        Returns:
+            True if influence applied, False if on cooldown
+        """
+        now = datetime.now(timezone.utc)
+
+        # Check cooldown
+        if not hasattr(self, '_last_presence_influence'):
+            self._last_presence_influence = None
+
+        if self._last_presence_influence is not None:
+            elapsed = (now - self._last_presence_influence).total_seconds()
+            if elapsed < cooldown_seconds:
+                return False
+
+        # Clamp weight
+        presence_weight = min(presence_weight, 0.2)
+
+        # Convert presence scalar [0, 1] to mood influence [-0.1, +0.1]
+        # Center at 0.5 (neutral presence)
+        influence = (presence_scalar - 0.5) * 0.2 * presence_weight
+
+        # Apply as internal experience with EMA smoothing
+        smoothed_influence = influence * 0.3  # α = 0.3 for EMA
+
+        self.internal_experiences.append((now, smoothed_influence))
+        self.last_internal_interaction = now
+        self._last_presence_influence = now
+
+        logger.debug(
+            f"Presence influence applied: scalar={presence_scalar:.3f}, "
+            f"influence={smoothed_influence:.3f}, internal_mood={self.internal_mood:.3f}"
+        )
+
+        return True
+
     @property
     def current_mood(self) -> float:
         """Calculate composite mood from external + internal tracks.

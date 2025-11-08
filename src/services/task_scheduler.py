@@ -13,11 +13,17 @@ Tasks can be triggered manually or run on a schedule.
 import json
 import logging
 import asyncio
-from datetime import datetime, timedelta
+import traceback
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass, asdict
 from enum import Enum
+from uuid import uuid4
+
+from src.memory.raw_store import RawStore
+from src.pipeline.task_experience import create_task_execution_experience
+from src.services.decision_framework import Parameter
 
 logger = logging.getLogger(__name__)
 
@@ -80,17 +86,32 @@ class TaskResult:
 class TaskScheduler:
     """Manages scheduled tasks for the persona."""
 
-    def __init__(self, persona_space_path: str = "persona_space"):
+    def __init__(
+        self,
+        persona_space_path: str = "persona_space",
+        raw_store: Optional[RawStore] = None,
+        abort_monitor: Optional[Any] = None,
+        decision_framework: Optional[Any] = None,
+        parameter_adapter: Optional[Any] = None
+    ):
         """
         Initialize task scheduler.
 
         Args:
             persona_space_path: Path to persona's file space
+            raw_store: Optional RawStore for creating task execution experiences
+            abort_monitor: Optional AbortConditionMonitor for safety checks
+            decision_framework: Optional DecisionFramework for adaptive task selection
+            parameter_adapter: Optional ParameterAdapter for learning from outcomes
         """
         self.persona_space = Path(persona_space_path)
         self.tasks_dir = self.persona_space / "tasks"
         self.tasks_config_path = self.tasks_dir / "tasks.json"
         self.results_dir = self.tasks_dir / "results"
+        self.raw_store = raw_store
+        self.abort_monitor = abort_monitor
+        self.decision_framework = decision_framework
+        self.parameter_adapter = parameter_adapter
 
         # Ensure directories exist
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
@@ -103,6 +124,13 @@ class TaskScheduler:
         # Create default tasks if none exist
         if not self.tasks:
             self._create_default_tasks()
+
+        # Register task selection decision point
+        self._register_decision_point()
+
+        # Track adaptations
+        self.executions_since_adaptation = 0
+        self.adaptation_interval = 10  # Adapt every 10 task executions
 
     def _load_tasks(self):
         """Load tasks from configuration file."""
@@ -254,6 +282,41 @@ Document any new beliefs in your reflection, using the format: "I believe [state
         self._save_tasks()
         logger.info(f"Created {len(default_tasks)} default tasks")
 
+    def _register_decision_point(self):
+        """Register task_selected decision point with DecisionFramework."""
+        if not self.decision_framework:
+            return
+
+        # Define parameters for task selection decisions
+        parameters = {
+            "urgency_threshold": Parameter(
+                name="urgency_threshold",
+                current_value=0.7,
+                min_value=0.3,
+                max_value=0.95,
+                step_size=0.05,
+                adaptation_rate=0.15
+            ),
+            "coherence_required": Parameter(
+                name="coherence_required",
+                current_value=0.6,
+                min_value=0.4,
+                max_value=0.9,
+                step_size=0.05,
+                adaptation_rate=0.1
+            ),
+        }
+
+        self.decision_framework.registry.register_decision(
+            decision_id="task_selected",
+            subsystem="task_scheduler",
+            description="Autonomous task selection and execution",
+            parameters=parameters,
+            success_metrics=["coherence_delta", "dissonance_delta", "satisfaction_score"],
+            context_features=["task_type", "time_since_last_run", "current_coherence"]
+        )
+        logger.info("Registered task_selected decision point")
+
     def _update_next_run(self, task: TaskDefinition):
         """Update the next_run timestamp for a task based on its schedule."""
         if task.schedule == TaskSchedule.MANUAL:
@@ -303,9 +366,68 @@ Document any new beliefs in your reflection, using the format: "I believe [state
         if not task.enabled:
             raise ValueError(f"Task is disabled: {task_id}")
 
-        started_at = datetime.utcnow()
-        logger.info(f"Executing task: {task.name} ({task.id})")
-        print(f"⏰ Executing scheduled task: {task.name}")
+        # Safety check: Abort if dangerous conditions detected
+        if self.abort_monitor:
+            should_abort, abort_reason = self.abort_monitor.check_abort_conditions()
+            if should_abort:
+                error_msg = f"Task execution aborted due to safety condition: {abort_reason}"
+                logger.warning(error_msg)
+                print(f"⚠️  {error_msg}")
+
+                # Return failed result
+                now = datetime.now(timezone.utc)
+                return TaskResult(
+                    task_id=task.id,
+                    task_name=task.name,
+                    started_at=now.isoformat(),
+                    completed_at=now.isoformat(),
+                    success=False,
+                    error=error_msg,
+                    metadata={
+                        "abort_reason": abort_reason,
+                        "safety_aborted": True
+                    }
+                )
+
+        # Ensure UTC-aware timestamps
+        started_at = datetime.now(timezone.utc)
+
+        # Generate correlation IDs
+        trace_id = str(uuid4())
+        span_id = str(uuid4())
+
+        # Record task selection decision
+        decision_record_id = None
+        if self.decision_framework:
+            context = {
+                "task_type": task.type,
+                "task_id": task.id,
+                "time_since_last_run": (
+                    (started_at - datetime.fromisoformat(task.last_run)).total_seconds() / 3600
+                    if task.last_run else None
+                ),
+                "trace_id": trace_id
+            }
+            params = self.decision_framework.registry.get_all_parameters("task_selected")
+            if params:
+                decision_record_id = self.decision_framework.registry.record_decision(
+                    decision_id="task_selected",
+                    context=context,
+                    parameters_used=params,
+                    outcome_snapshot={}
+                )
+                logger.debug(f"Recorded task selection decision: {decision_record_id}")
+
+        logger.info(f"Executing task: {task.name} ({task.id}) [trace_id={trace_id}]")
+        print(f"⏰ Executing scheduled task: {task.name} [trace_id={trace_id[:8]}]")
+
+        # Track execution metadata
+        parent_experience_ids = []
+        retrieval_metadata = {"memory_count": 0, "source": []}
+        files_written = []
+        response_text = None
+        error_details = None
+        status = "success"
 
         try:
             # Execute task by generating response with persona
@@ -315,7 +437,18 @@ Document any new beliefs in your reflection, using the format: "I believe [state
                 top_k=10  # More context for reflection tasks
             )
 
-            completed_at = datetime.utcnow()
+            response_text = response
+            completed_at = datetime.now(timezone.utc)
+
+            # TODO: Capture actual retrieval metadata from persona_service
+            # For now, set default values
+            retrieval_metadata = {
+                "memory_count": 0,  # We don't have access to this yet
+                "query": task.prompt[:100],  # Use prompt as query
+                "filters": {},
+                "latency_ms": 0,  # Unknown
+                "source": ["experiences"],  # Assumed
+            }
 
             # Create result
             result = TaskResult(
@@ -327,7 +460,10 @@ Document any new beliefs in your reflection, using the format: "I believe [state
                 response=response,
                 metadata={
                     "reconciliation": reconciliation,
-                    "task_type": task.type
+                    "task_type": task.type,
+                    "trace_id": trace_id,
+                    "span_id": span_id,
+                    "decision_record_id": decision_record_id,  # For linking to DecisionFramework
                 }
             )
 
@@ -340,14 +476,43 @@ Document any new beliefs in your reflection, using the format: "I believe [state
             # Save result
             self._save_result(result)
 
+            # Create task execution experience
+            if self.raw_store:
+                self._create_task_experience(
+                    task=task,
+                    started_at=started_at,
+                    ended_at=completed_at,
+                    status=status,
+                    response_text=response_text,
+                    error=error_details,
+                    parent_experience_ids=parent_experience_ids,
+                    retrieval_metadata=retrieval_metadata,
+                    files_written=files_written,
+                    trace_id=trace_id,
+                    span_id=span_id,
+                )
+
             logger.info(f"Task completed successfully: {task.name}")
             print(f"✅ Task completed: {task.name}")
+
+            # Increment execution counter and trigger adaptation if needed
+            self.executions_since_adaptation += 1
+            self.trigger_parameter_adaptation()
 
             return result
 
         except Exception as e:
-            completed_at = datetime.utcnow()
-            logger.error(f"Task execution failed: {task.name} - {e}")
+            completed_at = datetime.now(timezone.utc)
+            status = "failed"
+
+            # Capture error details
+            error_details = {
+                "type": type(e).__name__,
+                "message": str(e),
+                "stack_hash": str(hash(traceback.format_exc()))[:16],
+            }
+
+            logger.error(f"Task execution failed: {task.name} - {e}", exc_info=True)
 
             result = TaskResult(
                 task_id=task.id,
@@ -355,11 +520,109 @@ Document any new beliefs in your reflection, using the format: "I believe [state
                 started_at=started_at.isoformat(),
                 completed_at=completed_at.isoformat(),
                 success=False,
-                error=str(e)
+                error=str(e),
+                metadata={
+                    "trace_id": trace_id,
+                    "span_id": span_id,
+                    "decision_record_id": decision_record_id,  # For linking to DecisionFramework
+                }
             )
 
             self._save_result(result)
+
+            # Create task execution experience even on failure
+            if self.raw_store:
+                self._create_task_experience(
+                    task=task,
+                    started_at=started_at,
+                    ended_at=completed_at,
+                    status=status,
+                    response_text=response_text,  # May be None if failed early
+                    error=error_details,
+                    parent_experience_ids=parent_experience_ids,
+                    retrieval_metadata=retrieval_metadata,
+                    files_written=files_written,
+                    trace_id=trace_id,
+                    span_id=span_id,
+                )
+
             return result
+
+    def _create_task_experience(
+        self,
+        task: TaskDefinition,
+        started_at: datetime,
+        ended_at: datetime,
+        status: str,
+        response_text: Optional[str],
+        error: Optional[Dict[str, str]],
+        parent_experience_ids: List[str],
+        retrieval_metadata: Dict[str, Any],
+        files_written: List[str],
+        trace_id: str,
+        span_id: str,
+    ):
+        """Create a TASK_EXECUTION experience and store it in raw store.
+
+        Args:
+            task: Task definition
+            started_at: Task start timestamp
+            ended_at: Task end timestamp
+            status: Execution status ("success" or "failed")
+            response_text: Task response text
+            error: Error details if failed
+            parent_experience_ids: Retrieved memory IDs
+            retrieval_metadata: Retrieval provenance
+            files_written: Files written during execution
+            trace_id: Correlation ID
+            span_id: Span ID
+        """
+        try:
+            # Build task config for digest
+            task_config = {
+                "prompt": task.prompt,
+                "type": task.type,
+                "schedule": task.schedule,
+            }
+
+            # Create task execution experience
+            experience = create_task_execution_experience(
+                task_id=task.id,
+                task_slug=task.id,  # Use id as slug for now
+                task_name=task.name,
+                task_type=task.type,
+                scheduled_vs_manual="scheduled",  # Always scheduled in current implementation
+                started_at=started_at,
+                ended_at=ended_at,
+                status=status,
+                response_text=response_text,
+                error=error,
+                parent_experience_ids=parent_experience_ids,
+                retrieval_metadata=retrieval_metadata,
+                files_written=files_written,
+                task_config=task_config,
+                trace_id=trace_id,
+                span_id=span_id,
+                attempt=1,  # No retries in Phase 1
+                retry_of=None,
+            )
+
+            # Extract idempotency key from experience
+            idempotency_key = experience.content.structured["idempotency_key"]
+
+            # Store experience idempotently
+            experience_id = self.raw_store.append_experience_idempotent(
+                experience, idempotency_key
+            )
+
+            logger.info(
+                f"Created TASK_EXECUTION experience: {experience_id} "
+                f"for task {task.id} [trace_id={trace_id}]"
+            )
+
+        except Exception as e:
+            # Don't fail the task execution if experience creation fails
+            logger.error(f"Failed to create task execution experience: {e}", exc_info=True)
 
     def _save_result(self, result: TaskResult):
         """Save task execution result to file."""
@@ -444,6 +707,41 @@ Document any new beliefs in your reflection, using the format: "I believe [state
         self._save_tasks()
         logger.info(f"Deleted task: {task_name}")
 
+    def trigger_parameter_adaptation(self, force: bool = False) -> Optional[Dict]:
+        """
+        Trigger parameter adaptation from task outcomes.
+
+        Args:
+            force: If True, adapt regardless of interval
+
+        Returns:
+            Adaptation results dict, or None if skipped
+        """
+        if not self.parameter_adapter or not self.decision_framework:
+            return None
+
+        # Check if adaptation should run
+        if not force and self.executions_since_adaptation < self.adaptation_interval:
+            logger.debug(
+                f"Skipping adaptation: {self.executions_since_adaptation}/{self.adaptation_interval}"
+            )
+            return None
+
+        logger.info("Triggering parameter adaptation from task outcomes")
+
+        # Adapt task_selected decision parameters
+        result = self.parameter_adapter.adapt_from_evaluated_decisions(
+            decision_id="task_selected",
+            since_hours=48,  # Look at last 48 hours of task executions
+            dry_run=False
+        )
+
+        # Reset counter
+        self.executions_since_adaptation = 0
+
+        logger.info(f"Parameter adaptation result: {result}")
+        return result
+
     def get_recent_results(self, task_id: Optional[str] = None, limit: int = 10) -> List[TaskResult]:
         """
         Get recent task execution results.
@@ -486,14 +784,30 @@ Document any new beliefs in your reflection, using the format: "I believe [state
         return results
 
 
-def create_task_scheduler(persona_space_path: str = "persona_space") -> TaskScheduler:
+def create_task_scheduler(
+    persona_space_path: str = "persona_space",
+    raw_store: Optional[RawStore] = None,
+    abort_monitor: Optional[Any] = None,
+    decision_framework: Optional[Any] = None,
+    parameter_adapter: Optional[Any] = None
+) -> TaskScheduler:
     """
     Factory function to create a TaskScheduler.
 
     Args:
         persona_space_path: Path to persona_space directory
+        raw_store: Optional RawStore for task execution tracking
+        abort_monitor: Optional AbortConditionMonitor for safety checks
+        decision_framework: Optional DecisionFramework for adaptive task selection
+        parameter_adapter: Optional ParameterAdapter for learning from outcomes
 
     Returns:
         TaskScheduler instance
     """
-    return TaskScheduler(persona_space_path)
+    return TaskScheduler(
+        persona_space_path,
+        raw_store=raw_store,
+        abort_monitor=abort_monitor,
+        decision_framework=decision_framework,
+        parameter_adapter=parameter_adapter
+    )

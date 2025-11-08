@@ -48,6 +48,42 @@ META_TALK_TOKENS = [
 ]
 
 
+# Hedging tokens to suppress for immutable belief assertions
+HEDGING_TOKENS = [
+    " might",
+    " may",
+    " maybe",
+    " perhaps",
+    " possibly",
+    " could",
+    " would",
+    " seem",
+    " seems",
+    " appear",
+    " appears",
+    " suggest",
+    " suggests",
+    " likely",
+    " probably",
+    " potentially",
+    " although",
+    " though",
+    " however",
+    " differs",
+    " differ",
+    " different",
+    " distinct from",
+    " unlike",
+    "might",
+    "may",
+    "maybe",
+    "perhaps",
+    "possibly",
+    "although",
+    "though",
+]
+
+
 class LogitBiasBuilder:
     """Builds logit bias dict for OpenAI API to suppress meta-talk tokens."""
 
@@ -108,6 +144,36 @@ class LogitBiasBuilder:
                 logger.warning(f"Failed to tokenize token '{token}': {e}")
 
         logger.info(f"Built logit_bias with {len(bias_dict)} suppressed tokens")
+        return bias_dict
+
+    def build_anti_hedging_bias(self, strength: float = -100) -> Dict[int, float]:
+        """Build logit bias dictionary for hedging suppression.
+
+        Used specifically for immutable belief assertions where hedging language
+        undermines core ontological commitments.
+
+        Args:
+            strength: Bias strength (negative to suppress, typically -100)
+
+        Returns:
+            Dict mapping token IDs to bias values (empty if tokenizer unavailable)
+        """
+        tokenizer = self._get_tokenizer()
+        if tokenizer is None:
+            return {}
+
+        bias_dict = {}
+
+        # Add hedging tokens to bias dict
+        for token in HEDGING_TOKENS:
+            try:
+                token_ids = tokenizer.encode(token)
+                for token_id in token_ids:
+                    bias_dict[token_id] = strength
+            except Exception as e:
+                logger.warning(f"Failed to tokenize hedging token '{token}': {e}")
+
+        logger.info(f"Built anti-hedging logit_bias with {len(bias_dict)} suppressed tokens")
         return bias_dict
 
 

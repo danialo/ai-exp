@@ -1,0 +1,22 @@
+[Unit]
+Description=Astra MCP Task Execution Server
+After=network.target
+
+[Service]
+Type=simple
+User=d
+Group=d
+WorkingDirectory=/home/d/git/ai-exp
+Environment="PYTHONPATH=/home/d/git/ai-exp"
+ExecStart=/home/d/git/ai-exp/venv/bin/python scripts/run_task_execution_mcp.py --db data/raw_store.db --log-level INFO
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/d/git/ai-exp/logs/mcp-server.log
+StandardError=append:/home/d/git/ai-exp/logs/mcp-server-error.log
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

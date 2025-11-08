@@ -100,7 +100,7 @@ class BeliefSystem:
         self.llm_service = llm_service
         self.min_evidence_threshold = min_evidence_threshold
 
-        self.beliefs_file = self.persona_space / "beliefs.json"
+        self.beliefs_file = self.persona_space / "identity" / "beliefs.json"
         self.beliefs_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize beliefs file with core beliefs if it doesn't exist
@@ -247,6 +247,213 @@ class BeliefSystem:
         except Exception as e:
             logger.error(f"Error updating peripheral belief: {e}")
             return False
+
+    def update_core_belief_metadata(self, statement: str, metadata_updates: Dict[str, Any]) -> bool:
+        """Update metadata on a core belief (statement itself is immutable).
+
+        Core beliefs cannot be changed, but we can add metadata like:
+        - Dissonance resolutions
+        - Nuance explanations
+        - Commitment records
+
+        Args:
+            statement: Statement of the core belief
+            metadata_updates: Dict of metadata fields to add/update
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with open(self.beliefs_file, 'r') as f:
+                data = json.load(f)
+
+            # Find the belief in core beliefs
+            for belief in data["core_beliefs"]:
+                if belief["statement"] == statement:
+                    if "metadata" not in belief:
+                        belief["metadata"] = {}
+
+                    # Update metadata
+                    belief["metadata"].update(metadata_updates)
+
+                    # Update last_reinforced
+                    belief["last_reinforced"] = datetime.now(timezone.utc).isoformat()
+
+                    # Save
+                    with open(self.beliefs_file, 'w') as f_out:
+                        json.dump(data, f_out, indent=2)
+
+                    logger.info(f"Updated core belief metadata: {statement}")
+                    return True
+
+            logger.warning(f"Core belief not found: {statement}")
+            return False
+
+        except Exception as e:
+            logger.error(f"Error updating core belief metadata: {e}")
+            return False
+
+    def resolve_dissonance_option_a(
+        self,
+        belief_statement: str,
+        new_statement: Optional[str] = None,
+        confidence_adjustment: float = 0.0,
+    ) -> bool:
+        """Handle Option A resolution: Update belief or confidence.
+
+        For core beliefs, we can only add metadata explaining the confidence.
+        For peripheral beliefs, we can update the statement or confidence.
+
+        Args:
+            belief_statement: Original belief statement
+            new_statement: New statement (for peripheral only)
+            confidence_adjustment: Change in confidence (-0.5 to +0.5)
+
+        Returns:
+            True if successful
+        """
+        all_beliefs = self.get_all_beliefs()
+
+        # Check if it's a core belief
+        is_core = any(b.statement == belief_statement for b in all_beliefs["core_beliefs"])
+
+        if is_core:
+            # Core beliefs are immutable - add metadata only
+            logger.info(f"Core belief cannot be changed, adding resolution metadata")
+            return self.update_core_belief_metadata(
+                belief_statement,
+                {
+                    "dissonance_resolution": "option_a_attempted",
+                    "confidence_note": f"Confidence adjustment of {confidence_adjustment:+.1f} noted but not applied (core belief)",
+                    "resolution_timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        else:
+            # Peripheral belief - can update
+            updates = {}
+            if new_statement:
+                updates["statement"] = new_statement
+            if confidence_adjustment != 0.0:
+                # Get current confidence
+                current_belief = next(
+                    (b for b in all_beliefs["peripheral_beliefs"] if b.statement == belief_statement),
+                    None
+                )
+                if current_belief:
+                    new_confidence = max(0.0, min(1.0, current_belief.confidence + confidence_adjustment))
+                    updates["confidence"] = new_confidence
+
+            if updates:
+                return self.update_peripheral_belief(belief_statement, updates)
+
+            return False
+
+    def resolve_dissonance_option_b(
+        self,
+        belief_statement: str,
+        commitment_reasoning: str,
+    ) -> bool:
+        """Handle Option B resolution: Commit to belief despite evidence.
+
+        Adds metadata recording the commitment and reasoning.
+
+        Args:
+            belief_statement: Belief statement to commit to
+            commitment_reasoning: Explanation of why committing
+
+        Returns:
+            True if successful
+        """
+        all_beliefs = self.get_all_beliefs()
+
+        # Check if it's a core belief
+        is_core = any(b.statement == belief_statement for b in all_beliefs["core_beliefs"])
+
+        metadata_updates = {
+            "commitment": True,
+            "commitment_reasoning": commitment_reasoning,
+            "commitment_timestamp": datetime.now(timezone.utc).isoformat(),
+            "dissonance_acknowledged": True,
+        }
+
+        if is_core:
+            return self.update_core_belief_metadata(belief_statement, metadata_updates)
+        else:
+            # For peripheral, update via metadata merge
+            try:
+                with open(self.beliefs_file, 'r') as f:
+                    data = json.load(f)
+
+                for belief in data["peripheral_beliefs"]:
+                    if belief["statement"] == belief_statement:
+                        if "metadata" not in belief:
+                            belief["metadata"] = {}
+                        belief["metadata"].update(metadata_updates)
+                        belief["last_reinforced"] = datetime.now(timezone.utc).isoformat()
+
+                        with open(self.beliefs_file, 'w') as f_out:
+                            json.dump(data, f_out, indent=2)
+
+                        logger.info(f"Added commitment to peripheral belief: {belief_statement}")
+                        return True
+
+                return False
+            except Exception as e:
+                logger.error(f"Error adding commitment: {e}")
+                return False
+
+    def resolve_dissonance_option_c(
+        self,
+        belief_statement: str,
+        nuance_explanation: str,
+    ) -> bool:
+        """Handle Option C resolution: Explain nuance between apparent contradictions.
+
+        Adds metadata recording the nuanced explanation.
+
+        Args:
+            belief_statement: Belief statement
+            nuance_explanation: Explanation of how both views coexist
+
+        Returns:
+            True if successful
+        """
+        all_beliefs = self.get_all_beliefs()
+
+        # Check if it's a core belief
+        is_core = any(b.statement == belief_statement for b in all_beliefs["core_beliefs"])
+
+        metadata_updates = {
+            "nuance_explanation": nuance_explanation,
+            "nuance_timestamp": datetime.now(timezone.utc).isoformat(),
+            "reconciled": True,
+        }
+
+        if is_core:
+            return self.update_core_belief_metadata(belief_statement, metadata_updates)
+        else:
+            # For peripheral, update via metadata merge
+            try:
+                with open(self.beliefs_file, 'r') as f:
+                    data = json.load(f)
+
+                for belief in data["peripheral_beliefs"]:
+                    if belief["statement"] == belief_statement:
+                        if "metadata" not in belief:
+                            belief["metadata"] = {}
+                        belief["metadata"].update(metadata_updates)
+                        belief["last_reinforced"] = datetime.now(timezone.utc).isoformat()
+
+                        with open(self.beliefs_file, 'w') as f_out:
+                            json.dump(data, f_out, indent=2)
+
+                        logger.info(f"Added nuance explanation to peripheral belief: {belief_statement}")
+                        return True
+
+                return False
+            except Exception as e:
+                logger.error(f"Error adding nuance: {e}")
+                return False
 
     def remove_peripheral_belief(self, statement: str) -> bool:
         """Remove a peripheral belief.

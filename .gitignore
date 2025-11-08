@@ -44,6 +44,21 @@ data/vector_index/
 data/vector_index_short_term/
 data/vector_index_long_term/
 data/vector_index_self/
+data/vector_index_beliefs/
+
+# Runtime awareness and learning state
+data/awareness_state*.ndjson
+data/awareness_state*.ndjson.gz
+data/awareness_state.json
+data/self_knowledge_index.json
+
+# Belief system runtime state
+data/beliefs/current.json
+data/beliefs/index.json
+data/beliefs/log-*.ndjson.gz
+
+# Identity ledger runtime state
+data/identity/ledger-*.ndjson.gz
 
 # Testing
 .pytest_cache/
@@ -55,3 +70,8 @@ htmlcov/
 
 # Persona's private space (self-modifying files)
 persona_space/
+logs/
+
+# SSL Certificates (keep private keys secure)
+certs/*.key
+certs/*.pem

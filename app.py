@@ -1,27 +1,39 @@
 """FastAPI web interface for AI Experience Memory System."""
 
+import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
+import time
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from pathlib import Path
 import uvicorn
+import numpy as np
 
-# Configure logging to show affect/mood tracking
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Import multi-file logging system
+from src.utils.logging_config import get_multi_logger, configure_root_logger
+
+# Initialize multi-file logging system
+multi_logger = get_multi_logger()
+
+# Configure root logger to actually write to files
+configure_root_logger()
+
+# Get logger for this module
 logger = logging.getLogger(__name__)
+logger.info("Logging system initialized - writing to logs/app/astra.log")
 
 from config.settings import settings
 from src.memory.raw_store import create_raw_store
 from src.memory.vector_store import create_vector_store
 from src.memory.embedding import create_embedding_provider
-from src.memory.models import ExperienceType
+from src.memory.models import ExperienceType, experience_to_model, Experience
+from sqlmodel import Session, select
 from src.pipeline.ingest import create_ingestion_pipeline, InteractionPayload
 from src.pipeline.lens import create_experience_lens
 from src.pipeline.reflection import create_reflection_writer
@@ -42,10 +54,37 @@ from src.services.emotional_extractor import create_emotional_extractor
 from src.services.persona_service import PersonaService
 from src.services.task_scheduler import create_task_scheduler, TaskDefinition, TaskType, TaskSchedule
 from src.services.belief_system import create_belief_system
+from src.services.belief_store import create_belief_store, DeltaOp
+from src.services.belief_migration import run_migration
+from src.services.contrarian_sampler import (
+    create_contrarian_sampler,
+    ConrarianConfig,
+    DossierStatus,
+)
+from src.services.belief_gardener import create_belief_gardener, GardenerConfig
+from src.services.tag_injector import create_tag_injector
 from src.services.self_knowledge_index import create_self_knowledge_index
+from src.services.provenance_trust import create_provenance_trust, TrustConfig
+from src.services.outcome_evaluator import create_outcome_evaluator, OutcomeConfig
+from src.services.feedback_aggregator_enhanced import EnhancedFeedbackAggregator, FeedbackConfig
 from src.services.web_search_service import create_web_search_service
 from src.services.url_fetcher_service import create_url_fetcher_service
 from src.services.web_interpretation_service import create_web_interpretation_service
+
+# Adaptive Decision Framework imports
+from src.services.decision_framework import get_decision_registry
+from src.services.success_signal_evaluator import SuccessSignalEvaluator
+from src.services.abort_condition_monitor import AbortConditionMonitor
+from src.services.parameter_adapter import ParameterAdapter
+from src.services.outcome_evaluation_task import OutcomeEvaluationTask
+from src.services.belief_gardener_integration import create_adaptive_belief_lifecycle_manager
+
+# Awareness loop imports
+import contextlib
+from pathlib import Path
+from redis.asyncio import Redis
+from src.services.awareness_loop import AwarenessLoop, AwarenessConfig
+from src.services.awareness_metrics import get_metrics as get_awareness_metrics
 
 
 # Initialize FastAPI app
@@ -64,6 +103,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include decision framework API router
+from src.api.decision_endpoints import router as decision_router
+from src.api.goal_endpoints import router as goal_router
+app.include_router(decision_router)
+app.include_router(goal_router)
+
 # Initialize components
 raw_store = create_raw_store(settings.RAW_STORE_DB_PATH)
 vector_store = create_vector_store(
@@ -74,6 +119,11 @@ embedding_provider = create_embedding_provider(
     model_name=settings.EMBEDDING_MODEL,
     use_mock=False,
 )
+
+# Initialize GoalStore and attach to app state
+from src.services.goal_store import create_goal_store
+goal_store = create_goal_store(settings.RAW_STORE_DB_PATH)
+app.state.goal_store = goal_store
 
 # Initialize self-knowledge index early (needed by ingestion pipeline)
 self_knowledge_index = create_self_knowledge_index(
@@ -98,6 +148,10 @@ retrieval_service = create_retrieval_service(
     self_knowledge_index=self_knowledge_index,  # Enable priority self-query retrieval
 )
 
+# Initialize belief-memory retrieval (after both belief_vector_store and retrieval_service exist)
+# This will be wired up after belief services are initialized later in the file
+belief_memory_retrieval = None
+
 # Initialize agent mood tracker for emergent personality
 agent_mood = create_agent_mood(
     history_size=10,  # Track last 10 interactions
@@ -115,6 +169,7 @@ previous_user_valence: Optional[float] = None
 
 # Initialize LLM service if API key is available
 llm_service = None
+mini_llm_service = None  # For cost-effective introspection
 experience_lens = None
 
 # Determine which LLM provider to use
@@ -148,6 +203,16 @@ if api_key:
         max_tokens=settings.LLM_MAX_TOKENS,
         base_url=base_url,
         self_aware_prompt_builder=self_aware_prompt_builder,
+    )
+
+    # Create mini LLM service for cost-effective introspection
+    mini_llm_service = create_llm_service(
+        api_key=api_key,
+        model="gpt-4o-mini",  # Cheaper model for introspection
+        temperature=0.7,
+        max_tokens=150,  # Short responses for introspection
+        base_url=base_url,
+        self_aware_prompt_builder=None,  # Not needed for introspection
     )
 
     # Re-initialize ingestion pipeline with LLM service for self-claim detection
@@ -273,10 +338,11 @@ current_session_id: Optional[str] = None
 task_scheduler = None
 if settings.PERSONA_MODE_ENABLED:
     task_scheduler = create_task_scheduler(
-        persona_space_path=settings.PERSONA_SPACE_PATH
+        persona_space_path=settings.PERSONA_SPACE_PATH,
+        raw_store=raw_store  # Enable task execution tracking (Phase 1)
     )
 
-# Initialize belief system
+# Initialize belief system (legacy)
 belief_system = None
 if settings.PERSONA_MODE_ENABLED and llm_service and raw_store:
     belief_system = create_belief_system(
@@ -291,6 +357,209 @@ if settings.PERSONA_MODE_ENABLED and llm_service and raw_store:
     if self_aware_prompt_builder:
         self_aware_prompt_builder.belief_system = belief_system
         logger.info("Belief system connected to prompt builder")
+
+# Initialize versioned belief store
+belief_store = None
+contrarian_sampler = None
+if settings.PERSONA_MODE_ENABLED:
+    belief_store = create_belief_store(Path("data"))
+    logger.info("Versioned belief store initialized")
+    # Expose to API endpoints
+    app.state.belief_store = belief_store
+
+    # Run migration from legacy belief system if needed
+    try:
+        migration_report = run_migration(
+            persona_space_path=Path(settings.PERSONA_SPACE_PATH),
+            data_dir=Path("data"),
+            dry_run=False,
+        )
+        logger.info(f"Belief migration: {migration_report}")
+    except Exception as e:
+        logger.error(f"Belief migration failed: {e}")
+
+    # Initialize contrarian sampler (will be fully wired after llm_service is available)
+    # For now, just create placeholder
+    contrarian_config = ConrarianConfig(
+        enabled=False,  # Default disabled until explicitly enabled
+        interval_minutes=15,
+        jitter_minutes=5,
+        daily_budget=3,
+        cooldown_hours=24,
+        max_open_dossiers=5,
+        demotion_threshold=0.25,
+        weight_confidence=1.0,
+        weight_age_hours=0.2,
+        weight_staleness=0.2,
+        confirmed_boost=0.03,
+        weakened_penalty=0.08,
+    )
+
+# Initialize belief vector store and related services
+belief_vector_store = None
+belief_embedder = None
+belief_memory_retrieval = None
+belief_grounded_reasoner = None
+belief_consistency_checker = None
+
+if settings.PERSONA_MODE_ENABLED and belief_system and embedding_provider:
+    try:
+        from src.services.belief_vector_store import create_belief_vector_store
+        from src.services.belief_embedder import create_belief_embedder
+        from src.services.belief_memory_retrieval import create_belief_memory_retrieval
+        from src.services.belief_grounded_reasoner import create_belief_grounded_reasoner
+        from src.services.belief_consistency_checker import create_belief_consistency_checker
+
+        # Initialize belief vector store
+        belief_vector_store = create_belief_vector_store(
+            persist_directory=settings.BELIEFS_INDEX_PATH,
+            embedding_provider=embedding_provider,
+        )
+        logger.info(f"Belief vector store initialized at {settings.BELIEFS_INDEX_PATH}")
+
+        # Initialize belief embedder
+        belief_embedder = create_belief_embedder(
+            belief_system=belief_system,
+            belief_vector_store=belief_vector_store,
+        )
+
+        # Embed core beliefs on first run
+        if belief_vector_store.count() == 0:
+            logger.info("Embedding core beliefs for first time...")
+            count = belief_embedder.embed_all_core_beliefs()
+            logger.info(f"Embedded {count} core beliefs")
+        else:
+            logger.info(f"Belief vector store loaded with {belief_vector_store.count()} beliefs")
+
+        # Initialize belief-grounded reasoner
+        belief_grounded_reasoner = create_belief_grounded_reasoner(llm_service)
+        logger.info("Belief-grounded reasoner initialized")
+
+        # Initialize belief-memory retrieval (combining belief vector store + memory retrieval)
+        if retrieval_service:
+            belief_memory_retrieval = create_belief_memory_retrieval(
+                belief_vector_store=belief_vector_store,
+                memory_retrieval_service=retrieval_service,
+                belief_weight=settings.BELIEF_MEMORY_WEIGHT,
+                memory_weight=settings.MEMORY_WEIGHT,
+            )
+            logger.info(f"Belief-memory retrieval initialized with weights: {settings.BELIEF_MEMORY_WEIGHT} beliefs / {settings.MEMORY_WEIGHT} memories")
+
+        # Initialize belief consistency checker for dissonance detection
+        if llm_service:
+            belief_consistency_checker = create_belief_consistency_checker(
+                llm_service=llm_service,
+                raw_store=raw_store,
+            )
+            logger.info("Belief consistency checker initialized with dissonance event storage")
+            app.state.belief_consistency_checker = belief_consistency_checker
+
+    except Exception as e:
+        logger.error(f"Failed to initialize belief vector services: {e}")
+        import traceback
+        traceback.print_exc()
+
+# Initialize contrarian sampler after LLM service is available
+if belief_store and raw_store and llm_service and contrarian_config:
+    contrarian_sampler = create_contrarian_sampler(
+        belief_store=belief_store,
+        raw_store=raw_store,
+        llm_service=llm_service,
+        data_dir=Path("data"),
+        config=contrarian_config,
+    )
+    logger.info(f"Contrarian sampler initialized (enabled={contrarian_config.enabled})")
+
+# Initialize outcome-driven trust system
+provenance_trust = None
+outcome_evaluator = None
+enhanced_feedback_aggregator = None
+
+if belief_store and raw_store:
+    # Initialize provenance trust manager
+    trust_config = TrustConfig(
+        enabled=True,
+        alpha_0=0.3,
+        k_samples=50,
+        r_min=0.1,
+    )
+    provenance_trust = create_provenance_trust(
+        data_dir=Path(settings.AWARENESS_DATA_DIR),
+        config=trust_config,
+    )
+    logger.info("Provenance trust manager initialized")
+
+    # Initialize outcome evaluator (will wire awareness_loop later in startup)
+    outcome_config = OutcomeConfig(
+        enabled=True,
+        w_coherence=0.4,
+        w_conflict=0.2,
+        w_stability=0.2,
+        w_validation=0.2,
+        horizon_short_hours=2.0,
+        horizon_long_hours=24.0,
+    )
+    outcome_evaluator = create_outcome_evaluator(
+        provenance_trust=provenance_trust,
+        awareness_loop=None,  # Will wire after awareness_loop starts
+        belief_store=belief_store,
+        raw_store=raw_store,
+        config=outcome_config,
+    )
+    logger.info("Outcome evaluator initialized")
+
+    # Initialize enhanced feedback aggregator
+    feedback_config = FeedbackConfig(
+        enabled=True,
+        window_hours=24,
+        cache_ttl_secs=300,
+        min_samples=2,
+        alpha_align=1.5,
+        conviction_base=0.5,
+        conviction_scale=1.5,
+        dedup_window_secs=120,
+        dedup_similarity_threshold=0.9,
+    )
+    enhanced_feedback_aggregator = EnhancedFeedbackAggregator(
+        raw_store=raw_store,
+        provenance_trust=provenance_trust,
+        awareness_loop=None,  # Will wire after awareness_loop starts
+        belief_store=belief_store,
+        outcome_evaluator=outcome_evaluator,
+        embedding_provider=embedding_provider,
+        config=feedback_config,
+    )
+    logger.info("Enhanced feedback aggregator initialized with dynamic weighting")
+
+# Initialize belief gardener for autonomous pattern detection
+belief_gardener = None
+if belief_store and raw_store and enhanced_feedback_aggregator:
+    gardener_config = GardenerConfig(
+        enabled=settings.BELIEF_GARDENER_ENABLED,
+        pattern_scan_interval_minutes=settings.BELIEF_GARDENER_SCAN_INTERVAL,
+        min_evidence_for_tentative=settings.BELIEF_GARDENER_MIN_EVIDENCE_TENTATIVE,
+        min_evidence_for_asserted=settings.BELIEF_GARDENER_MIN_EVIDENCE_ASSERTED,
+        daily_budget_formations=settings.BELIEF_GARDENER_DAILY_BUDGET_FORMATIONS,
+        daily_budget_promotions=settings.BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS,
+        daily_budget_deprecations=settings.BELIEF_GARDENER_DAILY_BUDGET_DEPRECATIONS,
+        lookback_days=settings.BELIEF_GARDENER_LOOKBACK_DAYS,
+    )
+    belief_gardener = create_belief_gardener(
+        belief_store=belief_store,
+        raw_store=raw_store,
+        feedback_aggregator=enhanced_feedback_aggregator,  # Use enhanced version
+        config=gardener_config,
+    )
+    logger.info(f"Belief gardener initialized with outcome-driven feedback (enabled={gardener_config.enabled})")
+
+# Initialize tag injector for feedback tagging
+tag_injector = None
+if belief_store and llm_service:
+    tag_injector = create_tag_injector(
+        belief_store=belief_store,
+        llm_service=llm_service,
+    )
+    logger.info("Tag injector initialized for feedback tagging")
 
 # Initialize web services for search and browsing
 web_search_service = None
@@ -337,10 +606,306 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         logit_bias_strength=settings.LOGIT_BIAS_STRENGTH,
         auto_rewrite=settings.AUTO_REWRITE_METATALK,
         belief_system=belief_system,  # Pass belief system for ontological grounding
+        belief_vector_store=belief_vector_store,  # Enable belief vector search
+        belief_embedder=belief_embedder,  # Enable adding new beliefs
+        belief_memory_retrieval=belief_memory_retrieval,  # Enable weighted belief-memory retrieval
+        belief_grounded_reasoner=belief_grounded_reasoner,  # Enable belief-grounded reasoning
+        belief_consistency_checker=belief_consistency_checker,  # Enable dissonance detection
         web_search_service=web_search_service,  # Enable web search
         url_fetcher_service=url_fetcher_service,  # Enable URL browsing
         web_interpretation_service=web_interpretation_service,  # Enable content interpretation
     )
+
+# Initialize awareness loop (Redis-backed continuous presence)
+awareness_loop: Optional[AwarenessLoop] = None
+awareness_task: Optional[asyncio.Task] = None
+redis_client: Optional[Redis] = None
+
+if settings.AWARENESS_ENABLED:
+    logger.info("Awareness loop enabled - initializing Redis and components")
+
+# Adaptive Decision Framework globals
+decision_registry = None
+success_evaluator = None
+abort_monitor = None
+parameter_adapter = None
+outcome_task = None
+
+# Background gardener tick
+gardener_task: Optional[asyncio.Task] = None
+gardener_last_scan: float = 0.0
+
+async def gardener_tick_loop():
+    """Background task for periodic belief gardener scans."""
+    global gardener_last_scan
+
+    if not belief_gardener or not settings.BELIEF_GARDENER_ENABLED:
+        return
+
+    SCAN_SECS = 60 * settings.BELIEF_GARDENER_SCAN_INTERVAL
+    logger.info(f"Gardener tick loop started (interval={SCAN_SECS}s)")
+
+    while True:
+        try:
+            await asyncio.sleep(30)  # Check every 30 seconds
+
+            now = time.time()
+            if now - gardener_last_scan >= SCAN_SECS:
+                logger.info("Running scheduled gardener scan")
+                belief_gardener.run_pattern_scan()
+                gardener_last_scan = now
+
+        except asyncio.CancelledError:
+            logger.info("Gardener tick loop cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Gardener tick failed: {e}", exc_info=True)
+
+
+@app.on_event("startup")
+async def startup_awareness():
+    """Start awareness loop and decision framework on application startup."""
+    global awareness_loop, awareness_task, redis_client, gardener_task, belief_gardener
+    global decision_registry, success_evaluator, abort_monitor, parameter_adapter, outcome_task
+
+    if not settings.AWARENESS_ENABLED:
+        logger.info("Awareness loop disabled")
+        return
+
+    try:
+        # Initialize Redis client
+        redis_client = Redis(
+            host=settings.REDIS_HOST,
+            port=settings.REDIS_PORT,
+            db=settings.REDIS_DB,
+            password=settings.REDIS_PASSWORD,
+            decode_responses=False,  # We handle encoding/decoding
+        )
+
+        # Test Redis connection
+        await redis_client.ping()
+        logger.info(f"Redis connection established: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+
+        # Create awareness config
+        awareness_config = AwarenessConfig(
+            enabled=True,
+            tick_rate_fast=settings.AWARENESS_TICK_RATE_FAST,
+            tick_rate_slow=settings.AWARENESS_TICK_RATE_SLOW,
+            introspection_interval=settings.AWARENESS_INTROSPECTION_INTERVAL,
+            introspection_jitter=settings.AWARENESS_INTROSPECTION_JITTER,
+            snapshot_interval=settings.AWARENESS_SNAPSHOT_INTERVAL,
+            buffer_size=settings.AWARENESS_BUFFER_SIZE,
+            queue_maxsize=settings.AWARENESS_QUEUE_MAXSIZE,
+            notes_max=settings.AWARENESS_NOTES_MAX,
+            embedding_dim=settings.AWARENESS_EMBEDDING_DIM,
+            embedding_cache_ttl=settings.AWARENESS_EMBEDDING_CACHE_TTL,
+            watchdog_threshold_ms=settings.AWARENESS_WATCHDOG_THRESHOLD_MS,
+            watchdog_strikes=settings.AWARENESS_WATCHDOG_STRIKES,
+            introspection_budget_per_min=settings.AWARENESS_INTROSPECTION_BUDGET_PER_MIN,
+        )
+
+        # Initialize awareness loop
+        awareness_loop = AwarenessLoop(
+            redis_client=redis_client,
+            embedding_provider=embedding_provider,
+            data_dir=Path(settings.AWARENESS_DATA_DIR),
+            config=awareness_config,
+            llm_service=mini_llm_service,  # Use mini model for cost-effective introspection
+        )
+
+        # Start awareness loop
+        await awareness_loop.start()
+        awareness_task = asyncio.create_task(awareness_loop.run())
+
+        logger.info("Awareness loop started successfully")
+
+        # Wire awareness loop to persona service
+        if persona_service:
+            persona_service.set_awareness_loop(awareness_loop)
+            logger.info("Awareness loop wired to persona service")
+
+        # Wire awareness loop to outcome-driven trust system
+        if outcome_evaluator:
+            outcome_evaluator.awareness_loop = awareness_loop
+            logger.info("Awareness loop wired to outcome evaluator")
+
+        if enhanced_feedback_aggregator:
+            enhanced_feedback_aggregator.awareness_loop = awareness_loop
+            logger.info("Awareness loop wired to enhanced feedback aggregator")
+
+        # Start outcome evaluation background task
+        if outcome_evaluator:
+            async def outcome_evaluation_loop():
+                """Background task for delayed outcome evaluations."""
+                logger.info("Outcome evaluation loop started (interval=30min)")
+                while True:
+                    try:
+                        await asyncio.sleep(1800)  # Every 30 minutes
+                        completed = await outcome_evaluator.run_pending_evaluations()
+                        if completed > 0:
+                            logger.info(f"Completed {completed} outcome evaluations")
+                            # Persist updated trust state
+                            if provenance_trust:
+                                provenance_trust.persist()
+                    except asyncio.CancelledError:
+                        logger.info("Outcome evaluation loop cancelled")
+                        break
+                    except Exception as e:
+                        logger.error(f"Outcome evaluation failed: {e}")
+
+            outcome_eval_task = asyncio.create_task(outcome_evaluation_loop())
+            logger.info("Outcome evaluation background task started")
+
+        # Initialize Adaptive Decision Framework
+        if settings.DECISION_FRAMEWORK_ENABLED:
+            logger.info("Initializing Adaptive Decision Framework...")
+
+            try:
+                # 1. Initialize decision registry (singleton)
+                decision_registry = get_decision_registry()
+                logger.info("Decision registry initialized")
+
+                # 2. Initialize success signal evaluator
+                success_evaluator = SuccessSignalEvaluator(
+                    awareness_loop=awareness_loop,
+                    belief_consistency_checker=None,  # Wire when available
+                    feedback_aggregator=enhanced_feedback_aggregator
+                )
+
+                # Set baselines from config or defaults
+                import os
+                success_evaluator.set_baselines(
+                    coherence=float(os.getenv("BASELINE_COHERENCE", "0.70")),
+                    dissonance=float(os.getenv("BASELINE_DISSONANCE", "0.20")),
+                    satisfaction=float(os.getenv("BASELINE_SATISFACTION", "0.60"))
+                )
+
+                success_evaluator.set_targets(
+                    coherence=float(os.getenv("TARGET_COHERENCE", "0.85")),
+                    dissonance=float(os.getenv("TARGET_DISSONANCE", "0.10")),
+                    satisfaction=float(os.getenv("TARGET_SATISFACTION", "0.80"))
+                )
+
+                logger.info("Success signal evaluator initialized")
+
+                # 3. Initialize abort condition monitor
+                abort_monitor = AbortConditionMonitor(
+                    awareness_loop=awareness_loop,
+                    belief_consistency_checker=None,  # Wire when available
+                    feedback_aggregator=enhanced_feedback_aggregator,
+                    belief_store=belief_store,
+                    success_evaluator=success_evaluator
+                )
+                logger.info("Abort condition monitor initialized")
+
+                # 4. Initialize parameter adapter
+                parameter_adapter = ParameterAdapter(
+                    decision_registry=decision_registry,
+                    success_evaluator=success_evaluator,
+                    min_samples=int(os.getenv("ADAPTATION_MIN_SAMPLES", "20")),
+                    exploration_rate=float(os.getenv("EXPLORATION_RATE", "0.10")),
+                    adaptation_rate=float(os.getenv("ADAPTATION_RATE", "0.15"))
+                )
+                logger.info("Parameter adapter initialized")
+
+                # 5. Start outcome evaluation task
+                outcome_task = OutcomeEvaluationTask(
+                    parameter_adapter=parameter_adapter,
+                    interval_minutes=int(os.getenv("OUTCOME_CHECK_INTERVAL_MINUTES", "30")),
+                    adaptation_interval_hours=int(os.getenv("ADAPTATION_INTERVAL_HOURS", "168")),
+                    enabled=True
+                )
+                await outcome_task.start()
+                logger.info("Outcome evaluation task started")
+
+                # 6. Create adaptive belief lifecycle manager (replaces regular gardener)
+                if belief_gardener and belief_store and raw_store:
+                    logger.info("Creating adaptive belief lifecycle manager...")
+                    gardener_config = GardenerConfig(
+                        enabled=settings.BELIEF_GARDENER_ENABLED,
+                        pattern_scan_interval_minutes=settings.BELIEF_GARDENER_SCAN_INTERVAL,
+                        min_evidence_for_tentative=settings.BELIEF_GARDENER_MIN_EVIDENCE_TENTATIVE,
+                        min_evidence_for_asserted=settings.BELIEF_GARDENER_MIN_EVIDENCE_ASSERTED,
+                        daily_budget_formations=settings.BELIEF_GARDENER_DAILY_BUDGET_FORMATIONS,
+                        daily_budget_promotions=settings.BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS,
+                        daily_budget_deprecations=settings.BELIEF_GARDENER_DAILY_BUDGET_DEPRECATIONS,
+                        lookback_days=settings.BELIEF_GARDENER_LOOKBACK_DAYS,
+                    )
+
+                    adaptive_gardener = create_adaptive_belief_lifecycle_manager(
+                        belief_store=belief_store,
+                        raw_store=raw_store,
+                        config=gardener_config,
+                        feedback_aggregator=enhanced_feedback_aggregator,
+                        awareness_loop=awareness_loop,
+                        belief_consistency_checker=None
+                    )
+
+                    # Replace the regular gardener with adaptive one
+                    belief_gardener = adaptive_gardener
+                    logger.info("✅ Adaptive belief lifecycle manager created and activated")
+
+                # Store in app state for endpoint access
+                app.state.decision_registry = decision_registry
+                app.state.success_evaluator = success_evaluator
+                app.state.abort_monitor = abort_monitor
+                app.state.parameter_adapter = parameter_adapter
+                app.state.outcome_task = outcome_task
+
+                logger.info("✅ Adaptive Decision Framework fully initialized")
+
+            except Exception as e:
+                logger.error(f"Failed to initialize decision framework: {e}", exc_info=True)
+
+        # Start belief gardener background task
+        if belief_gardener and settings.BELIEF_GARDENER_ENABLED:
+            gardener_task = asyncio.create_task(gardener_tick_loop())
+            logger.info("Belief gardener background task started")
+
+    except Exception as e:
+        logger.error(f"Failed to start awareness loop: {e}")
+        # Don't crash the app if awareness fails
+        awareness_loop = None
+        awareness_task = None
+        if redis_client:
+            await redis_client.close()
+            redis_client = None
+
+
+@app.on_event("shutdown")
+async def shutdown_awareness():
+    """Stop awareness loop, gardener, and decision framework on application shutdown."""
+    global awareness_loop, awareness_task, redis_client, gardener_task, outcome_task
+
+    # Stop outcome evaluation task
+    if outcome_task:
+        logger.info("Stopping outcome evaluation task...")
+        await outcome_task.stop()
+        logger.info("Outcome evaluation task stopped")
+
+    if gardener_task and not gardener_task.done():
+        logger.info("Stopping gardener tick loop...")
+        gardener_task.cancel()
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await gardener_task
+
+        logger.info("Gardener tick loop stopped")
+
+    if awareness_task and not awareness_task.done():
+        logger.info("Stopping awareness loop...")
+        awareness_task.cancel()
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await awareness_task
+
+    if awareness_loop:
+        await awareness_loop.stop()
+        logger.info("Awareness loop stopped")
+
+    if redis_client:
+        await redis_client.close()
+        logger.info("Redis connection closed")
 
 
 # Request/Response models
@@ -467,6 +1032,10 @@ async def chat(request: ChatRequest):
     print(f"🎭 User affect: {user_valence:.3f} ({affect_detector.get_emotion_label(user_valence)}) - '{request.message[:50]}...'")
     logger.info(f"User affect detected: {user_valence:.3f} ({affect_detector.get_emotion_label(user_valence)})")
 
+    # Feed user message to awareness loop
+    if awareness_loop and awareness_loop.running:
+        await awareness_loop.observe("user", {"text": request.message, "valence": user_valence})
+
     # Step 1.5: Detect if agent was successful in previous interaction (for internal mood)
     was_successful = success_detector.detect_success(
         user_message=request.message,
@@ -519,6 +1088,10 @@ async def chat(request: ChatRequest):
         retrieved_ids = []
         memories = []
 
+    # Feed assistant response to awareness loop
+    if awareness_loop and awareness_loop.running:
+        await awareness_loop.observe("token", {"text": response_text})
+
     # Step 3: Record dual-track mood updates
     mood_before = agent_mood.current_mood
     external_before = agent_mood.external_mood
@@ -554,15 +1127,33 @@ async def chat(request: ChatRequest):
     # Weight: 50% user affect, 50% memory context
     combined_valence = (user_valence + blended_valence) / 2.0
 
-    # Step 6: Store the interaction with combined valence
+    # Step 6: Inject feedback tags for belief lifecycle
+    metadata = {}
+    if tag_injector:
+        try:
+            tag_result = tag_injector.inject_tags(
+                prompt=request.message,
+                response=response_text,
+                enable_llm=False,  # Use fast heuristic mode for now
+            )
+            if tag_result.tags or tag_result.global_tags:
+                metadata["tags"] = tag_result.tags + tag_result.global_tags
+                metadata["belief_ids"] = tag_result.belief_ids
+                logger.info(f"Tagged with {len(metadata['tags'])} tags for {len(tag_result.belief_ids)} beliefs")
+                print(f"🏷️  Tags: {metadata['tags']} (beliefs: {len(tag_result.belief_ids)})")
+        except Exception as e:
+            logger.error(f"Tag injection failed: {e}")
+
+    # Step 7: Store the interaction with combined valence
     interaction = InteractionPayload(
         prompt=request.message,
         response=response_text,
         valence=combined_valence,
+        metadata=metadata,
     )
     result = ingestion_pipeline.ingest_interaction(interaction)
 
-    # Step 7: Record reflection about what memories were helpful
+    # Step 8: Record reflection about what memories were helpful
     reflection_writer.record_reflection(
         interaction_id=result.experience_id,
         prompt=request.message,
@@ -571,10 +1162,10 @@ async def chat(request: ChatRequest):
         blended_valence=blended_valence,
     )
 
-    # Step 8: Link experience to session
+    # Step 9: Link experience to session
     session_tracker.add_experience(session.id, result.experience_id)
 
-    # Step 9: Initialize decay metrics for new experience
+    # Step 10: Initialize decay metrics for new experience
     exp = raw_store.get_experience(result.experience_id)
     if exp:
         decay_calculator.initialize_metrics(exp)
@@ -630,6 +1221,59 @@ async def get_memories(limit: int = 20, offset: int = 0):
         ))
 
     return memory_items
+
+
+class ConversationItem(BaseModel):
+    """Conversation exchange for UI display."""
+    id: str
+    timestamp: str
+    user_message: str
+    agent_response: str
+
+
+@app.get("/api/conversations")
+async def get_conversations(limit: int = 10):
+    """Retrieve recent conversation exchanges.
+
+    Returns the last N conversation exchanges (user message + agent response pairs).
+    """
+    with Session(raw_store.engine) as session:
+        # Get recent occurrence-type experiences with user actor
+        statement = (
+            select(Experience)
+            .where(Experience.type == ExperienceType.OCCURRENCE.value)
+            .order_by(Experience.created_at.desc())
+            .limit(limit)
+        )
+        experiences = session.exec(statement).all()
+
+        conversations = []
+        for exp in experiences:
+            exp_model = experience_to_model(exp)
+
+            # Extract text from content
+            text = exp_model.content.text
+
+            # Parse out prompt and response
+            user_msg = ""
+            agent_resp = ""
+
+            if "Prompt: " in text and "\n\nResponse:" in text:
+                parts = text.split("\n\nResponse:", 1)
+                user_msg = parts[0].replace("Prompt: ", "").strip()
+                agent_resp = parts[1].strip() if len(parts) > 1 else ""
+            else:
+                # Fallback to full text
+                user_msg = text
+
+            conversations.append(ConversationItem(
+                id=exp_model.id,
+                timestamp=exp_model.created_at.isoformat(),
+                user_message=user_msg,
+                agent_response=agent_resp,
+            ))
+
+        return conversations
 
 
 @app.get("/api/stats", response_model=StatsResponse)
@@ -1050,6 +1694,18 @@ async def get_available_models():
     return {"models": models}
 
 
+# Pydantic models for persona endpoints
+class BeliefDeltaRequest(BaseModel):
+    belief_id: str
+    from_ver: int
+    op: str  # "update"|"deprecate"|"reinforce"
+    confidence_delta: float = 0.0
+    evidence_refs_added: List[str] = []
+    evidence_refs_removed: List[str] = []
+    state_change: Optional[str] = None
+    reason: str = ""
+
+
 @app.get("/api/persona/info")
 async def get_persona_info():
     """Get information about the persona's current state and capabilities."""
@@ -1057,6 +1713,289 @@ async def get_persona_info():
         raise HTTPException(status_code=503, detail="Persona mode not enabled")
 
     return persona_service.get_persona_info()
+
+
+@app.get("/api/persona/check-dissonance")
+async def check_dissonance():
+    """Check dissonance gate status."""
+    return {"ok": True, "gate": "wired"}
+
+
+@app.get("/api/persona/beliefs")
+async def get_beliefs(ids: Optional[str] = None):
+    """Get current beliefs with version info.
+
+    Args:
+        ids: Comma-separated belief IDs (optional, returns all if not specified)
+
+    Returns:
+        Dict mapping belief_id to belief data with ver
+    """
+    if not belief_store:
+        raise HTTPException(status_code=503, detail="Belief store not enabled")
+
+    belief_ids = ids.split(",") if ids else None
+    beliefs = belief_store.get_current(belief_ids)
+
+    return {
+        "beliefs": {bid: {
+            "ver": b.ver,
+            "statement": b.statement,
+            "state": b.state,
+            "confidence": b.confidence,
+            "evidence_refs": b.evidence_refs,
+            "belief_type": b.belief_type,
+            "immutable": b.immutable,
+            "rationale": b.rationale,
+            "metadata": b.metadata,
+            "ts": b.ts,
+            "updated_by": b.updated_by,
+        } for bid, b in beliefs.items()},
+        "count": len(beliefs)
+    }
+
+
+@app.get("/api/persona/beliefs/history")
+async def get_belief_history(id: str, limit: Optional[int] = 20):
+    """Get history of deltas for a belief.
+
+    Args:
+        id: Belief ID
+        limit: Maximum number of deltas to return
+
+    Returns:
+        List of deltas in reverse chronological order
+    """
+    if not belief_store:
+        raise HTTPException(status_code=503, detail="Belief store not enabled")
+
+    deltas = belief_store.get_history(id, limit=limit)
+
+    return {
+        "belief_id": id,
+        "deltas": [{
+            "from_ver": d.from_ver,
+            "to_ver": d.to_ver,
+            "op": d.op,
+            "confidence_delta": d.confidence_delta,
+            "evidence_refs_added": d.evidence_refs_added,
+            "evidence_refs_removed": d.evidence_refs_removed,
+            "state_change": d.state_change,
+            "updated_by": d.updated_by,
+            "ts": d.ts,
+            "reason": d.reason,
+        } for d in deltas],
+        "count": len(deltas)
+    }
+
+
+@app.post("/api/persona/beliefs/delta")
+async def apply_belief_delta(request: BeliefDeltaRequest):
+    """Apply a delta to a belief with optimistic locking.
+
+    Args:
+        request: Delta request with belief_id, from_ver, and changes
+
+    Returns:
+        Success status
+    """
+    if not belief_store:
+        raise HTTPException(status_code=503, detail="Belief store not enabled")
+
+    try:
+        success = belief_store.apply_delta(
+            belief_id=request.belief_id,
+            from_ver=request.from_ver,
+            op=DeltaOp(request.op),
+            confidence_delta=request.confidence_delta,
+            evidence_refs_added=request.evidence_refs_added,
+            evidence_refs_removed=request.evidence_refs_removed,
+            state_change=request.state_change,
+            updated_by="user",
+            reason=request.reason,
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Version mismatch: expected {request.from_ver}"
+            )
+
+        return {"success": True, "belief_id": request.belief_id}
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to apply delta: {str(e)}")
+
+
+@app.post("/api/persona/contrarian/run")
+async def run_contrarian_challenge():
+    """Trigger a contrarian challenge cycle (admin endpoint).
+
+    Returns:
+        Dossier if challenge was run, None otherwise
+    """
+    if not contrarian_sampler:
+        raise HTTPException(status_code=503, detail="Contrarian sampler not enabled")
+
+    try:
+        dossier = contrarian_sampler.run_challenge()
+
+        if dossier:
+            return {
+                "success": True,
+                "dossier": {
+                    "id": dossier.id,
+                    "belief_id": dossier.belief_id,
+                    "opened_ts": dossier.opened_ts,
+                    "contrarian_score": dossier.contrarian_score,
+                    "challenge_types": dossier.challenge_types,
+                    "status": dossier.status,
+                    "outcome": dossier.outcome,
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Challenge skipped (budget limit, no candidates, or dossier limit)"
+            }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to run challenge: {str(e)}")
+
+
+@app.get("/api/persona/contrarian/dossiers")
+async def get_contrarian_dossiers(status: Optional[str] = None):
+    """Get contrarian challenge dossiers.
+
+    Args:
+        status: Filter by status (open|closed), optional
+
+    Returns:
+        List of dossiers
+    """
+    if not contrarian_sampler:
+        raise HTTPException(status_code=503, detail="Contrarian sampler not enabled")
+
+    try:
+        dossier_status = DossierStatus(status) if status else None
+        dossiers = contrarian_sampler.get_all_dossiers(status=dossier_status)
+
+        return {
+            "dossiers": [{
+                "id": d.id,
+                "belief_id": d.belief_id,
+                "opened_ts": d.opened_ts,
+                "prior_confidence": d.prior_confidence,
+                "contrarian_score": d.contrarian_score,
+                "challenge_types": d.challenge_types,
+                "status": d.status,
+                "outcome": d.outcome,
+                "outcome_ts": d.outcome_ts,
+                "notes": d.notes,
+            } for d in dossiers],
+            "count": len(dossiers)
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get dossiers: {str(e)}")
+
+
+@app.get("/api/persona/gardener/status")
+async def get_gardener_status():
+    """Get belief gardener status and configuration."""
+    if not belief_gardener:
+        raise HTTPException(status_code=503, detail="Belief gardener not initialized")
+
+    return {
+        "enabled": belief_gardener.config.enabled,
+        "config": {
+            "scan_interval_minutes": belief_gardener.config.pattern_scan_interval_minutes,
+            "min_evidence_tentative": belief_gardener.config.min_evidence_for_tentative,
+            "min_evidence_asserted": belief_gardener.config.min_evidence_for_asserted,
+            "daily_budget_formations": belief_gardener.config.daily_budget_formations,
+            "daily_budget_promotions": belief_gardener.config.daily_budget_promotions,
+            "daily_budget_deprecations": belief_gardener.config.daily_budget_deprecations,
+            "lookback_days": belief_gardener.config.lookback_days,
+        },
+        "daily_counters": belief_gardener.lifecycle_manager._action_counters,
+        "counter_reset_date": belief_gardener.lifecycle_manager._counter_reset_date.isoformat(),
+        "telemetry": {
+            "last_scan_ts": datetime.fromtimestamp(belief_gardener.last_scan_ts, tz=timezone.utc).isoformat() if belief_gardener.last_scan_ts else None,
+            "skips_since_boot": belief_gardener.skips_since_boot,
+            "formed_today": belief_gardener.lifecycle_manager._action_counters["formations"],
+            "promoted_today": belief_gardener.lifecycle_manager._action_counters["promotions"],
+            "deprecated_today": belief_gardener.lifecycle_manager._action_counters["deprecations"],
+            "feedback": belief_gardener.feedback_aggregator.get_telemetry() if belief_gardener.feedback_aggregator else None,
+            "feedback_samples": {
+                b.belief_id: {"feedback": belief_gardener.feedback_aggregator.score(b.belief_id)[0],
+                             "negative": belief_gardener.feedback_aggregator.score(b.belief_id)[1]}
+                for b in list(belief_store.get_current().values())[:6]
+            } if belief_gardener.feedback_aggregator else {},
+        },
+    }
+
+
+@app.post("/api/persona/gardener/scan")
+async def run_gardener_scan():
+    """Manually trigger a pattern scan."""
+    if not belief_gardener:
+        raise HTTPException(status_code=503, detail="Belief gardener not initialized")
+
+    try:
+        summary = belief_gardener.run_pattern_scan()
+        return summary
+    except Exception as e:
+        logger.error(f"Gardener scan failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
+
+
+@app.get("/api/persona/trust/status")
+async def get_trust_status():
+    """Get outcome-driven trust system status."""
+    if not provenance_trust:
+        raise HTTPException(status_code=503, detail="Trust system not initialized")
+
+    response = {
+        "provenance_trust": provenance_trust.get_telemetry(),
+    }
+
+    if outcome_evaluator:
+        response["outcome_evaluator"] = outcome_evaluator.get_telemetry()
+
+    if enhanced_feedback_aggregator:
+        response["enhanced_feedback"] = enhanced_feedback_aggregator.get_telemetry()
+
+    return response
+
+
+@app.get("/api/persona/gardener/patterns")
+async def get_detected_patterns():
+    """Get recently detected patterns (not yet formed into beliefs)."""
+    if not belief_gardener:
+        raise HTTPException(status_code=503, detail="Belief gardener not initialized")
+
+    try:
+        patterns = belief_gardener.pattern_detector.scan_for_patterns()
+
+        return {
+            "patterns": [{
+                "text": p.pattern_text,
+                "evidence_count": p.evidence_count(),
+                "confidence": p.confidence,
+                "category": p.category,
+                "first_seen": p.first_seen.isoformat(),
+                "last_seen": p.last_seen.isoformat(),
+                "evidence_ids": p.evidence_ids,
+            } for p in patterns],
+            "count": len(patterns),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get patterns: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get patterns: {str(e)}")
 
 
 @app.post("/api/persona/chat")
@@ -1069,30 +2008,99 @@ async def persona_chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:
-        # If model override specified, create temporary persona service with that model
+        # Log user message
+        multi_logger.log_conversation("user", request.message, metadata={
+            "retrieve_memories": request.retrieve_memories,
+            "top_k": request.top_k
+        })
+
+        # Use the main persona service (model selection disabled to preserve belief system)
         active_persona_service = persona_service
-        if request.model:
-            _, persona_llm = create_llm_for_model(request.model)
-            active_persona_service = PersonaService(
-                llm_service=persona_llm,
-                persona_space_path=settings.PERSONA_SPACE_PATH,
-                retrieval_service=retrieval_service,
-                enable_anti_metatalk=settings.ANTI_METATALK_ENABLED,
-                logit_bias_strength=settings.LOGIT_BIAS_STRENGTH,
-                auto_rewrite=settings.AUTO_REWRITE_METATALK,
-                belief_system=belief_system,
-                web_search_service=web_search_service,
-                url_fetcher_service=url_fetcher_service,
-                web_interpretation_service=web_interpretation_service,
-            )
 
         # Generate persona response with emotional co-analysis and memory retrieval
-        response_text, reconciliation = active_persona_service.generate_response(
+        result = active_persona_service.generate_response(
             user_message=request.message,
             retrieve_memories=request.retrieve_memories,
             top_k=request.top_k,
             conversation_history=request.conversation_history
         )
+
+        # Check if response is blocked due to dissonance
+        if isinstance(result, dict) and result.get("resolution_required"):
+            # Store belief statements for later resolution processing
+            # Extract from dissonance patterns if available
+            if "belief_statements" in result:
+                # Store in session or temp storage for next request
+                # For now, we'll extract them from the prompt when needed
+                pass
+
+            # Return resolution prompt without storing in memory
+            return {
+                "response": result["response"],
+                "resolution_required": True,
+                "dissonance_count": result.get("dissonance_count", 0),
+                "belief_statements": result.get("belief_statements", []),
+                "reconciliation": None,
+                "internal_assessment": None,
+                "external_assessment": None,
+                "reconciled_state": None,
+                "experience_id": None,
+                "user_valence": 0.0,
+                "user_arousal": 0.0,
+                "user_dominance": 0.0,
+            }
+
+        # Normal response (tuple unpacking)
+        response_text, reconciliation = result
+
+        # Feed agent response to awareness loop
+        if awareness_loop and awareness_loop.running:
+            await awareness_loop.observe("token", {"text": response_text})
+
+        # Check if response contains dissonance resolutions
+        resolution_data = active_persona_service.parse_resolution_response(response_text)
+        if resolution_data and resolution_data.get("has_resolutions"):
+            logger.info(f"🔍 Detected {len(resolution_data['resolutions'])} resolution choices in response")
+            print(f"✅ Detected {len(resolution_data['resolutions'])} resolution choices - applying to belief system...")
+
+            # Extract belief statements from previous dissonance prompt in conversation history
+            belief_statements = []
+            if request.conversation_history:
+                # Look for the most recent blocking response that contains belief_statements
+                # This could be either from a previous API response or embedded in the prompt text
+                for msg in reversed(request.conversation_history):
+                    if msg.get("role") == "assistant" and "DISSONANCE RESOLUTION REQUIRED" in msg.get("content", ""):
+                        # Parse belief statements from the prompt text
+                        import re
+                        prompt_text = msg.get("content", "")
+                        belief_pattern = r"\*\*Your stated belief:\*\*\s+(.+?)(?:\n|$)"
+                        matches = re.findall(belief_pattern, prompt_text)
+                        belief_statements.extend(matches)
+                        logger.info(f"📋 Extracted {len(matches)} belief statements from blocking prompt in history")
+                        break
+
+            if belief_statements:
+                logger.info(f"📝 Applying resolutions to {len(belief_statements)} beliefs")
+                # Apply resolutions
+                resolution_results = active_persona_service.apply_resolutions(
+                    resolutions=resolution_data["resolutions"],
+                    belief_statements=belief_statements,
+                )
+
+                if resolution_results.get("success"):
+                    logger.info(f"✅ Successfully applied {resolution_results['applied_count']} resolutions")
+                    print(f"✅ Successfully applied {resolution_results['applied_count']} resolutions to belief system")
+                else:
+                    logger.error(f"❌ Failed to apply resolutions: {resolution_results}")
+                    print(f"❌ Failed to apply some resolutions: {resolution_results.get('error', 'Unknown error')}")
+            else:
+                logger.warning("⚠️ Could not extract belief statements from conversation history")
+                print("⚠️ Could not extract belief statements from history - resolutions not applied")
+
+        # Feed user message to awareness loop
+        if awareness_loop and awareness_loop.running:
+            user_valence_pre = affect_detector.detect_vad(request.message)[0]
+            await awareness_loop.observe("user", {"text": request.message, "valence": user_valence_pre})
 
         # Store the interaction in memory so persona can learn from it
         # Use full VAD detection on user message
@@ -1127,6 +2135,14 @@ async def persona_chat(request: ChatRequest):
 
         logger.info(f"Stored persona interaction: {result.experience_id}")
 
+        # Log assistant response
+        multi_logger.log_conversation("assistant", response_text, metadata={
+            "experience_id": result.experience_id,
+            "user_valence": user_valence,
+            "user_arousal": user_arousal,
+            "user_dominance": user_dominance
+        })
+
         # Return response with reconciliation data and detected user emotion
         return {
             "response": response_text,
@@ -1140,6 +2156,7 @@ async def persona_chat(request: ChatRequest):
             "user_dominance": user_dominance,  # Detected user control level
         }
     except Exception as e:
+        multi_logger.log_error(f"Persona generation error: {str(e)}", exception=e)
         raise HTTPException(status_code=500, detail=f"Persona generation error: {str(e)}")
 
 
@@ -1244,6 +2261,125 @@ async def get_memory_detail(experience_id: str):
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/healthz/assert")
+async def health_assert():
+    """Health check with invariant assertions.
+
+    Returns 200 only if all invariants pass:
+    - buf_len == buffer.text_percepts
+    - buf_ver monotonically increases
+    - novelty ∈ [0,1]
+    - Vector norms within 1e-3 of 1.0
+    - Belief index and current hashes validate
+    """
+    failures = []
+
+    # Check awareness loop invariants
+    if awareness_loop and awareness_loop.running:
+        try:
+            meta = await awareness_loop.blackboard.get_meta()
+            buf_len = meta.get("buf_len", 0)
+            novelty = meta.get("novelty", 0.0)
+
+            # Count actual text percepts
+            text_percept_count = sum(
+                1 for p in awareness_loop.percepts
+                if p.kind in ("user", "token") and p.payload.get("text")
+            )
+
+            # Invariant 1: buf_len == actual text percepts
+            if buf_len != text_percept_count:
+                failures.append(f"buf_len mismatch: reported={buf_len}, actual={text_percept_count}")
+
+            # Invariant 2: novelty ∈ [0,1]
+            if not (0.0 <= novelty <= 1.0):
+                failures.append(f"novelty out of range: {novelty}")
+
+            # Invariant 3: vector norms
+            cur_vec = awareness_loop.last_presence_vec
+            if cur_vec is not None:
+                cur_vec_norm = float(np.linalg.norm(cur_vec))
+                if abs(cur_vec_norm - 1.0) > 1e-3:
+                    failures.append(f"cur_vec_norm out of tolerance: {cur_vec_norm}")
+
+            live_anchor = awareness_loop.anchors.get("self_anchor_live")
+            if live_anchor is not None:
+                live_norm = float(np.linalg.norm(live_anchor))
+                if abs(live_norm - 1.0) > 1e-3:
+                    failures.append(f"live_anchor_norm out of tolerance: {live_norm}")
+
+            origin_anchor = awareness_loop.anchors.get("self_anchor_origin")
+            if origin_anchor is not None:
+                origin_norm = float(np.linalg.norm(origin_anchor))
+                if abs(origin_norm - 1.0) > 1e-3:
+                    failures.append(f"origin_anchor_norm out of tolerance: {origin_norm}")
+
+            # Invariant 4: buf_ver monotonic (check by sampling 3 times)
+            versions = []
+            for _ in range(3):
+                m = await awareness_loop.blackboard.get_meta()
+                versions.append(m.get("buf_ver", 0))
+                await asyncio.sleep(0.1)
+
+            for i in range(len(versions) - 1):
+                if versions[i+1] < versions[i]:
+                    failures.append(f"buf_ver not monotonic: {versions}")
+                    break
+
+        except Exception as e:
+            failures.append(f"awareness_loop check failed: {str(e)}")
+
+    # Check belief store invariants
+    if belief_store:
+        try:
+            integrity = belief_store.verify_integrity()
+            if not integrity.get("hash_valid", False):
+                failures.append("belief hash validation failed")
+            if not integrity.get("index_consistent", False):
+                failures.append("belief index inconsistent")
+        except Exception as e:
+            failures.append(f"belief_store check failed: {str(e)}")
+
+    # Return status
+    if failures:
+        return {
+            "status": "unhealthy",
+            "failures": failures
+        }, 503
+    else:
+        return {
+            "status": "healthy",
+            "checks_passed": [
+                "buf_len_consistency",
+                "novelty_range",
+                "vector_norms",
+                "buf_ver_monotonic",
+                "belief_hashes",
+                "belief_index",
+            ]
+        }
+
+
+class InjectRequest(BaseModel):
+    kind: str = "user"
+    text: str = ""
+
+
+@app.post("/api/dev/inject")
+async def inject_percept(request: InjectRequest):
+    """
+    Dev endpoint to inject text into awareness loop for testing.
+
+    Args:
+        request: JSON body with kind and text fields
+    """
+    if not awareness_loop or not awareness_loop.running:
+        raise HTTPException(status_code=503, detail="Awareness loop not running")
+
+    await awareness_loop.observe(request.kind, {"text": request.text})
+    return {"ok": True, "injected": {"kind": request.kind, "text_len": len(request.text)}}
 
 
 @app.get("/api/debug/prompt")
@@ -1672,6 +2808,201 @@ async def delete_task(task_id: str):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete task: {str(e)}")
+
+
+# =====================================================================
+# Awareness Loop Endpoints
+# =====================================================================
+
+def _check_belief_health() -> bool:
+    """Check belief store integrity."""
+    if not belief_store:
+        return True  # N/A
+    try:
+        integrity = belief_store.verify_integrity()
+        return integrity.get("hash_valid", False) and integrity.get("index_consistent", False)
+    except Exception:
+        return False
+
+
+def _check_ledger_health() -> bool:
+    """Check ledger integrity."""
+    try:
+        # Basic check: can we access the ledger directory
+        from src.services.identity_ledger import _LEDGER_DIR
+        return _LEDGER_DIR.exists()
+    except Exception:
+        return False
+
+
+def _get_contrarian_status() -> Dict[str, Any]:
+    """Get contrarian sampler status."""
+    if not contrarian_sampler:
+        return {"enabled": False}
+
+    open_dossiers = contrarian_sampler.get_open_dossiers()
+
+    return {
+        "enabled": contrarian_sampler.config.enabled,
+        "challenges_today": contrarian_sampler.challenges_today,
+        "daily_budget": contrarian_sampler.config.daily_budget,
+        "open_dossiers": len(open_dossiers),
+        "max_open_dossiers": contrarian_sampler.config.max_open_dossiers,
+    }
+
+
+@app.get("/api/awareness/status")
+async def get_awareness_status():
+    """Get current awareness loop status."""
+    if not settings.AWARENESS_ENABLED:
+        return {
+            "enabled": False,
+            "message": "Awareness loop is disabled"
+        }
+
+    if not awareness_loop:
+        return {
+            "enabled": True,
+            "running": False,
+            "message": "Awareness loop failed to initialize"
+        }
+
+    try:
+        # Get metrics summary
+        metrics = get_awareness_metrics().get_summary()
+
+        # Get presence state from blackboard
+        scalar = await awareness_loop.blackboard.get_presence_scalar()
+        meta = await awareness_loop.blackboard.get_meta()
+
+        # Count percept types in buffer for diagnostics
+        percept_counts = {}
+        text_percept_count = 0
+        for p in awareness_loop.percepts:
+            percept_counts[p.kind] = percept_counts.get(p.kind, 0) + 1
+            if p.kind in ("user", "token") and p.payload.get("text"):
+                text_percept_count += 1
+
+        # Compute diagnostics
+        cur_vec = awareness_loop.last_presence_vec
+        cur_vec_norm = round(float(np.linalg.norm(cur_vec)), 3) if cur_vec is not None else 0.0
+        live_anchor = awareness_loop.anchors.get("self_anchor_live")
+        origin_anchor = awareness_loop.anchors.get("self_anchor_origin")
+        live_norm = round(float(np.linalg.norm(live_anchor)), 3) if live_anchor is not None else 0.0
+        origin_norm = round(float(np.linalg.norm(origin_anchor)), 3) if origin_anchor is not None else 0.0
+
+        return {
+            "enabled": True,
+            "running": awareness_loop.running,
+            "session_id": awareness_loop.session_id,
+            "tick": awareness_loop.tick_id,
+            "mode": awareness_loop.mode,
+            "presence": round(scalar, 3),
+            "novelty": round(meta.get("novelty", 0.0), 3),
+            "sim_self_live": round(meta.get("sim_self_live", 0.0), 3),
+            "sim_self_origin": round(meta.get("sim_self_origin", 0.0), 3),
+            "coherence_drop": round(meta.get("coherence_drop", 0.0), 3),
+            "entropy": round(meta.get("entropy", 0.0), 3),
+            "last_note_ts": meta.get("tick", 0),
+            "buffer": {
+                "total_percepts": len(awareness_loop.percepts),
+                "text_percepts": text_percept_count,
+                "by_kind": percept_counts,
+            },
+            "metrics": metrics,
+            "meta": {
+                **meta,
+                "buf_len": int(meta.get("buf_len") or 0),  # Force int, never null
+            },
+            "diag": {
+                "buf_text": int(meta.get("buf_len") or 0),
+                "cur_vec_norm": cur_vec_norm,
+                "live_norm": live_norm,
+                "origin_norm": origin_norm,
+                "last_fast_ts": awareness_loop.tick_id,
+                "last_slow_ts": awareness_loop.last_slow_tick,
+            },
+            "introspection": {
+                "ctx_source": awareness_loop.last_ctx_source,
+                "ctx_tokens": awareness_loop.last_ctx_tokens,
+                "prompt_tokens": awareness_loop.last_prompt_tokens,
+                "ctx_preview": awareness_loop.last_ctx_preview,
+                "notes_count": len(awareness_loop.notes),
+            },
+            "beliefs_ok": _check_belief_health(),
+            "ledger_ok": _check_ledger_health(),
+            "contrarian": _get_contrarian_status(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get awareness status: {str(e)}")
+
+
+@app.get("/api/awareness/notes")
+async def get_awareness_notes(limit: int = 20):
+    """Get recent introspection notes."""
+    if not settings.AWARENESS_ENABLED:
+        raise HTTPException(status_code=503, detail="Awareness loop is disabled")
+
+    if not awareness_loop:
+        raise HTTPException(status_code=503, detail="Awareness loop not initialized")
+
+    try:
+        notes = await awareness_loop.blackboard.get_introspection_notes(limit=limit)
+
+        return {
+            "notes": notes,
+            "count": len(notes)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get notes: {str(e)}")
+
+
+@app.post("/api/awareness/pause")
+async def pause_awareness():
+    """Pause awareness loop (non-destructive, just sets flag)."""
+    if not settings.AWARENESS_ENABLED:
+        raise HTTPException(status_code=503, detail="Awareness loop is disabled")
+
+    if not awareness_loop:
+        raise HTTPException(status_code=503, detail="Awareness loop not initialized")
+
+    awareness_loop.running = False
+
+    return {
+        "success": True,
+        "message": "Awareness loop paused"
+    }
+
+
+@app.post("/api/awareness/resume")
+async def resume_awareness():
+    """Resume awareness loop."""
+    if not settings.AWARENESS_ENABLED:
+        raise HTTPException(status_code=503, detail="Awareness loop is disabled")
+
+    if not awareness_loop:
+        raise HTTPException(status_code=503, detail="Awareness loop not initialized")
+
+    awareness_loop.running = True
+
+    return {
+        "success": True,
+        "message": "Awareness loop resumed"
+    }
+
+
+@app.get("/api/awareness/metrics")
+async def get_awareness_metrics_detailed():
+    """Get detailed awareness metrics."""
+    if not settings.AWARENESS_ENABLED:
+        raise HTTPException(status_code=503, detail="Awareness loop is disabled")
+
+    try:
+        metrics = get_awareness_metrics().get_all_metrics()
+
+        return metrics
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get metrics: {str(e)}")
 
 
 # Mount static files
