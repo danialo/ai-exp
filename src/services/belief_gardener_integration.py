@@ -235,7 +235,7 @@ class AdaptiveBeliefLifecycleManager(BeliefLifecycleManager):
 
         # Get feedback score
         if self.feedback_aggregator:
-            feedback_score, _ = self.feedback_aggregator.score(belief_id)
+            feedback_score, _, _ = self.feedback_aggregator.score(belief_id)
         else:
             feedback_score = 0.0
 

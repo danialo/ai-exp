@@ -847,10 +847,32 @@ This revision represents growth in my self-understanding. My past statements wer
 
                 elif choice == "B":
                     # Option B: Commit to belief
-                    success = self.belief_system.resolve_dissonance_option_b(
-                        belief_statement=belief_statement,
-                        commitment_reasoning=reasoning,
-                    )
+                    # Check if this is an immutable belief by querying the belief vector store
+                    is_immutable = False
+                    if self.belief_vector_store:
+                        try:
+                            # Query for this specific belief
+                            matching_beliefs = self.belief_vector_store.query_beliefs(
+                                query=belief_statement,
+                                top_k=1,
+                                min_confidence=0.0
+                            )
+                            if matching_beliefs and matching_beliefs[0].statement == belief_statement:
+                                is_immutable = matching_beliefs[0].immutable
+                        except Exception as e:
+                            logger.warning(f"Could not check immutability for {belief_statement}: {e}")
+
+                    if is_immutable:
+                        # For immutable beliefs, skip the belief system update
+                        # The belief is already at 100% confidence and can't be modified
+                        logger.info(f"🔒 Skipping belief update for immutable belief: {belief_statement}")
+                        success = True  # Mark as successful without updating
+                    else:
+                        # For mutable beliefs, apply the commitment normally
+                        success = self.belief_system.resolve_dissonance_option_b(
+                            belief_statement=belief_statement,
+                            commitment_reasoning=reasoning,
+                        )
                     resolution_action = "option_b_commit"
 
                 elif choice == "C":
