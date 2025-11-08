@@ -1,15 +1,14 @@
 # TODO List - Astra AI Experience
 
-**Last Updated**: 2025-11-06
+**Last Updated**: 2025-11-08
 
 ## In Progress
 
-- [ ] **Complete decision audit logging** (CURRENT)
-  - [x] Add logging to form_belief_from_pattern()
-  - [ ] Add logging to consider_promotion()
-  - [ ] Add logging to consider_deprecation()
-  - [ ] Add abort logging to abort_condition_monitor.py
-  - [ ] Add adaptation logging to parameter_adapter.py
+- [ ] **Phase 2: TaskGraph + Executor** (CURRENT)
+  - [x] Week 1: TaskGraph implementation (681 lines, 29 tests passing)
+  - [ ] Week 2: TaskExecutor (retry logic, idempotency, safety checks)
+  - [ ] Week 3: TaskScheduler integration
+  - [ ] Week 4: Integration tests & production features
 
 ## Ready to Start
 
@@ -21,6 +20,22 @@
   - Verify parameters adapt
 
 ## Backlog
+
+- [ ] **Token usage tracking & budget controls**
+  - Add usage tracking to LLMService.generate_with_tools()
+  - Create api_usage database table
+  - Track tokens/cost by feature (chat, introspection, beliefs)
+  - Implement daily/monthly budget limits
+  - Add usage dashboard endpoint
+  - See TODO_TOKEN_TRACKING.md for full implementation plan
+  - Current spend: ~$24/month (healthy, but using estimates)
+
+- [ ] **Complete decision audit logging**
+  - [x] Add logging to form_belief_from_pattern()
+  - [ ] Add logging to consider_promotion()
+  - [ ] Add logging to consider_deprecation()
+  - [ ] Add abort logging to abort_condition_monitor.py
+  - [ ] Add adaptation logging to parameter_adapter.py
 
 - [ ] **MCP integration (Phase 2A)**
   - Tooling + tests landed in `src/mcp/task_execution_server.py`
@@ -40,6 +55,10 @@
 
 ## Completed ✅
 
+- [x] **Phase 2 Week 1: TaskGraph** - Production-ready dependency graph (2025-11-08)
+  - 681 lines, 29 passing tests
+  - Cycle detection, priority scheduling, circuit breakers
+  - Dependency policies, concurrency control, idempotency
 - [x] **Adaptive Decision Framework (Phases 1-4)** - Complete implementation
 - [x] **End-to-end task tracking for auditability (Phase 1)** - Full correlation system
 - [x] **Wire adaptive framework into app.py** - Integrated with feature flag
