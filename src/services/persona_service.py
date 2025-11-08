@@ -109,11 +109,14 @@ class PersonaService:
             model_name = llm_service.model
             self.logit_bias_builder = create_logit_bias_builder(model=model_name)
             self.logit_bias = self.logit_bias_builder.build_bias(strength=logit_bias_strength)
+            self.anti_hedging_bias = self.logit_bias_builder.build_anti_hedging_bias(strength=logit_bias_strength)
             self.metatalk_detector = create_metatalk_detector()
             self.metatalk_rewriter = create_metatalk_rewriter(llm_service)
             logger.info(f"Anti-meta-talk enabled with {len(self.logit_bias)} suppressed tokens")
+            logger.info(f"Anti-hedging bias built with {len(self.anti_hedging_bias)} suppressed tokens")
         else:
             self.logit_bias = {}
+            self.anti_hedging_bias = {}
             self.metatalk_detector = None
             self.metatalk_rewriter = None
 
@@ -275,9 +278,14 @@ class PersonaService:
                                     # Extract belief statements for resolution processing
                                     belief_statements = [p.belief_statement for p in high_severity_patterns]
 
+                                    # Check if any patterns involve immutable beliefs
+                                    has_immutable = any(getattr(p, 'immutable', False) for p in high_severity_patterns)
+
                                     # STAGE 1: Internal resolution generation (user never sees this)
                                     logger.info("🔒 Stage 1: Internal resolution generation")
                                     print(f"🔒 Stage 1: Generating internal resolution...")
+                                    if has_immutable:
+                                        logger.warning("🔒 Immutable beliefs detected - applying anti-hedging logit bias")
 
                                     # Build prompt for internal resolution
                                     internal_prompt = self.prompt_builder.build_prompt(
@@ -297,6 +305,9 @@ class PersonaService:
                                         {"role": "user", "content": user_message}
                                     ]
 
+                                    # Use anti-hedging bias if immutable beliefs are involved
+                                    resolution_logit_bias = self.anti_hedging_bias if has_immutable else None
+
                                     internal_result = self.llm.generate_with_tools(
                                         messages=internal_messages,
                                         tools=None,  # No tools for resolution
@@ -305,6 +316,7 @@ class PersonaService:
                                         top_p=config.top_p,
                                         presence_penalty=config.presence_penalty,
                                         frequency_penalty=config.frequency_penalty,
+                                        logit_bias=resolution_logit_bias,
                                     )
 
                                     internal_response = internal_result["message"].content or ""
