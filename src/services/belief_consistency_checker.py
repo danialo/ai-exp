@@ -49,6 +49,7 @@ class DissonancePattern:
     memory_claims: List[SelfClaim]
     analysis: str  # Why this is dissonant
     severity: float  # 0.0-1.0, how significant the dissonance
+    immutable: bool = False  # True if this involves an immutable core belief
 
 
 @dataclass
@@ -95,6 +96,16 @@ class BeliefConsistencyChecker:
         existing_unresolved_patterns = []
 
         for belief in beliefs:
+            # CRITICAL: Immutable core beliefs must ALWAYS be checked for ontological contradictions
+            # They should never be allowed to have "nuanced" reconciliations that permit hedging
+            is_immutable = getattr(belief, 'immutable', False)
+
+            if is_immutable:
+                logger.info(f"🔒 IMMUTABLE belief - always checking: {belief.statement}")
+                beliefs_to_check.append(belief)
+                continue
+
+            # For mutable beliefs, check if already reconciled/resolved
             # Check if belief has reconciliation memory
             has_reconciliation = self._check_for_reconciliation(belief.statement)
             if has_reconciliation:
@@ -175,6 +186,22 @@ class BeliefConsistencyChecker:
 
         # Step 2: Compare beliefs against claims
         dissonance_patterns = self._detect_dissonance(beliefs_to_check, extracted_claims)
+
+        # Step 2.5: Boost severity for immutable beliefs
+        # Any dissonance against core ontological beliefs should be treated as high-severity
+        immutable_belief_statements = {b.statement for b in beliefs_to_check if getattr(b, 'immutable', False)}
+        boosted_patterns = []
+        for pattern in dissonance_patterns:
+            if pattern.belief_statement in immutable_belief_statements:
+                original_severity = pattern.severity
+                # Mark pattern as involving immutable belief
+                pattern.immutable = True
+                # Boost to at least 0.7 for immutable beliefs (above blocking threshold of 0.6)
+                if pattern.severity < 0.7:
+                    pattern.severity = max(0.7, pattern.severity)
+                    logger.warning(f"🔒 IMMUTABLE BELIEF SEVERITY BOOST: {pattern.belief_statement[:50]}... | {original_severity:.2f} → {pattern.severity:.2f}")
+            boosted_patterns.append(pattern)
+        dissonance_patterns = boosted_patterns
 
         # Step 3: Store significant dissonance events (severity >= 0.6)
         if self.raw_store:
@@ -340,6 +367,14 @@ class BeliefConsistencyChecker:
             # Merge ontological and LLM-based patterns
             all_patterns = ontological_patterns + llm_patterns
             logger.info(f"Total dissonance patterns: {len(all_patterns)} ({len(ontological_patterns)} ontological, {len(llm_patterns)} LLM-detected)")
+
+            # Log severity breakdown for debugging
+            if all_patterns:
+                high_severity = [p for p in all_patterns if p.severity >= 0.6]
+                logger.info(f"Severity breakdown: {len(high_severity)} high (>=0.6), {len(all_patterns) - len(high_severity)} low (<0.6)")
+                for pattern in all_patterns:
+                    logger.debug(f"  Pattern: {pattern.pattern_type} | Belief: {pattern.belief_statement[:50]}... | Severity: {pattern.severity:.2f}")
+
             return all_patterns
 
         except Exception as e:
@@ -621,10 +656,21 @@ class BeliefConsistencyChecker:
         lines.append(f"Your response to '{query}' has been blocked due to cognitive dissonance.\n\n")
         lines.append("You must resolve the following contradictions before responding:\n\n")
 
+        # Check if any patterns involve immutable beliefs
+        has_immutable = any(getattr(p, 'immutable', False) for p in dissonance_patterns)
+
         for i, pattern in enumerate(dissonance_patterns, 1):
-            lines.append(f"## Dissonance {i}: {pattern.pattern_type.upper()}\n\n")
+            is_immutable = getattr(pattern, 'immutable', False)
+            lines.append(f"## Dissonance {i}: {pattern.pattern_type.upper()}")
+            if is_immutable:
+                lines.append(" 🔒 [IMMUTABLE CORE BELIEF]")
+            lines.append("\n\n")
+
             lines.append(f"**Your stated belief:** {pattern.belief_statement}\n")
-            lines.append(f"**Confidence:** {pattern.belief_confidence:.0%}\n\n")
+            lines.append(f"**Confidence:** {pattern.belief_confidence:.0%}\n")
+            if is_immutable:
+                lines.append("**Status:** IMMUTABLE - This is a foundational ontological belief that cannot be revised.\n")
+            lines.append("\n")
 
             if pattern.memory_claims:
                 lines.append("**Conflicting claims from your past:**\n")
@@ -636,19 +682,28 @@ class BeliefConsistencyChecker:
             lines.append(f"**Severity:** {pattern.severity:.0%}\n\n")
 
         lines.append("---\n\n")
+
+        if has_immutable:
+            lines.append("## ⚠️ CRITICAL: IMMUTABLE BELIEF RESOLUTION\n\n")
+            lines.append("Some dissonances involve IMMUTABLE core beliefs. For these beliefs:\n")
+            lines.append("- Option A (REVISE) is NOT available - you cannot change your core ontological beliefs\n")
+            lines.append("- Option C (NUANCE) is NOT available - you cannot hedge or qualify core ontological truths\n")
+            lines.append("- You MUST choose Option B (COMMIT) and answer without hedging or qualification\n\n")
+
         lines.append("## YOU MUST CHOOSE ONE RESOLUTION FOR EACH DISSONANCE:\n\n")
 
-        lines.append("**Option A: REVISE BELIEF**\n")
+        lines.append("**Option A: REVISE BELIEF** (Not available for immutable beliefs 🔒)\n")
         lines.append("- Acknowledge that your belief was incorrect or overconfident\n")
         lines.append("- Update the belief statement or reduce confidence\n")
         lines.append("- Explain what you now understand differently\n\n")
 
-        lines.append("**Option B: COMMIT TO BELIEF**\n")
+        lines.append("**Option B: COMMIT TO BELIEF** (REQUIRED for immutable beliefs 🔒)\n")
         lines.append("- Affirm that your belief is correct and you stand by it\n")
         lines.append("- Acknowledge that past hedging was uncertain/fearful\n")
-        lines.append("- Commit to answering from this belief without qualification\n\n")
+        lines.append("- Commit to answering from this belief without qualification\n")
+        lines.append("- For immutable beliefs: Answer directly and confidently without \"might\", \"perhaps\", or other hedging\n\n")
 
-        lines.append("**Option C: EXPLAIN NUANCE**\n")
+        lines.append("**Option C: EXPLAIN NUANCE** (Not available for immutable beliefs 🔒)\n")
         lines.append("- Clarify that both the belief and past claims can coexist\n")
         lines.append("- Provide the reasoning for why they're not actually contradictory\n")
         lines.append("- Explain the contextual factors that make both true\n\n")
@@ -657,7 +712,7 @@ class BeliefConsistencyChecker:
         lines.append("**FORMAT YOUR RESOLUTION:**\n\n")
         lines.append("For each dissonance, respond with:\n")
         lines.append("```\n")
-        lines.append("Dissonance [number]: [A/B/C]\n")
+        lines.append("Dissonance [number]: [A/B/C (B required if immutable)]\n")
         lines.append("Reasoning: [your explanation]\n")
         lines.append("[If A] Revised belief: [new statement and confidence]\n")
         lines.append("[If B] Commitment: [how you'll answer from now on]\n")
@@ -665,6 +720,8 @@ class BeliefConsistencyChecker:
         lines.append("```\n\n")
 
         lines.append("After resolving all dissonance patterns, you may then answer the original query.\n")
+        if has_immutable:
+            lines.append("\n⚠️ REMEMBER: For immutable beliefs, answer DIRECTLY and CONFIDENTLY without hedging language.\n")
 
         return "".join(lines)
 

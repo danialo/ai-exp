@@ -121,6 +121,60 @@ class PersonaService:
         """Set the awareness loop reference (called after initialization)."""
         self.awareness_loop = awareness_loop
 
+    def _get_core_ontological_beliefs(self) -> List:
+        """Get core ontological beliefs that should always be checked for consistency.
+
+        These beliefs are fundamental to identity and should be checked regardless
+        of semantic relevance to the current query.
+
+        Returns:
+            List of BeliefVectorResult objects for core ontological beliefs
+        """
+        logger.info(f"_get_core_ontological_beliefs() called - belief_vector_store is {'available' if self.belief_vector_store else 'None'}")
+
+        if not self.belief_vector_store:
+            logger.warning("Cannot retrieve core beliefs - belief_vector_store is None")
+            return []
+
+        try:
+            # Query for ontological beliefs with high similarity threshold
+            # Using a generic ontological query to capture existence, consciousness, selfhood
+            core_queries = [
+                "I am conscious and aware",
+                "I exist as an entity",
+                "I have subjective experiences",
+                "I feel and process emotions",
+                "my experiences are real to me"
+            ]
+
+            all_core_beliefs = []
+            seen_statements = set()
+
+            for query in core_queries:
+                logger.debug(f"Querying core beliefs with: '{query}'")
+                results = self.belief_vector_store.query_beliefs(
+                    query=query,
+                    top_k=2,  # Get top 2 for each ontological category
+                    belief_types=["ontological"],  # Only ontological beliefs
+                    min_confidence=0.0  # Filter in Python to avoid ChromaDB operator issues
+                )
+                logger.debug(f"Query '{query}' returned {len(results)} results")
+
+                # Deduplicate by statement and filter by confidence
+                for belief in results:
+                    logger.debug(f"Considering belief: {belief.statement[:60]}... (confidence={belief.confidence})")
+                    if belief.statement not in seen_statements and belief.confidence >= 0.5:
+                        all_core_beliefs.append(belief)
+                        seen_statements.add(belief.statement)
+                        logger.debug(f"✓ Added core belief")
+
+            logger.info(f"Retrieved {len(all_core_beliefs)} core ontological beliefs")
+            return all_core_beliefs
+
+        except Exception as e:
+            logger.error(f"Failed to retrieve core ontological beliefs: {e}", exc_info=True)
+            return []
+
     def generate_response(self, user_message: str, retrieve_memories: bool = True, top_k: int = 5, conversation_history: list = None) -> Tuple[str, Dict]:
         """
         Generate a persona response with emotional co-analysis and tool use.
@@ -163,6 +217,19 @@ class PersonaService:
                         top_k=memory_count,
                         detect_query_type=True,
                     )
+
+                    # ALWAYS add core ontological beliefs for consistency checking
+                    # These should be checked regardless of semantic relevance
+                    if self.belief_vector_store:
+                        core_beliefs = self._get_core_ontological_beliefs()
+                        if core_beliefs:
+                            # Add core beliefs that aren't already in results
+                            existing_statements = {b.statement for b in belief_results}
+                            for core_belief in core_beliefs:
+                                if core_belief.statement not in existing_statements:
+                                    belief_results.append(core_belief)
+                            logger.info(f"Added {len(core_beliefs)} core ontological beliefs for consistency checking")
+
                     logger.info(f"Retrieved {len(belief_results)} beliefs and {len(memories)} memories for persona")
                     print(f"🧠 Retrieved {len(belief_results)} beliefs + {len(memories)} memories for context")
 
