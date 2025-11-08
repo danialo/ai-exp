@@ -333,13 +333,17 @@ async def test_degraded_performance_detection(integrated_system, mock_persona_se
         completed_at = datetime.fromisoformat(result.completed_at).timestamp()
 
         # Simulate coherence degradation with proper timing
-        coherence_before = 0.75 - i * 0.05
-        coherence_after = 0.70 - i * 0.05  # Getting worse
+        # Keep before constant, make after decrease to show clear degradation
+        coherence_before = 0.75  # Constant baseline
+        coherence_after = 0.70 - i * 0.05  # Decreasing (degradation)
 
         outcome_evaluator._coherence_history = [
             (started_at - 300, coherence_before),
             (completed_at + 300, coherence_after),
         ]
+
+        # Update awareness loop to match after coherence (used for recent tasks)
+        awareness_loop.last_sim_live = coherence_after
 
         task_outcome = await outcome_linker.link_task_outcome(
             task_id=test_task.id,
