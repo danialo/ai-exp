@@ -395,49 +395,44 @@ class TaskGraph:
         """
         Check if adding task with dependencies would create a cycle.
 
-        Uses DFS to detect cycles.
+        Uses DFS to detect cycles in execution-order graph.
+        Execution-order graph has edges: dependency -> dependent (task that depends on it)
         """
-        # Build adjacency list including new task
+        # Build execution-order adjacency list (dep -> tasks that depend on it)
         graph = defaultdict(list)
 
-        # Existing edges
+        # Existing edges: for each task, add edges from its dependencies to it
         for task_id, node in self.nodes.items():
-            graph[task_id] = node.dependencies
+            for dep in node.dependencies:
+                graph[dep].append(task_id)
 
-        # New task edges
-        graph[new_task_id] = dependencies
-
-        # DFS from each dependency to see if it reaches new_task_id
+        # New task edges: from each dependency to new task
         for dep in dependencies:
-            if self._can_reach(dep, new_task_id, graph):
-                return True
+            graph[dep].append(new_task_id)
 
-        return False
+        # Check if there's a cycle in the augmented graph
+        # A cycle exists if from new_task_id we can reach back to new_task_id
+        visited_in_path = set()
+        visited_global = set()
 
-    def _can_reach(
-        self,
-        start: str,
-        target: str,
-        graph: Dict[str, List[str]],
-        visited: Optional[Set[str]] = None
-    ) -> bool:
-        """Check if target is reachable from start in graph (DFS)."""
-        if visited is None:
-            visited = set()
+        def has_cycle_from(node: str) -> bool:
+            if node in visited_in_path:
+                return True  # Found cycle
+            if node in visited_global:
+                return False  # Already explored this path
 
-        if start in visited:
+            visited_in_path.add(node)
+            visited_global.add(node)
+
+            for neighbor in graph.get(node, []):
+                if has_cycle_from(neighbor):
+                    return True
+
+            visited_in_path.remove(node)
             return False
 
-        if start == target:
-            return True
-
-        visited.add(start)
-
-        for dep in graph.get(start, []):
-            if self._can_reach(dep, target, graph, visited):
-                return True
-
-        return False
+        # Check for cycle starting from the new task
+        return has_cycle_from(new_task_id)
 
     def get_ready_tasks(
         self,
@@ -461,6 +456,9 @@ class TaskGraph:
         ready_tasks = []
         caps = per_action_caps or self.action_concurrency_caps
 
+        # Track how many of each action we've selected in this batch
+        batch_action_count = defaultdict(int)
+
         # Extract from priority queue
         temp_queue = []
 
@@ -468,27 +466,31 @@ class TaskGraph:
             if len(self.running_tasks) >= self.max_parallel:
                 break
 
-            neg_priority, neg_deadline_ts, neg_cost, task_id = heapq.heappop(self.ready_queue)
+            neg_priority, deadline_ts, neg_cost, task_id = heapq.heappop(self.ready_queue)
 
             # Check if still ready (state may have changed)
             node = self.nodes[task_id]
             if node.state != TaskState.READY:
                 continue
 
-            # Check per-action cap
+            # Check per-action cap (running + selected in this batch)
             action_cap = caps.get(node.action_name, float('inf'))
-            if self.action_concurrency[node.action_name] >= action_cap:
-                temp_queue.append((neg_priority, neg_deadline_ts, neg_cost, task_id))
+            current_running = self.action_concurrency[node.action_name]
+            current_batch = batch_action_count[node.action_name]
+
+            if current_running + current_batch >= action_cap:
+                temp_queue.append((neg_priority, deadline_ts, neg_cost, task_id))
                 continue
 
             # Check circuit breaker
             breaker = self._get_breaker(node.action_name)
             if breaker.is_open():
                 logger.warning(f"Circuit breaker open for {node.action_name}, skipping {task_id}")
-                temp_queue.append((neg_priority, neg_deadline_ts, neg_cost, task_id))
+                temp_queue.append((neg_priority, deadline_ts, neg_cost, task_id))
                 continue
 
             ready_tasks.append(task_id)
+            batch_action_count[node.action_name] += 1
 
         # Restore skipped tasks to queue
         for item in temp_queue:
@@ -518,13 +520,16 @@ class TaskGraph:
                     node.state = TaskState.READY
 
                     # Add to priority queue
+                    # Higher priority comes first (negate priority)
+                    # Earlier deadline comes first (use deadline_ts directly)
+                    # Lower cost comes first (negate cost)
                     priority = node.priority
                     deadline_ts = node.deadline.timestamp() if node.deadline else float('inf')
                     cost = node.cost
 
                     heapq.heappush(
                         self.ready_queue,
-                        (-priority, -deadline_ts, -cost, task_id)
+                        (-priority, deadline_ts, -cost, task_id)
                     )
 
     def mark_running(self, task_id: str) -> None:
