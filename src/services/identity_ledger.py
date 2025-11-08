@@ -72,7 +72,7 @@ class LedgerEvent:
     """Single event in the identity ledger."""
     ts: float
     schema: int
-    event: str  # "belief_versioned", "anchor_updated", "dissonance_resolved", "kept_fracture_visible"
+    event: str  # "belief_versioned", "anchor_updated", "dissonance_resolved", "kept_fracture_visible", "decision_made", "decision_aborted", "parameter_adapted"
     strategy: Optional[str] = None  # "Commit" | "Reframe" | "Nuance" | "Defer"
     beliefs_touched: Optional[List[str]] = None
     cost_named: Optional[str] = None
@@ -84,6 +84,13 @@ class LedgerEvent:
     meta: Optional[Dict[str, Any]] = None  # freeform, scrubbed
     prev_sha: Optional[str] = None  # SHA of previous entry in chain
     sha: Optional[str] = None  # SHA of this entry (computed after serialization)
+
+    # Decision framework fields
+    decision_id: Optional[str] = None  # Type of decision (belief_formation, belief_promotion, etc.)
+    decision_record_id: Optional[str] = None  # Unique record ID for this decision
+    parameters_used: Optional[Dict[str, float]] = None  # Parameters at time of decision
+    success_score: Optional[float] = None  # Success score from outcome evaluation
+    abort_reason: Optional[str] = None  # Reason for abort if applicable
 
 
 def _compute_sha(rec: Dict[str, Any]) -> str:
@@ -244,5 +251,101 @@ def kept_fracture_visible_event(beliefs_touched: List[str], note: str = "") -> N
         cost_named=None,
         sims_before_after=None,
         meta={"note": note[:256]} if note else None
+    )
+    append_event(ev)
+
+# Decision Framework Audit Logging
+
+def decision_made_event(
+    decision_id: str,
+    decision_record_id: str,
+    parameters_used: Dict[str, float],
+    beliefs_touched: Optional[List[str]] = None,
+    meta: Optional[Dict[str, Any]] = None
+) -> None:
+    """
+    Log a decision made by the adaptive framework.
+
+    Args:
+        decision_id: Type of decision (belief_formation, belief_promotion, etc.)
+        decision_record_id: Unique record ID for this decision
+        parameters_used: Parameters used to make the decision
+        beliefs_touched: Belief IDs affected by this decision
+        meta: Additional context (e.g., evidence_count, feedback_score)
+    """
+    ev = LedgerEvent(
+        ts=time.time(),
+        schema=_SCHEMA_VERSION,
+        event="decision_made",
+        decision_id=decision_id,
+        decision_record_id=decision_record_id,
+        parameters_used=parameters_used,
+        beliefs_touched=beliefs_touched,
+        meta=meta,
+        prev_sha=None,  # Will be filled by append_event
+        sha=None,
+    )
+    append_event(ev)
+
+
+def decision_aborted_event(
+    abort_reason: str,
+    decision_id: Optional[str] = None,
+    coherence_drop: Optional[float] = None,
+    meta: Optional[Dict[str, Any]] = None
+) -> None:
+    """
+    Log when abort conditions trigger and halt autonomous decisions.
+
+    Args:
+        abort_reason: Reason for abort (e.g., "dissonance_spike", "coherence_drop")
+        decision_id: Type of decision that was aborted (if applicable)
+        coherence_drop: Amount of coherence drop if relevant
+        meta: Additional context (e.g., threshold values, current metrics)
+    """
+    ev = LedgerEvent(
+        ts=time.time(),
+        schema=_SCHEMA_VERSION,
+        event="decision_aborted",
+        abort_reason=abort_reason,
+        decision_id=decision_id,
+        coherence_drop=round(coherence_drop, 3) if coherence_drop else None,
+        meta=meta,
+        prev_sha=None,
+        sha=None,
+    )
+    append_event(ev)
+
+
+def parameter_adapted_event(
+    decision_id: str,
+    parameters_updated: Dict[str, Dict[str, float]],  # {param_name: {"old": 0.5, "new": 0.6}}
+    success_score: float,
+    sample_count: int,
+    meta: Optional[Dict[str, Any]] = None
+) -> None:
+    """
+    Log when parameters are adapted based on outcome evaluation.
+
+    Args:
+        decision_id: Type of decision whose parameters were adapted
+        parameters_updated: Map of parameter names to old/new values
+        success_score: Average success score that triggered adaptation
+        sample_count: Number of decisions evaluated
+        meta: Additional context (e.g., reason, adaptation_method)
+    """
+    ev = LedgerEvent(
+        ts=time.time(),
+        schema=_SCHEMA_VERSION,
+        event="parameter_adapted",
+        decision_id=decision_id,
+        success_score=round(success_score, 3),
+        meta={
+            "parameters_updated": parameters_updated,
+            "sample_count": sample_count,
+            **(meta or {})
+        },
+        prev_sha=None,
+        sha=None,
     )
     append_event(ev)

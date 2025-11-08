@@ -478,11 +478,26 @@ class BeliefStore:
         if replacement_id:
             metadata_update["replacement_id"] = replacement_id
 
+        # Get current belief to determine its state for proper transition
+        with self._lock:
+            with open(self.current_file, "r") as f:
+                current = json.load(f)
+
+            if belief_id not in current:
+                logger.warning(f"Cannot deprecate non-existent belief: {belief_id}")
+                return False
+
+            current_belief = BeliefVersion(**current[belief_id])
+            current_state = current_belief.state
+
+        # Build appropriate state transition based on current state
+        state_change = f"{current_state}->deprecated"
+
         return self.apply_delta(
             belief_id=belief_id,
             from_ver=from_ver,
             op=DeltaOp.DEPRECATE,
-            state_change=f"asserted->deprecated",
+            state_change=state_change,
             updated_by=updated_by,
             reason=reason,
         )

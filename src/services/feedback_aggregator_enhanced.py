@@ -188,15 +188,14 @@ class EnhancedFeedbackAggregator:
 
         # Query recent experiences
         try:
-            experiences = self.raw_store.list_recent(
-                limit=200, experience_type=ExperienceType.OCCURRENCE
+            recent = self.raw_store.list_recent(
+                limit=200,
+                experience_type=ExperienceType.OCCURRENCE,
+                since=cutoff_dt,
             )
         except Exception as e:
             logger.error(f"Failed to query experiences: {e}")
             return 0.0, 0.0, {}
-
-        # Filter by time window
-        recent = [exp for exp in experiences if exp.created_at >= cutoff_dt]
 
         # Extract tags with actor tracking and deduplication
         tag_samples = []  # List of (tag, actor, ts, alignment)
@@ -503,15 +502,14 @@ class EnhancedFeedbackAggregator:
         )
 
         try:
-            experiences = self.raw_store.list_recent(
-                limit=200, experience_type=ExperienceType.OCCURRENCE
+            recent = self.raw_store.list_recent(
+                limit=200,
+                experience_type=ExperienceType.OCCURRENCE,
+                since=cutoff_dt,
             )
         except Exception as e:
             logger.error(f"Failed to query experiences for global score: {e}")
             return 0.0, 0.0
-
-        # Filter by time window
-        recent = [exp for exp in experiences if exp.created_at >= cutoff_dt]
 
         # Extract all tags
         tag_counts = defaultdict(int)

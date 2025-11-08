@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 import time
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
@@ -14,12 +15,18 @@ from pathlib import Path
 import uvicorn
 import numpy as np
 
-# Configure logging to show affect/mood tracking
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Import multi-file logging system
+from src.utils.logging_config import get_multi_logger, configure_root_logger
+
+# Initialize multi-file logging system
+multi_logger = get_multi_logger()
+
+# Configure root logger to actually write to files
+configure_root_logger()
+
+# Get logger for this module
 logger = logging.getLogger(__name__)
+logger.info("Logging system initialized - writing to logs/app/astra.log")
 
 from config.settings import settings
 from src.memory.raw_store import create_raw_store
@@ -64,6 +71,14 @@ from src.services.web_search_service import create_web_search_service
 from src.services.url_fetcher_service import create_url_fetcher_service
 from src.services.web_interpretation_service import create_web_interpretation_service
 
+# Adaptive Decision Framework imports
+from src.services.decision_framework import get_decision_registry
+from src.services.success_signal_evaluator import SuccessSignalEvaluator
+from src.services.abort_condition_monitor import AbortConditionMonitor
+from src.services.parameter_adapter import ParameterAdapter
+from src.services.outcome_evaluation_task import OutcomeEvaluationTask
+from src.services.belief_gardener_integration import create_adaptive_belief_lifecycle_manager
+
 # Awareness loop imports
 import contextlib
 from pathlib import Path
@@ -87,6 +102,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include decision framework API router
+from src.api.decision_endpoints import router as decision_router
+app.include_router(decision_router)
 
 # Initialize components
 raw_store = create_raw_store(settings.RAW_STORE_DB_PATH)
@@ -312,7 +331,8 @@ current_session_id: Optional[str] = None
 task_scheduler = None
 if settings.PERSONA_MODE_ENABLED:
     task_scheduler = create_task_scheduler(
-        persona_space_path=settings.PERSONA_SPACE_PATH
+        persona_space_path=settings.PERSONA_SPACE_PATH,
+        raw_store=raw_store  # Enable task execution tracking (Phase 1)
     )
 
 # Initialize belief system (legacy)
@@ -594,6 +614,13 @@ redis_client: Optional[Redis] = None
 if settings.AWARENESS_ENABLED:
     logger.info("Awareness loop enabled - initializing Redis and components")
 
+# Adaptive Decision Framework globals
+decision_registry = None
+success_evaluator = None
+abort_monitor = None
+parameter_adapter = None
+outcome_task = None
+
 # Background gardener tick
 gardener_task: Optional[asyncio.Task] = None
 gardener_last_scan: float = 0.0
@@ -622,13 +649,14 @@ async def gardener_tick_loop():
             logger.info("Gardener tick loop cancelled")
             break
         except Exception as e:
-            logger.error(f"Gardener tick failed: {e}")
+            logger.error(f"Gardener tick failed: {e}", exc_info=True)
 
 
 @app.on_event("startup")
 async def startup_awareness():
-    """Start awareness loop on application startup."""
-    global awareness_loop, awareness_task, redis_client, gardener_task
+    """Start awareness loop and decision framework on application startup."""
+    global awareness_loop, awareness_task, redis_client, gardener_task, belief_gardener
+    global decision_registry, success_evaluator, abort_monitor, parameter_adapter, outcome_task
 
     if not settings.AWARENESS_ENABLED:
         logger.info("Awareness loop disabled")
@@ -718,6 +746,107 @@ async def startup_awareness():
             outcome_eval_task = asyncio.create_task(outcome_evaluation_loop())
             logger.info("Outcome evaluation background task started")
 
+        # Initialize Adaptive Decision Framework
+        if settings.DECISION_FRAMEWORK_ENABLED:
+            logger.info("Initializing Adaptive Decision Framework...")
+
+            try:
+                # 1. Initialize decision registry (singleton)
+                decision_registry = get_decision_registry()
+                logger.info("Decision registry initialized")
+
+                # 2. Initialize success signal evaluator
+                success_evaluator = SuccessSignalEvaluator(
+                    awareness_loop=awareness_loop,
+                    belief_consistency_checker=None,  # Wire when available
+                    feedback_aggregator=enhanced_feedback_aggregator
+                )
+
+                # Set baselines from config or defaults
+                import os
+                success_evaluator.set_baselines(
+                    coherence=float(os.getenv("BASELINE_COHERENCE", "0.70")),
+                    dissonance=float(os.getenv("BASELINE_DISSONANCE", "0.20")),
+                    satisfaction=float(os.getenv("BASELINE_SATISFACTION", "0.60"))
+                )
+
+                success_evaluator.set_targets(
+                    coherence=float(os.getenv("TARGET_COHERENCE", "0.85")),
+                    dissonance=float(os.getenv("TARGET_DISSONANCE", "0.10")),
+                    satisfaction=float(os.getenv("TARGET_SATISFACTION", "0.80"))
+                )
+
+                logger.info("Success signal evaluator initialized")
+
+                # 3. Initialize abort condition monitor
+                abort_monitor = AbortConditionMonitor(
+                    awareness_loop=awareness_loop,
+                    belief_consistency_checker=None,  # Wire when available
+                    feedback_aggregator=enhanced_feedback_aggregator,
+                    belief_store=belief_store,
+                    success_evaluator=success_evaluator
+                )
+                logger.info("Abort condition monitor initialized")
+
+                # 4. Initialize parameter adapter
+                parameter_adapter = ParameterAdapter(
+                    decision_registry=decision_registry,
+                    success_evaluator=success_evaluator,
+                    min_samples=int(os.getenv("ADAPTATION_MIN_SAMPLES", "20")),
+                    exploration_rate=float(os.getenv("EXPLORATION_RATE", "0.10")),
+                    adaptation_rate=float(os.getenv("ADAPTATION_RATE", "0.15"))
+                )
+                logger.info("Parameter adapter initialized")
+
+                # 5. Start outcome evaluation task
+                outcome_task = OutcomeEvaluationTask(
+                    parameter_adapter=parameter_adapter,
+                    interval_minutes=int(os.getenv("OUTCOME_CHECK_INTERVAL_MINUTES", "30")),
+                    adaptation_interval_hours=int(os.getenv("ADAPTATION_INTERVAL_HOURS", "168")),
+                    enabled=True
+                )
+                await outcome_task.start()
+                logger.info("Outcome evaluation task started")
+
+                # 6. Create adaptive belief lifecycle manager (replaces regular gardener)
+                if belief_gardener and belief_store and raw_store:
+                    logger.info("Creating adaptive belief lifecycle manager...")
+                    gardener_config = GardenerConfig(
+                        enabled=settings.BELIEF_GARDENER_ENABLED,
+                        pattern_scan_interval_minutes=settings.BELIEF_GARDENER_SCAN_INTERVAL,
+                        min_evidence_for_tentative=settings.BELIEF_GARDENER_MIN_EVIDENCE_TENTATIVE,
+                        min_evidence_for_asserted=settings.BELIEF_GARDENER_MIN_EVIDENCE_ASSERTED,
+                        daily_budget_formations=settings.BELIEF_GARDENER_DAILY_BUDGET_FORMATIONS,
+                        daily_budget_promotions=settings.BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS,
+                        daily_budget_deprecations=settings.BELIEF_GARDENER_DAILY_BUDGET_DEPRECATIONS,
+                        lookback_days=settings.BELIEF_GARDENER_LOOKBACK_DAYS,
+                    )
+
+                    adaptive_gardener = create_adaptive_belief_lifecycle_manager(
+                        belief_store=belief_store,
+                        raw_store=raw_store,
+                        config=gardener_config,
+                        feedback_aggregator=enhanced_feedback_aggregator,
+                        awareness_loop=awareness_loop,
+                        belief_consistency_checker=None
+                    )
+
+                    # Replace the regular gardener with adaptive one
+                    belief_gardener = adaptive_gardener
+                    logger.info("✅ Adaptive belief lifecycle manager created and activated")
+
+                # Store in app state for endpoint access
+                app.state.decision_registry = decision_registry
+                app.state.success_evaluator = success_evaluator
+                app.state.abort_monitor = abort_monitor
+                app.state.parameter_adapter = parameter_adapter
+                app.state.outcome_task = outcome_task
+
+                logger.info("✅ Adaptive Decision Framework fully initialized")
+
+            except Exception as e:
+                logger.error(f"Failed to initialize decision framework: {e}", exc_info=True)
+
         # Start belief gardener background task
         if belief_gardener and settings.BELIEF_GARDENER_ENABLED:
             gardener_task = asyncio.create_task(gardener_tick_loop())
@@ -735,8 +864,14 @@ async def startup_awareness():
 
 @app.on_event("shutdown")
 async def shutdown_awareness():
-    """Stop awareness loop and gardener on application shutdown."""
-    global awareness_loop, awareness_task, redis_client, gardener_task
+    """Stop awareness loop, gardener, and decision framework on application shutdown."""
+    global awareness_loop, awareness_task, redis_client, gardener_task, outcome_task
+
+    # Stop outcome evaluation task
+    if outcome_task:
+        logger.info("Stopping outcome evaluation task...")
+        await outcome_task.stop()
+        logger.info("Outcome evaluation task stopped")
 
     if gardener_task and not gardener_task.done():
         logger.info("Stopping gardener tick loop...")
@@ -1863,6 +1998,12 @@ async def persona_chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:
+        # Log user message
+        multi_logger.log_conversation("user", request.message, metadata={
+            "retrieve_memories": request.retrieve_memories,
+            "top_k": request.top_k
+        })
+
         # Use the main persona service (model selection disabled to preserve belief system)
         active_persona_service = persona_service
 
@@ -1984,6 +2125,14 @@ async def persona_chat(request: ChatRequest):
 
         logger.info(f"Stored persona interaction: {result.experience_id}")
 
+        # Log assistant response
+        multi_logger.log_conversation("assistant", response_text, metadata={
+            "experience_id": result.experience_id,
+            "user_valence": user_valence,
+            "user_arousal": user_arousal,
+            "user_dominance": user_dominance
+        })
+
         # Return response with reconciliation data and detected user emotion
         return {
             "response": response_text,
@@ -1997,6 +2146,7 @@ async def persona_chat(request: ChatRequest):
             "user_dominance": user_dominance,  # Detected user control level
         }
     except Exception as e:
+        multi_logger.log_error(f"Persona generation error: {str(e)}", exception=e)
         raise HTTPException(status_code=500, detail=f"Persona generation error: {str(e)}")
 
 

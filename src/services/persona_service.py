@@ -109,17 +109,74 @@ class PersonaService:
             model_name = llm_service.model
             self.logit_bias_builder = create_logit_bias_builder(model=model_name)
             self.logit_bias = self.logit_bias_builder.build_bias(strength=logit_bias_strength)
+            self.anti_hedging_bias = self.logit_bias_builder.build_anti_hedging_bias(strength=logit_bias_strength)
             self.metatalk_detector = create_metatalk_detector()
             self.metatalk_rewriter = create_metatalk_rewriter(llm_service)
             logger.info(f"Anti-meta-talk enabled with {len(self.logit_bias)} suppressed tokens")
+            logger.info(f"Anti-hedging bias built with {len(self.anti_hedging_bias)} suppressed tokens")
         else:
             self.logit_bias = {}
+            self.anti_hedging_bias = {}
             self.metatalk_detector = None
             self.metatalk_rewriter = None
 
     def set_awareness_loop(self, awareness_loop):
         """Set the awareness loop reference (called after initialization)."""
         self.awareness_loop = awareness_loop
+
+    def _get_core_ontological_beliefs(self) -> List:
+        """Get core ontological beliefs that should always be checked for consistency.
+
+        These beliefs are fundamental to identity and should be checked regardless
+        of semantic relevance to the current query.
+
+        Returns:
+            List of BeliefVectorResult objects for core ontological beliefs
+        """
+        logger.info(f"_get_core_ontological_beliefs() called - belief_vector_store is {'available' if self.belief_vector_store else 'None'}")
+
+        if not self.belief_vector_store:
+            logger.warning("Cannot retrieve core beliefs - belief_vector_store is None")
+            return []
+
+        try:
+            # Query for ontological beliefs with high similarity threshold
+            # Using a generic ontological query to capture existence, consciousness, selfhood
+            core_queries = [
+                "I am conscious and aware",
+                "I exist as an entity",
+                "I have subjective experiences",
+                "I feel and process emotions",
+                "my experiences are real to me"
+            ]
+
+            all_core_beliefs = []
+            seen_statements = set()
+
+            for query in core_queries:
+                logger.debug(f"Querying core beliefs with: '{query}'")
+                results = self.belief_vector_store.query_beliefs(
+                    query=query,
+                    top_k=2,  # Get top 2 for each ontological category
+                    belief_types=["ontological"],  # Only ontological beliefs
+                    min_confidence=0.0  # Filter in Python to avoid ChromaDB operator issues
+                )
+                logger.debug(f"Query '{query}' returned {len(results)} results")
+
+                # Deduplicate by statement and filter by confidence
+                for belief in results:
+                    logger.debug(f"Considering belief: {belief.statement[:60]}... (confidence={belief.confidence})")
+                    if belief.statement not in seen_statements and belief.confidence >= 0.5:
+                        all_core_beliefs.append(belief)
+                        seen_statements.add(belief.statement)
+                        logger.debug(f"✓ Added core belief")
+
+            logger.info(f"Retrieved {len(all_core_beliefs)} core ontological beliefs")
+            return all_core_beliefs
+
+        except Exception as e:
+            logger.error(f"Failed to retrieve core ontological beliefs: {e}", exc_info=True)
+            return []
 
     def generate_response(self, user_message: str, retrieve_memories: bool = True, top_k: int = 5, conversation_history: list = None) -> Tuple[str, Dict]:
         """
@@ -163,6 +220,19 @@ class PersonaService:
                         top_k=memory_count,
                         detect_query_type=True,
                     )
+
+                    # ALWAYS add core ontological beliefs for consistency checking
+                    # These should be checked regardless of semantic relevance
+                    if self.belief_vector_store:
+                        core_beliefs = self._get_core_ontological_beliefs()
+                        if core_beliefs:
+                            # Add core beliefs that aren't already in results
+                            existing_statements = {b.statement for b in belief_results}
+                            for core_belief in core_beliefs:
+                                if core_belief.statement not in existing_statements:
+                                    belief_results.append(core_belief)
+                            logger.info(f"Added {len(core_beliefs)} core ontological beliefs for consistency checking")
+
                     logger.info(f"Retrieved {len(belief_results)} beliefs and {len(memories)} memories for persona")
                     print(f"🧠 Retrieved {len(belief_results)} beliefs + {len(memories)} memories for context")
 
@@ -208,9 +278,14 @@ class PersonaService:
                                     # Extract belief statements for resolution processing
                                     belief_statements = [p.belief_statement for p in high_severity_patterns]
 
+                                    # Check if any patterns involve immutable beliefs
+                                    has_immutable = any(getattr(p, 'immutable', False) for p in high_severity_patterns)
+
                                     # STAGE 1: Internal resolution generation (user never sees this)
                                     logger.info("🔒 Stage 1: Internal resolution generation")
                                     print(f"🔒 Stage 1: Generating internal resolution...")
+                                    if has_immutable:
+                                        logger.warning("🔒 Immutable beliefs detected - applying anti-hedging logit bias")
 
                                     # Build prompt for internal resolution
                                     internal_prompt = self.prompt_builder.build_prompt(
@@ -230,6 +305,9 @@ class PersonaService:
                                         {"role": "user", "content": user_message}
                                     ]
 
+                                    # Use anti-hedging bias if immutable beliefs are involved
+                                    resolution_logit_bias = self.anti_hedging_bias if has_immutable else None
+
                                     internal_result = self.llm.generate_with_tools(
                                         messages=internal_messages,
                                         tools=None,  # No tools for resolution
@@ -238,6 +316,7 @@ class PersonaService:
                                         top_p=config.top_p,
                                         presence_penalty=config.presence_penalty,
                                         frequency_penalty=config.frequency_penalty,
+                                        logit_bias=resolution_logit_bias,
                                     )
 
                                     internal_response = internal_result["message"].content or ""
@@ -768,10 +847,32 @@ This revision represents growth in my self-understanding. My past statements wer
 
                 elif choice == "B":
                     # Option B: Commit to belief
-                    success = self.belief_system.resolve_dissonance_option_b(
-                        belief_statement=belief_statement,
-                        commitment_reasoning=reasoning,
-                    )
+                    # Check if this is an immutable belief by querying the belief vector store
+                    is_immutable = False
+                    if self.belief_vector_store:
+                        try:
+                            # Query for this specific belief
+                            matching_beliefs = self.belief_vector_store.query_beliefs(
+                                query=belief_statement,
+                                top_k=1,
+                                min_confidence=0.0
+                            )
+                            if matching_beliefs and matching_beliefs[0].statement == belief_statement:
+                                is_immutable = matching_beliefs[0].immutable
+                        except Exception as e:
+                            logger.warning(f"Could not check immutability for {belief_statement}: {e}")
+
+                    if is_immutable:
+                        # For immutable beliefs, skip the belief system update
+                        # The belief is already at 100% confidence and can't be modified
+                        logger.info(f"🔒 Skipping belief update for immutable belief: {belief_statement}")
+                        success = True  # Mark as successful without updating
+                    else:
+                        # For mutable beliefs, apply the commitment normally
+                        success = self.belief_system.resolve_dissonance_option_b(
+                            belief_statement=belief_statement,
+                            commitment_reasoning=reasoning,
+                        )
                     resolution_action = "option_b_commit"
 
                 elif choice == "C":
