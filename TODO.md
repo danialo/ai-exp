@@ -64,6 +64,12 @@
   - **Week 3**: TaskScheduler integration (10/11 integration tests) - Parallel execution, dependency tracking
   - **Week 4**: Documentation + regression tests - 65 total tests passing, comprehensive docs
   - **Total**: 1,220+ lines of production code, 65 passing tests, 91% integration test coverage
+- [x] **Phase 3: HTN Planner (COMPLETE)** - Hierarchical task decomposition for complex goals (2025-11-09)
+  - HTN Planner core (474 lines, 24 unit tests) - Method decomposition, cost-based selection, precondition checking
+  - TaskGraph integration (plan_to_task_graph) - Converts HTN plans to executable graphs
+  - Full pipeline integration (12 integration tests) - GoalStore → HTN Planner → TaskGraph
+  - Decision point registration - plan_generated wired to ParameterAdapter for method learning
+  - **Total**: 474 lines of production code, 36 passing tests, 90% architecture complete
 - [x] **Adaptive Decision Framework (Phases 1-4)** - Complete implementation
 - [x] **End-to-end task tracking for auditability (Phase 1)** - Full correlation system
 - [x] **Wire adaptive framework into app.py** - Integrated with feature flag
