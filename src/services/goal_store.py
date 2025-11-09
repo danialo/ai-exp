@@ -34,6 +34,13 @@ class GoalState(str, Enum):
     ABANDONED = "abandoned"
 
 
+class GoalSource(str, Enum):
+    """Source of goal creation."""
+    USER = "user"
+    SYSTEM = "system"
+    COLLABORATIVE = "collaborative"
+
+
 @dataclass
 class GoalDefinition:
     id: str
@@ -53,6 +60,11 @@ class GoalDefinition:
     metadata: Dict[str, Any] = field(default_factory=dict)
     version: int = 0
     deleted_at: Optional[datetime] = None
+    # Source tracking fields
+    source: GoalSource = GoalSource.USER
+    created_by: Optional[str] = None  # user_id or detector_name
+    proposal_id: Optional[str] = None  # Link to original proposal
+    auto_approved: bool = False  # True if created without user review
 
 
 def _utcnow() -> datetime:
@@ -73,15 +85,26 @@ class GoalStore:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        # Idempotent creation (same as migration file)
+        # Idempotent creation (run all migrations)
         from pathlib import Path
 
-        sql_path = Path("scripts/migrate_001_goal_store.sql")
-        if sql_path.exists():
-            with open(sql_path, "r") as f:
-                sql = f.read()
-            self.conn.executescript(sql)
-            self.conn.commit()
+        migrations = [
+            "scripts/migrate_001_goal_store.sql",
+            "scripts/migrate_002_goal_source_tracking.sql",
+        ]
+
+        for migration_path in migrations:
+            sql_path = Path(migration_path)
+            if sql_path.exists():
+                try:
+                    with open(sql_path, "r") as f:
+                        sql = f.read()
+                    self.conn.executescript(sql)
+                    self.conn.commit()
+                except sqlite3.OperationalError as e:
+                    # Ignore "duplicate column" errors (migration already applied)
+                    if "duplicate column name" not in str(e).lower():
+                        raise
 
     def close(self) -> None:
         try:
@@ -109,6 +132,11 @@ class GoalStore:
             metadata=json.loads(row["metadata"]) if row["metadata"] else {},
             version=int(row["version"]),
             deleted_at=datetime.fromisoformat(row["deleted_at"]) if row["deleted_at"] else None,
+            # Source tracking fields (with defaults for backward compatibility)
+            source=GoalSource(row["source"]) if "source" in row.keys() else GoalSource.USER,
+            created_by=row["created_by"] if "created_by" in row.keys() else None,
+            proposal_id=row["proposal_id"] if "proposal_id" in row.keys() else None,
+            auto_approved=bool(row["auto_approved"]) if "auto_approved" in row.keys() else False,
         )
 
     def _insert_idempotency(self, key: str, op: str, entity_id: str) -> bool:
@@ -150,8 +178,8 @@ class GoalStore:
             """
             INSERT INTO goals (id, text, category, value, effort, risk, horizon_min_min, horizon_max_min,
                                aligns_with, contradicts, success_metrics, state, created_at, updated_at, metadata,
-                               version, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                               version, deleted_at, source, created_by, proposal_id, auto_approved)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)
             """,
             (
                 goal.id,
@@ -169,6 +197,10 @@ class GoalStore:
                 dt,
                 dt,
                 json.dumps(goal.metadata or {}),
+                goal.source.value,
+                goal.created_by,
+                goal.proposal_id,
+                int(goal.auto_approved),
             ),
         )
         self.conn.commit()
@@ -182,7 +214,12 @@ class GoalStore:
                 ts=datetime.now(timezone.utc).timestamp(),
                 schema=2,
                 event="goal_created",
-                meta={"goal_id": goal.id, "category": goal.category.value},
+                meta={
+                    "goal_id": goal.id,
+                    "category": goal.category.value,
+                    "source": goal.source.value,
+                    "created_by": goal.created_by,
+                },
             )
         )
 
