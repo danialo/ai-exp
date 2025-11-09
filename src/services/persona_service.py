@@ -1095,13 +1095,13 @@ This revision represents growth in my self-understanding. My past statements wer
                 "type": "function",
                 "function": {
                     "name": "read_source_code",
-                    "description": "Read your own source code (read-only) to understand how you work.",
+                    "description": "Read your own source code files (read-only) to understand how you work. Can only read files within the src/ directory.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "path": {
                                 "type": "string",
-                                "description": "Path relative to src/ directory (e.g., 'services/persona_service.py')"
+                                "description": "Path to source file relative to the src/ directory. DO NOT include 'src/' in the path. Examples: 'services/persona_service.py', 'services/goal_store.py', 'pipeline/ingest.py'"
                             }
                         },
                         "required": ["path"]
@@ -1278,8 +1278,16 @@ This revision represents growth in my self-understanding. My past statements wer
 
             elif tool_name == "read_source_code":
                 path = arguments.get("path")
-                content = self.file_manager.read_source_code(path)
-                result = content if content else f"Source file not found: {path}"
+
+                # Helpful error if they include 'src/' prefix
+                if path.startswith('src/'):
+                    result = f"Error: Do not include 'src/' in the path. Use path relative to src/ directory.\nExample: Instead of 'src/services/goal_store.py', use 'services/goal_store.py'"
+                else:
+                    content = self.file_manager.read_source_code(path)
+                    if not content:
+                        result = f"Source file not found: src/{path}\nMake sure the file exists and the path is correct (relative to src/ directory)"
+                    else:
+                        result = content
 
             elif tool_name == "execute_script":
                 command = arguments.get("command")
