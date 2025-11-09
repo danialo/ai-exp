@@ -122,6 +122,8 @@ embedding_provider = create_embedding_provider(
 
 # Initialize GoalStore and attach to app state
 from src.services.goal_store import create_goal_store
+from src.services.goal_generator import GoalGenerator
+from src.services.detectors.task_failure_detector import TaskFailureDetector
 goal_store = create_goal_store(settings.RAW_STORE_DB_PATH)
 app.state.goal_store = goal_store
 
@@ -635,6 +637,10 @@ outcome_task = None
 gardener_task: Optional[asyncio.Task] = None
 gardener_last_scan: float = 0.0
 
+# Goal generator globals
+goal_generator: Optional[GoalGenerator] = None
+goal_generator_task: Optional[asyncio.Task] = None
+
 async def gardener_tick_loop():
     """Background task for periodic belief gardener scans."""
     global gardener_last_scan
@@ -866,6 +872,60 @@ async def startup_awareness():
             gardener_task = asyncio.create_task(gardener_tick_loop())
             logger.info("Belief gardener background task started")
 
+        # Initialize and start goal generator
+        if settings.PERSONA_MODE_ENABLED and goal_store:
+            global goal_generator, goal_generator_task
+
+            try:
+                # Create detectors
+                detectors = []
+                if task_scheduler:
+                    task_failure_detector = TaskFailureDetector(
+                        task_scheduler=task_scheduler,
+                        failure_threshold=3,
+                        lookback_hours=24,
+                        min_confidence=0.75,
+                        scan_interval=60,  # Every hour
+                        detector_enabled=True,
+                    )
+                    detectors.append(task_failure_detector)
+
+                # Initialize goal generator
+                goal_generator = GoalGenerator(
+                    goal_store=goal_store,
+                    belief_store=belief_store,
+                    detectors=detectors,
+                    min_confidence=0.7,
+                    max_system_goals_per_day=10,
+                    max_goals_per_detector_per_day=3,
+                    belief_alignment_threshold=0.5,
+                    auto_approve_threshold=0.9,
+                )
+
+                # Start background task
+                async def goal_generator_loop():
+                    """Background task for autonomous goal generation."""
+                    logger.info("Goal generator loop started (interval=1h)")
+                    while True:
+                        try:
+                            await asyncio.sleep(3600)  # Every hour
+                            created, rejected = await goal_generator.generate_and_create_goals()
+                            if created > 0 or rejected > 0:
+                                logger.info(f"Goal generator: {created} created, {rejected} rejected")
+                                telemetry = goal_generator.get_telemetry()
+                                logger.info(f"Goal generator telemetry: {telemetry}")
+                        except asyncio.CancelledError:
+                            logger.info("Goal generator loop cancelled")
+                            break
+                        except Exception as e:
+                            logger.error(f"Goal generation failed: {e}")
+
+                goal_generator_task = asyncio.create_task(goal_generator_loop())
+                logger.info("Goal generator background task started")
+
+            except Exception as e:
+                logger.error(f"Failed to initialize goal generator: {e}", exc_info=True)
+
     except Exception as e:
         logger.error(f"Failed to start awareness loop: {e}")
         # Don't crash the app if awareness fails
@@ -879,13 +939,23 @@ async def startup_awareness():
 @app.on_event("shutdown")
 async def shutdown_awareness():
     """Stop awareness loop, gardener, and decision framework on application shutdown."""
-    global awareness_loop, awareness_task, redis_client, gardener_task, outcome_task
+    global awareness_loop, awareness_task, redis_client, gardener_task, outcome_task, goal_generator_task
 
     # Stop outcome evaluation task
     if outcome_task:
         logger.info("Stopping outcome evaluation task...")
         await outcome_task.stop()
         logger.info("Outcome evaluation task stopped")
+
+    # Stop goal generator task
+    if goal_generator_task and not goal_generator_task.done():
+        logger.info("Stopping goal generator...")
+        goal_generator_task.cancel()
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await goal_generator_task
+
+        logger.info("Goal generator stopped")
 
     if gardener_task and not gardener_task.done():
         logger.info("Stopping gardener tick loop...")
