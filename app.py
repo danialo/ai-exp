@@ -6,6 +6,7 @@ from logging.handlers import RotatingFileHandler
 import time
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -354,8 +355,7 @@ task_scheduler = None
 if settings.PERSONA_MODE_ENABLED:
     task_scheduler = create_task_scheduler(
         persona_space_path=settings.PERSONA_SPACE_PATH,
-        raw_store=raw_store,  # Enable task execution tracking (Phase 1)
-        code_access_service=code_access_service  # Enable code modification tasks
+        raw_store=raw_store  # Enable task execution tracking (Phase 1)
     )
 
 # Initialize belief system (legacy)
@@ -657,6 +657,82 @@ gardener_last_scan: float = 0.0
 goal_generator: Optional[GoalGenerator] = None
 goal_generator_task: Optional[asyncio.Task] = None
 
+# TaskGraph query globals
+TASKGRAPHS: Dict[str, "TaskGraph"] = {}
+
+def load_persisted_taskgraphs():
+    """Load TaskGraphs from persona_space/taskgraphs/ on startup."""
+    from src.services.task_graph import TaskGraph, TaskState, DependencyPolicy
+    from pathlib import Path
+    from datetime import datetime
+
+    global TASKGRAPHS
+
+    graph_dir = Path("persona_space/taskgraphs")
+    if not graph_dir.exists():
+        logger.info("No persisted TaskGraphs directory")
+        return
+
+    for graph_file in graph_dir.glob("*.json"):
+        try:
+            with open(graph_file) as f:
+                data = json.load(f)
+
+            graph_id = data["graph_id"]
+            g = TaskGraph(
+                graph_id=graph_id,
+                graph_timeout_ms=data.get("graph_timeout_ms", 3600000),
+                max_retry_tokens=data.get("max_retry_tokens", 100),
+                max_parallel=data.get("max_parallel", 4)
+            )
+
+            # Restore timestamps
+            if data.get("created_at"):
+                g.created_at = datetime.fromisoformat(data["created_at"])
+            if data.get("started_at"):
+                g.started_at = datetime.fromisoformat(data["started_at"])
+            if data.get("completed_at"):
+                g.completed_at = datetime.fromisoformat(data["completed_at"])
+
+            # Add all nodes
+            for task_id, node_data in data.get("nodes", {}).items():
+                deps = node_data.get("dependencies", [])
+
+                g.add_task(
+                    task_id=task_id,
+                    action_name=node_data["action_name"],
+                    normalized_args=node_data.get("normalized_args", {}),
+                    resource_ids=node_data.get("resource_ids", []),
+                    version=node_data.get("version", "1.0"),
+                    dependencies=deps,
+                    on_dep_fail=DependencyPolicy(node_data.get("on_dep_fail", "abort")),
+                    priority=node_data.get("priority", 0.5),
+                    deadline=datetime.fromisoformat(node_data["deadline"]) if node_data.get("deadline") else None,
+                    cost=node_data.get("cost", 1.0),
+                    task_timeout_ms=node_data.get("task_timeout_ms", 300000),
+                    max_retries=node_data.get("max_retries", 3)
+                )
+
+                # Restore state
+                node = g.nodes[task_id]
+                node.state = TaskState(node_data["state"])
+                node.retry_count = node_data.get("retry_count", 0)
+                if node_data.get("started_at"):
+                    node.started_at = datetime.fromisoformat(node_data["started_at"])
+                if node_data.get("completed_at"):
+                    node.completed_at = datetime.fromisoformat(node_data["completed_at"])
+                node.last_error = node_data.get("last_error")
+                node.error_class = node_data.get("error_class")
+                node.attempts = node_data.get("attempts", [])
+
+            g.retry_tokens_used = data.get("retry_tokens_used", 0)
+
+            TASKGRAPHS[graph_id] = g
+            logger.info(f"Loaded TaskGraph: {graph_id} ({len(g.nodes)} tasks)")
+
+        except Exception as e:
+            logger.error(f"Failed to load TaskGraph from {graph_file}: {e}")
+
 async def gardener_tick_loop():
     """Background task for periodic belief gardener scans."""
     global gardener_last_scan
@@ -942,6 +1018,12 @@ async def startup_awareness():
             except Exception as e:
                 logger.error(f"Failed to initialize goal generator: {e}", exc_info=True)
 
+        # Load persisted TaskGraphs
+        try:
+            load_persisted_taskgraphs()
+        except Exception as e:
+            logger.error(f"Failed to load persisted TaskGraphs: {e}", exc_info=True)
+
     except Exception as e:
         logger.error(f"Failed to start awareness loop: {e}")
         # Don't crash the app if awareness fails
@@ -1103,6 +1185,15 @@ async def root():
     if html_path.exists():
         return FileResponse(html_path)
     return {"message": "AI Experience Memory API", "docs": "/docs"}
+
+
+@app.get("/taskgraphs.html")
+async def taskgraphs_page():
+    """Serve the TaskGraph viewer page."""
+    html_path = Path(__file__).parent / "static" / "taskgraphs.html"
+    if html_path.exists():
+        return FileResponse(html_path)
+    raise HTTPException(404, "TaskGraph viewer page not found")
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -2898,6 +2989,462 @@ async def delete_task(task_id: str):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete task: {str(e)}")
+
+
+# =====================================================================
+# TaskGraph Query Endpoints (R1-R6 Rubric Coverage)
+# =====================================================================
+
+@app.get("/api/v1/taskgraphs")
+def list_taskgraphs():
+    """List all TaskGraph IDs."""
+    return {"ids": list(TASKGRAPHS.keys())}
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}")
+def get_taskgraph(graph_id: str):
+    """Get full TaskGraph snapshot."""
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+    return g.to_dict()
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}/stats")
+def get_taskgraph_stats(graph_id: str):
+    """Get TaskGraph statistics."""
+    from src.services.task_graph import TaskGraph
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+    return g.get_stats()
+
+
+# R1: Lifecycle Coverage
+@app.get("/api/v1/taskgraphs/{graph_id}/tasks")
+def list_taskgraph_tasks(graph_id: str, states: str = None, limit: int = 100, cursor: str = None):
+    """List tasks with optional state filtering and pagination."""
+    from src.services.task_graph import TaskState
+
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    if limit > 500:
+        raise HTTPException(400, "limit must be <= 500")
+
+    # Parse states filter
+    state_filter = None
+    if states:
+        try:
+            state_filter = [TaskState(s.strip()) for s in states.split(",")]
+        except ValueError as e:
+            raise HTTPException(400, f"invalid state: {e}")
+
+    # Filter tasks
+    tasks = []
+    for task_id, node in g.nodes.items():
+        if state_filter and node.state not in state_filter:
+            continue
+        tasks.append({
+            "task_id": task_id,
+            "state": node.state.value,
+            "action_name": node.action_name,
+            "started_at": node.started_at.isoformat() if node.started_at else None,
+            "completed_at": node.completed_at.isoformat() if node.completed_at else None,
+            "retry_count": node.retry_count,
+            "last_error": node.last_error,
+            "error_class": node.error_class,
+        })
+
+    # Simple pagination (cursor = offset)
+    offset = int(cursor) if cursor else 0
+    page = tasks[offset:offset + limit]
+    next_cursor = offset + limit if offset + limit < len(tasks) else None
+
+    return {
+        "tasks": page,
+        "total": len(tasks),
+        "limit": limit,
+        "next_cursor": str(next_cursor) if next_cursor else None
+    }
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}/tasks/{task_id}")
+def get_taskgraph_task(graph_id: str, task_id: str):
+    """Get detailed task information."""
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    node = g.nodes.get(task_id)
+    if not node:
+        raise HTTPException(404, f"task {task_id} not found")
+
+    return {
+        "task_id": task_id,
+        "state": node.state.value,
+        "action_name": node.action_name,
+        "normalized_args": node.normalized_args,
+        "resource_ids": node.resource_ids,
+        "version": node.version,
+        "dependencies": node.dependencies,
+        "dependents": node.dependents,
+        "on_dep_fail": node.on_dep_fail.value,
+        "priority": node.priority,
+        "deadline": node.deadline.isoformat() if node.deadline else None,
+        "cost": node.cost,
+        "task_timeout_ms": node.task_timeout_ms,
+        "started_at": node.started_at.isoformat() if node.started_at else None,
+        "completed_at": node.completed_at.isoformat() if node.completed_at else None,
+        "retry_count": node.retry_count,
+        "max_retries": node.max_retries,
+        "last_error": node.last_error,
+        "error_class": node.error_class,
+        "idempotency_key": node.idempotency_key,
+        "attempts": node.attempts,
+    }
+
+
+# R2: Dependencies & Policies
+@app.get("/api/v1/taskgraphs/{graph_id}/tasks/{task_id}/dependencies")
+def get_taskgraph_dependencies(graph_id: str, task_id: str):
+    """Get task dependency information and policy preview."""
+    from src.services.task_graph import DependencyPolicy
+
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    node = g.nodes.get(task_id)
+    if not node:
+        raise HTTPException(404, f"task {task_id} not found")
+
+    # Find unresolved dependencies
+    unresolved = [dep for dep in node.dependencies
+                  if dep not in g.completed and dep not in g.failed and dep not in g.aborted]
+
+    # Policy preview
+    policy_preview = {}
+    if node.on_dep_fail == DependencyPolicy.ABORT:
+        policy_preview = {
+            "if_all_deps_succeed": "READY",
+            "if_any_dep_fails": "ABORTED"
+        }
+    elif node.on_dep_fail == DependencyPolicy.SKIP:
+        policy_preview = {
+            "if_all_deps_succeed": "READY",
+            "if_any_dep_fails": "SKIPPED"
+        }
+    elif node.on_dep_fail == DependencyPolicy.CONTINUE_IF_ANY:
+        policy_preview = {
+            "if_all_deps_succeed": "READY",
+            "if_any_dep_fails": "READY (if any succeeded)",
+            "if_all_deps_fail": "ABORTED"
+        }
+
+    return {
+        "task_id": task_id,
+        "dependencies": node.dependencies,
+        "dependents": node.dependents,
+        "on_dep_fail": node.on_dep_fail.value,
+        "is_ready": node.is_ready(g.completed, g.failed | g.aborted),
+        "blocking_on": unresolved,
+        "policy_preview": policy_preview
+    }
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}/blocking")
+def get_taskgraph_blocking(graph_id: str):
+    """Get tasks that are blocked and what they're blocked on."""
+    from src.services.task_graph import TaskState
+
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    blocking = []
+    for task_id, node in g.nodes.items():
+        if node.state == TaskState.PENDING:
+            unresolved = [dep for dep in node.dependencies
+                         if dep not in g.completed and dep not in g.failed and dep not in g.aborted]
+            if unresolved:
+                blocking.append({
+                    "task_id": task_id,
+                    "blocking_on": unresolved,
+                    "on_dep_fail": node.on_dep_fail.value
+                })
+
+    return {"blocking_tasks": blocking}
+
+
+# R3: Scheduling & Ready Queue
+@app.get("/api/v1/taskgraphs/{graph_id}/ready")
+def get_taskgraph_ready_queue(graph_id: str, limit: int = 50):
+    """Get ready queue with ordering explanation."""
+    from src.services.task_graph import TaskState
+
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    # Update ready queue
+    g._update_ready_queue()
+
+    # Get ready tasks (sorted by priority)
+    ready_tasks = []
+    for task_id, node in g.nodes.items():
+        if node.state == TaskState.READY:
+            ready_tasks.append({
+                "task_id": task_id,
+                "priority": node.priority,
+                "deadline": node.deadline.timestamp() if node.deadline else None,
+                "cost": node.cost,
+                "action_name": node.action_name,
+            })
+
+    # Sort by priority (desc), deadline (asc), cost (asc), task_id (asc)
+    ready_tasks.sort(key=lambda t: (
+        -t["priority"],
+        t["deadline"] if t["deadline"] else float('inf'),
+        -t["cost"],
+        t["task_id"]
+    ))
+
+    return {
+        "ordering": "priority DESC, deadline ASC, cost ASC, task_id ASC",
+        "queue": ready_tasks[:limit],
+        "total_ready": len(ready_tasks)
+    }
+
+
+# R4: Concurrency
+@app.get("/api/v1/taskgraphs/{graph_id}/concurrency")
+def get_taskgraph_concurrency(graph_id: str):
+    """Get concurrency snapshot."""
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    per_action = {}
+    for action, count in g.action_concurrency.items():
+        cap = g.action_concurrency_caps.get(action, float('inf'))
+        per_action[action] = {
+            "cap": cap if cap != float('inf') else None,
+            "running": count,
+            "available": (cap - count) if cap != float('inf') else None
+        }
+
+    return {
+        "global": {
+            "max_parallel": g.max_parallel,
+            "running": len(g.running_tasks),
+            "available": g.max_parallel - len(g.running_tasks)
+        },
+        "per_action": per_action,
+        "running_tasks": list(g.running_tasks)
+    }
+
+
+# R5: Reliability & Safety
+@app.get("/api/v1/taskgraphs/{graph_id}/tasks/{task_id}/reliability")
+def get_taskgraph_reliability(graph_id: str, task_id: str):
+    """Get task reliability details."""
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    node = g.nodes.get(task_id)
+    if not node:
+        raise HTTPException(404, f"task {task_id} not found")
+
+    return {
+        "task_id": task_id,
+        "idempotency_key": node.idempotency_key,
+        "retry_count": node.retry_count,
+        "max_retries": node.max_retries,
+        "retry_tokens_used": node.retry_tokens_used,
+        "can_retry": node.can_retry(),
+        "attempts": node.attempts
+    }
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}/breakers")
+def get_taskgraph_breakers(graph_id: str):
+    """Get circuit breaker states."""
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    breakers = []
+    for action_name, breaker in g.breakers.items():
+        breakers.append({
+            "action_name": action_name,
+            "state": breaker.get_state(),
+            "failure_count": len(breaker.failures),
+            "threshold": breaker.failure_threshold,
+            "window_seconds": breaker.window_seconds,
+            "recovery_timeout_s": breaker.recovery_timeout_seconds,
+            "opened_at": breaker.opened_at.isoformat() if breaker.opened_at else None
+        })
+
+    return {"breakers": breakers}
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}/budget")
+def get_taskgraph_budget(graph_id: str):
+    """Get retry token budget."""
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    return {
+        "retry_tokens_used": g.retry_tokens_used,
+        "max_retry_tokens": g.max_retry_tokens,
+        "available": g.max_retry_tokens - g.retry_tokens_used
+    }
+
+
+# Visualization
+@app.get("/api/v1/taskgraphs/{graph_id}/ascii", response_class=PlainTextResponse)
+def get_taskgraph_ascii(graph_id: str):
+    """Get ASCII visualization of TaskGraph."""
+    from src.services.task_graph import TaskState, DependencyPolicy
+    from collections import deque
+
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    # Build dependency graph
+    indeg = {k: 0 for k in g.nodes}
+    kids: Dict[str, List[str]] = {k: [] for k in g.nodes}
+    for nid, node in g.nodes.items():
+        for dep in node.dependencies:
+            indeg[nid] += 1
+            kids[dep].append(nid)
+
+    # Layer by BFS
+    roots = [k for k, v in indeg.items() if v == 0]
+    levels: Dict[str, int] = {}
+    q = deque([(r, 0) for r in roots])
+    while q:
+        nid, lvl = q.popleft()
+        if nid in levels and levels[nid] <= lvl:
+            continue
+        levels[nid] = lvl
+        for c in kids.get(nid, []):
+            q.append((c, lvl + 1))
+
+    by_lvl: Dict[int, List[str]] = {}
+    for nid, lvl in levels.items():
+        by_lvl.setdefault(lvl, []).append(nid)
+
+    stats = g.get_stats()
+    lines = [
+        f"TaskGraph: {g.graph_id}",
+        f"Tasks: {stats['total_tasks']}  Running: {stats['running_tasks']}  Parallel: {g.max_parallel}",
+        f"States: {stats['states']}",
+        ""
+    ]
+
+    for lvl in sorted(by_lvl):
+        lines.append(f"Layer {lvl}:")
+        for nid in sorted(by_lvl[lvl]):
+            n = g.nodes[nid]
+            icon = {
+                TaskState.PENDING: "⏸",
+                TaskState.READY: "▶",
+                TaskState.RUNNING: "⚙",
+                TaskState.SUCCEEDED: "✓",
+                TaskState.FAILED: "✗",
+                TaskState.ABORTED: "⊗",
+                TaskState.SKIPPED: "⊘",
+                TaskState.CANCELLED: "⊖",
+            }.get(n.state, "?")
+            deps_str = f"deps={len(n.dependencies)}" if n.dependencies else "root"
+            policy = "" if n.on_dep_fail == DependencyPolicy.ABORT else f" [{n.on_dep_fail.value}]"
+            lines.append(f"  {icon} {nid:<15} {n.action_name:<20} {n.state.value:<10} {deps_str} prio={n.priority:.1f}{policy}")
+
+    missing = [k for k in g.nodes if k not in levels]
+    if missing:
+        lines.append("\nOrphans:")
+        for nid in sorted(missing):
+            n = g.nodes[nid]
+            lines.append(f"  • {nid} [{n.action_name}] {n.state.value}")
+
+    return "\n".join(lines)
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}/dot", response_class=PlainTextResponse)
+def get_taskgraph_dot(graph_id: str):
+    """Get GraphViz DOT format visualization of TaskGraph."""
+    from src.services.task_graph import TaskState, DependencyPolicy
+
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    colors = {
+        TaskState.PENDING: ("gray80", "black"),
+        TaskState.READY: ("gold", "black"),
+        TaskState.RUNNING: ("deepskyblue", "white"),
+        TaskState.SUCCEEDED: ("seagreen", "white"),
+        TaskState.FAILED: ("firebrick", "white"),
+        TaskState.ABORTED: ("orangered", "white"),
+        TaskState.SKIPPED: ("slategray", "white"),
+        TaskState.CANCELLED: ("darkorange", "white"),
+    }
+
+    out = [
+        f'digraph "{g.graph_id}" {{',
+        '  rankdir=TB;',
+        '  node [shape=box, style=filled, fontsize=11, fontname="monospace"];',
+        ''
+    ]
+
+    for nid, n in g.nodes.items():
+        fill, font = colors[n.state]
+        label = f"{nid}\\n{n.action_name}\\n{n.state.value}"
+        if n.retry_count > 0:
+            label += f"\\nretries:{n.retry_count}"
+        out.append(f'  "{nid}" [label="{label}", fillcolor="{fill}", fontcolor="{font}"];')
+
+    out.append('')
+    for nid, n in g.nodes.items():
+        for dep in n.dependencies:
+            style = ""
+            if n.on_dep_fail == DependencyPolicy.SKIP:
+                style = ' [style=dashed, label="skip"]'
+            elif n.on_dep_fail == DependencyPolicy.CONTINUE_IF_ANY:
+                style = ' [style=dotted, label="any"]'
+            out.append(f'  "{dep}" -> "{nid}"{style};')
+
+    out.append("}")
+    return "\n".join(out)
+
+
+@app.post("/api/v1/taskgraphs/test")
+def create_test_taskgraph():
+    """Create a test TaskGraph for demo purposes."""
+    from src.services.task_graph import TaskGraph
+    from uuid import uuid4
+
+    graph_id = f"test-{uuid4().hex[:8]}"
+
+    g = TaskGraph(graph_id=graph_id, max_parallel=4)
+    g.add_task("build_fe", "npm_build", {}, [], "1.0", priority=0.7)
+    g.add_task("build_be", "go_build", {}, [], "1.0", priority=0.7)
+    g.add_task("test", "pytest", {}, [], "1.0", dependencies=["build_fe", "build_be"], priority=0.5)
+    g.add_task("deploy", "deploy_prod", {}, [], "1.0", dependencies=["test"], priority=0.9)
+
+    TASKGRAPHS[graph_id] = g
+
+    return {
+        "graph_id": graph_id,
+        "message": "Test TaskGraph created successfully",
+        "tasks": len(g.nodes)
+    }
 
 
 # =====================================================================

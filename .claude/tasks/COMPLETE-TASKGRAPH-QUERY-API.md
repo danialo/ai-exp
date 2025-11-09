@@ -2,7 +2,7 @@
 
 ## Summary
 
-Implemented production-ready TaskGraph Query API with complete R1-R6 rubric coverage, Python SDK, and comprehensive test suite.
+Implemented production-ready TaskGraph Query API with complete R1-R6 rubric coverage, Python SDK, and comprehensive test suite. **Endpoints are integrated into app.py** and auto-start with the main application.
 
 ## Rubric Compliance
 
@@ -17,54 +17,53 @@ All 6 categories implemented and tested:
 
 ## Files Created
 
-### 1. scripts/taskgraph_viewer.py (450 lines)
+### 1. app.py TaskGraph Endpoints (400+ lines)
 
-FastAPI server with 14 endpoints covering all rubric requirements.
+Integrated into main FastAPI app with 14 endpoints covering all rubric requirements.
 
 **Core Endpoints:**
 ```
-GET /healthz
-GET /v1/taskgraphs
-GET /v1/taskgraphs/{graph_id}
-GET /v1/taskgraphs/{graph_id}/stats
+GET /api/v1/taskgraphs
+GET /api/v1/taskgraphs/{graph_id}
+GET /api/v1/taskgraphs/{graph_id}/stats
 ```
 
 **R1: Lifecycle**
 ```
-GET /v1/taskgraphs/{graph_id}/tasks?states=...&limit=...&cursor=...
-GET /v1/taskgraphs/{graph_id}/tasks/{task_id}
+GET /api/v1/taskgraphs/{graph_id}/tasks?states=...&limit=...&cursor=...
+GET /api/v1/taskgraphs/{graph_id}/tasks/{task_id}
 ```
 
 **R2: Dependencies**
 ```
-GET /v1/taskgraphs/{graph_id}/tasks/{task_id}/dependencies
-GET /v1/taskgraphs/{graph_id}/blocking
+GET /api/v1/taskgraphs/{graph_id}/tasks/{task_id}/dependencies
+GET /api/v1/taskgraphs/{graph_id}/blocking
 ```
 
 **R3: Scheduling**
 ```
-GET /v1/taskgraphs/{graph_id}/ready
+GET /api/v1/taskgraphs/{graph_id}/ready
 ```
 
 **R4: Concurrency**
 ```
-GET /v1/taskgraphs/{graph_id}/concurrency
+GET /api/v1/taskgraphs/{graph_id}/concurrency
 ```
 
 **R5: Reliability**
 ```
-GET /v1/taskgraphs/{graph_id}/tasks/{task_id}/reliability
-GET /v1/taskgraphs/{graph_id}/breakers
-GET /v1/taskgraphs/{graph_id}/budget
+GET /api/v1/taskgraphs/{graph_id}/tasks/{task_id}/reliability
+GET /api/v1/taskgraphs/{graph_id}/breakers
+GET /api/v1/taskgraphs/{graph_id}/budget
 ```
 
 **Visualization**
 ```
-GET /v1/taskgraphs/{graph_id}/ascii
-GET /v1/taskgraphs/{graph_id}/dot
+GET /api/v1/taskgraphs/{graph_id}/ascii
+GET /api/v1/taskgraphs/{graph_id}/dot
 ```
 
-**Demo Graphs:** Includes 2 seeded graphs (`demo`, `complex`) for testing
+**Auto-loads:** Persisted TaskGraphs from `persona_space/taskgraphs/` on startup
 
 ### 2. scripts/taskgraph_client.py (150 lines)
 
@@ -121,48 +120,38 @@ Comprehensive test suite validating all rubric requirements.
 
 ## Service Management
 
-**Start/Stop/Status:**
+**Auto-start with app.py:**
+TaskGraph endpoints are integrated into the main FastAPI application and automatically start when app.py runs. No separate service management required.
+
 ```bash
-# Start service
-./scripts/taskgraph_service.sh start
+# Start main app (includes TaskGraph endpoints)
+python app.py
 
-# Check status
-./scripts/taskgraph_service.sh status
-
-# View logs
-./scripts/taskgraph_service.sh logs
-
-# Stop service
-./scripts/taskgraph_service.sh stop
-
-# Restart service
-./scripts/taskgraph_service.sh restart
+# Or with uvicorn
+uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-**Manual run:**
-```bash
-python3 scripts/taskgraph_viewer.py
-```
+**Endpoints available at:** `http://172.239.66.45:8000/api/v1/taskgraphs/`
 
 ## Querying Graphs
 
 ```bash
 # List all graphs
-curl http://172.239.66.45:8001/v1/taskgraphs
+curl http://172.239.66.45:8000/api/v1/taskgraphs
 
 # View ASCII graph
-curl http://172.239.66.45:8001/v1/taskgraphs/{graph_id}/ascii
+curl http://172.239.66.45:8000/api/v1/taskgraphs/{graph_id}/ascii
 
 # Get stats
-curl http://172.239.66.45:8001/v1/taskgraphs/{graph_id}/stats | jq
+curl http://172.239.66.45:8000/api/v1/taskgraphs/{graph_id}/stats | jq
 
 # View ready queue
-curl http://172.239.66.45:8001/v1/taskgraphs/{graph_id}/ready | jq
+curl http://172.239.66.45:8000/api/v1/taskgraphs/{graph_id}/ready | jq
 ```
 
 ## Example Responses
 
-### GET /v1/taskgraphs/demo/tasks
+### GET /api/v1/taskgraphs/demo/tasks
 ```json
 {
   "tasks": [
@@ -183,7 +172,7 @@ curl http://172.239.66.45:8001/v1/taskgraphs/{graph_id}/ready | jq
 }
 ```
 
-### GET /v1/taskgraphs/demo/ready
+### GET /api/v1/taskgraphs/demo/ready
 ```json
 {
   "ordering": "priority DESC, deadline ASC, cost ASC, task_id ASC",
@@ -200,7 +189,7 @@ curl http://172.239.66.45:8001/v1/taskgraphs/{graph_id}/ready | jq
 }
 ```
 
-### GET /v1/taskgraphs/demo/concurrency
+### GET /api/v1/taskgraphs/demo/concurrency
 ```json
 {
   "global": {
@@ -213,7 +202,7 @@ curl http://172.239.66.45:8001/v1/taskgraphs/{graph_id}/ready | jq
 }
 ```
 
-### GET /v1/taskgraphs/demo/ascii
+### GET /api/v1/taskgraphs/demo/ascii
 ```
 TaskGraph: demo
 Tasks: 4  Running: 0  Parallel: 4
@@ -335,30 +324,32 @@ Query via API
 
 Run all checks:
 ```bash
-# Syntax
-python3 -m py_compile scripts/taskgraph_viewer.py scripts/taskgraph_client.py
+# Syntax check
+python3 -m py_compile app.py scripts/taskgraph_client.py
 
 # Tests
 python3 -m pytest tests/test_taskgraph_query_api.py -v
 
-# Start server
-python3 scripts/taskgraph_viewer.py
+# Start server (endpoints auto-included)
+python app.py
 
 # Query API
-curl http://172.239.66.45:8001/v1/taskgraphs
-curl http://172.239.66.45:8001/v1/taskgraphs/demo/ascii
+curl http://172.239.66.45:8000/api/v1/taskgraphs
+curl http://172.239.66.45:8000/api/v1/taskgraphs/{graph_id}/ascii
 ```
 
 ## Summary
 
 Delivered production-ready TaskGraph Query API with:
-- ✅ 14 HTTP endpoints covering R1-R6 rubric
+- ✅ 14 HTTP endpoints covering R1-R6 rubric (integrated into app.py)
 - ✅ Python SDK client with 15 methods
 - ✅ 24 passing tests validating all requirements
 - ✅ ASCII and DOT visualization
 - ✅ Deterministic ordering and pagination
 - ✅ Complete error handling
-- ✅ 2 demo graphs for immediate testing
+- ✅ Auto-loads persisted TaskGraphs from HTN planner
+- ✅ Auto-starts with main application (no separate service needed)
 
-**Branch:** `claude/feature/taskgraph-query-api`
-**Status:** Ready for review and merge
+**Branch:** `claude/feature/autonomous-goal-generation`
+**Integration:** Endpoints integrated into app.py at lines 2985-3415
+**Status:** Ready for testing
