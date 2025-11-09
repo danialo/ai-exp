@@ -50,6 +50,8 @@ class PersonaService:
         url_fetcher_service=None,
         web_interpretation_service=None,
         awareness_loop=None,
+        code_access_service=None,
+        task_scheduler=None,
     ):
         """
         Initialize persona service.
@@ -70,6 +72,8 @@ class PersonaService:
             web_search_service: Optional web search service
             url_fetcher_service: Optional URL fetcher service
             web_interpretation_service: Optional web interpretation service
+            code_access_service: Optional code access service for reading/modifying source code
+            task_scheduler: Optional task scheduler for scheduling code modifications
         """
         self.llm = llm_service
         self.prompt_builder = PersonaPromptBuilder(persona_space_path, belief_system=belief_system)
@@ -95,6 +99,10 @@ class PersonaService:
 
         # Awareness loop (for identity anchor updates)
         self.awareness_loop = awareness_loop
+
+        # Code access and task scheduling
+        self.code_access_service = code_access_service
+        self.task_scheduler = task_scheduler
 
         # Rate limiting for web operations (per conversation)
         self.url_fetch_count = 0
@@ -1136,6 +1144,28 @@ This revision represents growth in my self-understanding. My past statements wer
             {
                 "type": "function",
                 "function": {
+                    "name": "read_logs",
+                    "description": "Read application log files for debugging and troubleshooting. Use this to investigate errors, check system behavior, or understand what's happening in the system.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "log_file": {
+                                "type": "string",
+                                "description": "Log file to read. Available logs: 'app/astra.log' (main application log), 'app/errors.log' (error log), 'awareness' (awareness loop logs), 'beliefs' (belief system logs), 'conversations' (conversation logs), 'memory' (memory system logs), 'performance' (performance metrics)"
+                            },
+                            "lines": {
+                                "type": "integer",
+                                "description": "Number of recent lines to read (default: 100, max: 500)",
+                                "default": 100
+                            }
+                        },
+                        "required": ["log_file"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "search_web",
                     "description": "Search the web for current information, facts, or knowledge you don't have. Use this when you need up-to-date information, news, specific facts, or when your knowledge might be outdated. Returns search results with titles, URLs, and snippets.",
                     "parameters": {
@@ -1239,6 +1269,35 @@ This revision represents growth in my self-understanding. My past statements wer
                             }
                         },
                         "required": ["statement", "confidence", "rationale"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "schedule_code_modification",
+                    "description": "Schedule a code modification for user approval. Creates a task that will execute after approval. Use this when you've identified a fix that needs to be applied to the codebase.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "File to modify, relative to project root (e.g., 'src/services/task_scheduler.py')"
+                            },
+                            "new_content": {
+                                "type": "string",
+                                "description": "Complete new file content to replace the existing content"
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Clear explanation of why this change is needed and what it fixes"
+                            },
+                            "goal_id": {
+                                "type": "string",
+                                "description": "Optional: ID of related goal if this modification is part of a goal"
+                            }
+                        },
+                        "required": ["file_path", "new_content", "reason"]
                     }
                 }
             }
@@ -1509,6 +1568,114 @@ This revision represents growth in my self-understanding. My past statements wer
                         logger.error(f"Belief proposal error: {e}")
                         import traceback
                         traceback.print_exc()
+
+            elif tool_name == "read_logs":
+                log_file = arguments.get("log_file")
+                lines = arguments.get("lines", 100)
+
+                # Limit to max 500 lines
+                lines = min(lines, 500)
+
+                # Construct full path
+                from pathlib import Path
+                log_path = Path("logs") / log_file
+
+                # Security check - ensure path stays within logs/
+                try:
+                    resolved = log_path.resolve()
+                    logs_base = Path("logs").resolve()
+
+                    # Check if the resolved path is within logs/
+                    if not str(resolved).startswith(str(logs_base)):
+                        result = "Error: Path traversal detected. Can only read files within logs/ directory"
+                    elif not log_path.exists():
+                        result = f"Log file not found: {log_file}\n\nAvailable logs:\n• app/astra.log (main application log)\n• app/errors.log (error log)\n• awareness/ (awareness loop logs)\n• beliefs/ (belief system logs)\n• conversations/ (conversation logs)\n• memory/ (memory system logs)\n• performance/ (performance metrics)"
+                    else:
+                        # Read last N lines
+                        with open(log_path, 'r') as f:
+                            all_lines = f.readlines()
+                            recent_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+                            content = ''.join(recent_lines)
+
+                        result = f"Last {len(recent_lines)} lines from {log_file}:\n\n{content}"
+
+                except Exception as e:
+                    result = f"Error reading log: {str(e)}"
+                    logger.error(f"Log reading error: {e}")
+
+            elif tool_name == "schedule_code_modification":
+                from uuid import uuid4
+                from datetime import datetime, timezone
+                from src.services.task_scheduler import TaskDefinition, TaskType, TaskSchedule
+
+                file_path = arguments.get("file_path")
+                new_content = arguments.get("new_content")
+                reason = arguments.get("reason")
+                goal_id = arguments.get("goal_id")
+
+                # Check if services are available
+                if not self.code_access_service:
+                    result = "Error: Code access service not available. Cannot schedule code modifications."
+                elif not self.task_scheduler:
+                    result = "Error: Task scheduler not available. Cannot schedule code modifications."
+                else:
+                    # Verify path is allowed
+                    can_access, access_error = self.code_access_service.can_access(file_path)
+
+                    if not can_access:
+                        result = f"Error: Access denied to {file_path}\n\nReason: {access_error}\n\nYou can only modify files in: src/services/, src/pipeline/, src/utils/, tests/, scripts/, docs/"
+                    else:
+                        try:
+                            # Create a manual CODE_MODIFY task
+                            task_id = f"code_mod_{uuid4().hex[:8]}"
+                            task = TaskDefinition(
+                                id=task_id,
+                                name=f"Modify {file_path}",
+                                type=TaskType.CODE_MODIFY,
+                                schedule=TaskSchedule.MANUAL,  # Requires manual trigger
+                                prompt=reason,
+                                enabled=True,
+                                metadata={
+                                    "file_path": file_path,
+                                    "new_content": new_content,
+                                    "reason": reason,
+                                    "goal_id": goal_id,
+                                    "requested_by": "astra",
+                                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                                    "status": "awaiting_approval"
+                                }
+                            )
+
+                            # Add task to scheduler
+                            self.task_scheduler.tasks[task_id] = task
+                            self.task_scheduler._save_tasks()
+
+                            # Log to identity ledger
+                            from src.services.identity_ledger import append_event, LedgerEvent
+                            append_event(LedgerEvent(
+                                ts=datetime.now(timezone.utc).timestamp(),
+                                schema=2,
+                                event="code_modification_scheduled",
+                                meta={
+                                    "task_id": task_id,
+                                    "file_path": file_path,
+                                    "reason": reason,
+                                    "goal_id": goal_id,
+                                }
+                            ))
+
+                            result = f"✓ Code modification scheduled successfully!\n\n"
+                            result += f"TASK ID: {task_id}\n"
+                            result += f"FILE: {file_path}\n"
+                            result += f"REASON: {reason}\n\n"
+                            result += f"STATUS: Awaiting user approval\n\n"
+                            result += f"This modification will NOT execute automatically. The user must manually approve and trigger this task."
+
+                            logger.info(f"Code modification scheduled: {task_id} for {file_path}")
+
+                        except Exception as e:
+                            result = f"Error scheduling code modification: {str(e)}"
+                            logger.error(f"Code modification scheduling error: {e}")
 
             else:
                 result = f"Unknown tool: {tool_name}"

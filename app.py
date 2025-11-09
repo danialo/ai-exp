@@ -630,6 +630,8 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         web_search_service=web_search_service,  # Enable web search
         url_fetcher_service=url_fetcher_service,  # Enable URL browsing
         web_interpretation_service=web_interpretation_service,  # Enable content interpretation
+        code_access_service=code_access_service,  # Enable code reading and modification scheduling
+        task_scheduler=task_scheduler,  # Enable task scheduling
     )
 
 # Initialize awareness loop (Redis-backed continuous presence)
