@@ -808,6 +808,10 @@ async def startup_awareness():
                 )
                 logger.info("Parameter adapter initialized")
 
+                # Register goal_selected decision point for adaptive learning
+                from src.services.goal_store import register_goal_selection_decision
+                register_goal_selection_decision(decision_registry)
+
                 # 5. Start outcome evaluation task
                 outcome_task = OutcomeEvaluationTask(
                     parameter_adapter=parameter_adapter,

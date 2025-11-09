@@ -24,6 +24,8 @@ from uuid import uuid4
 from src.memory.raw_store import RawStore
 from src.pipeline.task_experience import create_task_execution_experience
 from src.services.decision_framework import Parameter
+from src.services.task_graph import TaskGraph, TaskNode, TaskState, DependencyPolicy
+from src.services.task_executor import TaskExecutor, TaskStatus as ExecutorTaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +94,9 @@ class TaskScheduler:
         raw_store: Optional[RawStore] = None,
         abort_monitor: Optional[Any] = None,
         decision_framework: Optional[Any] = None,
-        parameter_adapter: Optional[Any] = None
+        parameter_adapter: Optional[Any] = None,
+        task_executor: Optional[TaskExecutor] = None,
+        goal_store: Optional[Any] = None
     ):
         """
         Initialize task scheduler.
@@ -103,6 +107,8 @@ class TaskScheduler:
             abort_monitor: Optional AbortConditionMonitor for safety checks
             decision_framework: Optional DecisionFramework for adaptive task selection
             parameter_adapter: Optional ParameterAdapter for learning from outcomes
+            task_executor: Optional TaskExecutor for robust task execution (created if not provided)
+            goal_store: Optional GoalStore for goal-driven task selection (Phase 1)
         """
         self.persona_space = Path(persona_space_path)
         self.tasks_dir = self.persona_space / "tasks"
@@ -112,6 +118,16 @@ class TaskScheduler:
         self.abort_monitor = abort_monitor
         self.decision_framework = decision_framework
         self.parameter_adapter = parameter_adapter
+        self.goal_store = goal_store
+
+        # Create TaskExecutor for robust execution (Phase 2)
+        if task_executor is None:
+            task_executor = TaskExecutor(
+                abort_monitor=abort_monitor,
+                decision_registry=decision_framework.registry if decision_framework else None,
+                raw_store=raw_store
+            )
+        self.task_executor = task_executor
 
         # Ensure directories exist
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
@@ -707,6 +723,223 @@ Document any new beliefs in your reflection, using the format: "I believe [state
         self._save_tasks()
         logger.info(f"Deleted task: {task_name}")
 
+    async def execute_task_with_retry(
+        self,
+        task_id: str,
+        persona_service,
+        max_retries: Optional[int] = None,
+        timeout_ms: Optional[int] = None
+    ) -> TaskResult:
+        """
+        Execute task with retry logic using TaskExecutor (Phase 2).
+
+        This is a wrapper around the original execute_task that adds:
+        - Automatic retry on transient failures
+        - Exponential backoff with jitter
+        - Timeout enforcement
+        - Circuit breaker integration
+
+        Args:
+            task_id: ID of task to execute
+            persona_service: PersonaService for generating responses
+            max_retries: Override default retry limit
+            timeout_ms: Override default timeout
+
+        Returns:
+            TaskResult with execution details
+        """
+        if task_id not in self.tasks:
+            raise ValueError(f"Task not found: {task_id}")
+
+        task_def = self.tasks[task_id]
+
+        # Create TaskNode from TaskDefinition
+        node = TaskNode(
+            task_id=task_def.id,
+            action_name=task_def.type.value,
+            normalized_args={"prompt": task_def.prompt, "task_name": task_def.name},
+            resource_ids=[],
+            version="1.0",
+            max_retries=max_retries or 3,
+            task_timeout_ms=timeout_ms
+        )
+
+        # Define task callable
+        async def task_callable(args):
+            # Call original execute_task
+            result = await self.execute_task(task_id, persona_service)
+            return {
+                "success": result.success,
+                "error": result.error,
+                "result": result
+            }
+
+        # Execute with TaskExecutor
+        exec_result = await self.task_executor.execute(
+            node=node,
+            task_callable=task_callable,
+            timeout_ms=timeout_ms
+        )
+
+        # Convert executor result to TaskResult
+        if exec_result.status == ExecutorTaskStatus.DUPLICATE:
+            # Return cached result if available
+            if exec_result.metadata and "result" in exec_result.metadata:
+                return exec_result.metadata["result"]
+
+        # Extract original TaskResult from metadata
+        if exec_result.success and exec_result.metadata and "result" in exec_result.metadata:
+            return exec_result.metadata["result"]
+
+        # Failed - create error TaskResult
+        now = datetime.now(timezone.utc)
+        return TaskResult(
+            task_id=task_def.id,
+            task_name=task_def.name,
+            started_at=now.isoformat(),
+            completed_at=now.isoformat(),
+            success=False,
+            error=exec_result.error,
+            metadata={
+                "executor_status": exec_result.status.value,
+                "error_class": exec_result.error_class.value if exec_result.error_class else None,
+                "execution_time_ms": exec_result.execution_time_ms
+            }
+        )
+
+    async def execute_graph(
+        self,
+        graph: TaskGraph,
+        persona_service,
+        max_parallel: int = 5,
+        per_action_caps: Optional[Dict[str, int]] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute task graph with parallel execution and dependency tracking (Phase 2).
+
+        Args:
+            graph: TaskGraph with tasks and dependencies
+            persona_service: PersonaService for generating responses
+            max_parallel: Maximum parallel tasks
+            per_action_caps: Per-action concurrency limits
+
+        Returns:
+            Dict with execution statistics and results
+        """
+        logger.info(f"Executing task graph: {graph.graph_id} ({len(graph.nodes)} tasks)")
+
+        results = {}
+        start_time = datetime.now(timezone.utc)
+
+        # Save original max_parallel and update if specified
+        original_max_parallel = graph.max_parallel
+        if max_parallel is not None:
+            graph.max_parallel = max_parallel
+
+        # Execute until all tasks complete
+        while not graph.is_complete():
+            # Get ready tasks
+            ready_task_ids = graph.get_ready_tasks(per_action_caps=per_action_caps)
+
+            if not ready_task_ids:
+                # No ready tasks - either waiting for dependencies or at concurrency limit
+                # Wait a bit for running tasks to complete
+                await asyncio.sleep(0.05)
+                continue
+
+            # Limit to max_parallel
+            ready_task_ids = ready_task_ids[:max_parallel]
+
+            # Execute ready tasks in parallel
+            tasks = []
+            for task_id in ready_task_ids:
+                graph.mark_running(task_id)
+                node = graph.nodes[task_id]
+
+                # Create async task for execution
+                tasks.append(self._execute_graph_node(node, persona_service, graph))
+
+            # Wait for batch to complete
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Process results
+            for i, result in enumerate(batch_results):
+                task_id = ready_task_ids[i]
+                node = graph.nodes[task_id]
+
+                if isinstance(result, Exception):
+                    # Execution failed
+                    logger.error(f"Task {task_id} failed: {result}")
+                    graph.mark_completed(task_id, success=False, error=str(result))
+                    results[task_id] = {"success": False, "error": str(result)}
+                else:
+                    # Execution succeeded
+                    graph.mark_completed(task_id, success=result.get("success", True))
+                    results[task_id] = result
+
+        end_time = datetime.now(timezone.utc)
+        elapsed_ms = (end_time - start_time).total_seconds() * 1000
+
+        # Restore original max_parallel
+        graph.max_parallel = original_max_parallel
+
+        # Get final statistics
+        stats = graph.get_stats()
+
+        return {
+            "graph_id": graph.graph_id,
+            "total_tasks": len(graph.nodes),
+            "results": results,
+            "statistics": stats,
+            "elapsed_ms": elapsed_ms,
+            "completed_at": end_time.isoformat()
+        }
+
+    async def _execute_graph_node(
+        self,
+        node: TaskNode,
+        persona_service,
+        graph: TaskGraph
+    ) -> Dict[str, Any]:
+        """Execute a single node in the task graph."""
+        # Define task callable
+        async def task_callable(args):
+            # For graph execution, args contain the prompt
+            prompt = args.get("prompt", "")
+
+            # Generate response using persona service
+            # Handle both sync and async generate_response
+            result = persona_service.generate_response(
+                user_message=prompt,
+                retrieve_memories=True,
+                top_k=10
+            )
+
+            # If result is a coroutine, await it
+            if asyncio.iscoroutine(result):
+                response, reconciliation = await result
+            else:
+                response, reconciliation = result
+
+            return {
+                "success": True,
+                "response": response,
+                "reconciliation": reconciliation
+            }
+
+        # Execute with TaskExecutor
+        exec_result = await self.task_executor.execute(
+            node=node,
+            task_callable=task_callable
+        )
+
+        return {
+            "success": exec_result.success,
+            "error": exec_result.error,
+            "execution_time_ms": exec_result.execution_time_ms,
+            "metadata": exec_result.metadata
+        }
+
     def trigger_parameter_adaptation(self, force: bool = False) -> Optional[Dict]:
         """
         Trigger parameter adaptation from task outcomes.
@@ -783,13 +1016,176 @@ Document any new beliefs in your reflection, using the format: "I believe [state
 
         return results
 
+    # === Goal-Driven Task Selection (Phase 1 Integration) ===
+
+    def _goal_to_task(self, goal) -> TaskDefinition:
+        """Convert a GoalDefinition to a TaskDefinition for execution.
+
+        Args:
+            goal: GoalDefinition from GoalStore
+
+        Returns:
+            TaskDefinition that can be executed by TaskScheduler
+        """
+        from src.services.goal_store import GoalCategory
+
+        # Map goal category to task type
+        category_to_type = {
+            GoalCategory.INTROSPECTION: TaskType.SELF_REFLECTION,
+            GoalCategory.EXPLORATION: TaskType.CAPABILITY_EXPLORATION,
+            GoalCategory.MAINTENANCE: TaskType.CUSTOM,
+            GoalCategory.USER_REQUESTED: TaskType.CUSTOM
+        }
+
+        task_type = category_to_type.get(goal.category, TaskType.CUSTOM)
+
+        return TaskDefinition(
+            id=goal.id,
+            name=goal.text[:100],  # Truncate long goal text for name
+            type=task_type,
+            schedule=TaskSchedule.MANUAL,  # Goals are executed on-demand
+            prompt=goal.text,
+            enabled=True,
+            metadata={
+                "goal_id": goal.id,
+                "goal_value": goal.value,
+                "goal_effort": goal.effort,
+                "goal_risk": goal.risk,
+                "goal_category": goal.category.value,
+                "aligns_with": goal.aligns_with,
+                "success_metrics": goal.success_metrics,
+                "source": "goal_store"
+            }
+        )
+
+    def get_next_goal(self, active_belief_ids: Optional[List[str]] = None) -> Optional[Any]:
+        """Get the highest priority goal ready for execution.
+
+        This method:
+        1. Queries GoalStore for ADOPTED goals
+        2. Scores them using current adaptive weights
+        3. Returns the highest priority goal
+
+        Args:
+            active_belief_ids: List of currently active belief IDs for scoring
+
+        Returns:
+            GoalDefinition if available, None otherwise
+        """
+        if not self.goal_store:
+            return None
+
+        from src.services.goal_store import GoalState
+
+        try:
+            # Get current weights from DecisionRegistry if available
+            weights = {}
+            if self.decision_framework and hasattr(self.decision_framework, 'registry'):
+                try:
+                    weights = self.decision_framework.registry.get_all_parameters("goal_selected") or {}
+                except:
+                    # Use defaults if registry lookup fails
+                    weights = {
+                        "value_weight": 0.5,
+                        "effort_weight": 0.25,
+                        "risk_weight": 0.15,
+                        "urgency_weight": 0.05,
+                        "alignment_weight": 0.05
+                    }
+
+            # Get prioritized ADOPTED goals
+            prioritized = self.goal_store.prioritized(
+                state=GoalState.ADOPTED,
+                limit=10,
+                weights=weights,
+                active_beliefs=active_belief_ids or []
+            )
+
+            if not prioritized:
+                return None
+
+            # Return highest priority goal
+            goal, score = prioritized[0]
+            logger.info(f"Selected goal '{goal.id}' with priority score {score:.3f}")
+            return goal
+
+        except Exception as e:
+            logger.error(f"Failed to get next goal: {e}", exc_info=True)
+            return None
+
+    async def execute_goal(
+        self,
+        goal_id: str,
+        persona_service,
+        active_belief_ids: Optional[List[str]] = None
+    ) -> TaskResult:
+        """Execute a specific goal by ID.
+
+        This is a convenience method that:
+        1. Fetches the goal from GoalStore
+        2. Converts it to a TaskDefinition
+        3. Executes it via execute_task()
+
+        Args:
+            goal_id: ID of the goal to execute
+            persona_service: Service to generate responses
+            active_belief_ids: Currently active belief IDs
+
+        Returns:
+            TaskResult
+        """
+        if not self.goal_store:
+            raise ValueError("GoalStore not configured")
+
+        # Fetch goal
+        goal = self.goal_store.get_goal(goal_id)
+        if not goal:
+            raise ValueError(f"Goal not found: {goal_id}")
+
+        # Convert to task
+        task = self._goal_to_task(goal)
+
+        # Add task to tasks dictionary temporarily (required for execute_task)
+        self.tasks[task.id] = task
+
+        try:
+            # Execute via standard task execution
+            result = await self.execute_task(task.id, persona_service)
+        finally:
+            # Remove temporary task (goals aren't persisted in tasks.json)
+            if task.id in self.tasks:
+                del self.tasks[task.id]
+
+        # Update goal state based on result
+        try:
+            from src.services.goal_store import GoalState
+
+            if result.success:
+                # Mark goal as SATISFIED
+                self.goal_store.update_goal(
+                    goal_id,
+                    {"state": GoalState.SATISFIED},
+                    expected_version=goal.version
+                )
+                logger.info(f"Goal {goal_id} marked as SATISFIED")
+            else:
+                # Could implement retry logic or mark as failed
+                logger.warning(f"Goal {goal_id} execution failed: {result.error}")
+
+        except Exception as e:
+            logger.error(f"Failed to update goal state: {e}")
+
+        return result
+
 
 def create_task_scheduler(
     persona_space_path: str = "persona_space",
     raw_store: Optional[RawStore] = None,
     abort_monitor: Optional[Any] = None,
     decision_framework: Optional[Any] = None,
-    parameter_adapter: Optional[Any] = None
+    parameter_adapter: Optional[Any] = None,
+    task_executor: Optional[TaskExecutor] = None,
+    goal_store: Optional[Any] = None
 ) -> TaskScheduler:
     """
     Factory function to create a TaskScheduler.
@@ -800,6 +1196,8 @@ def create_task_scheduler(
         abort_monitor: Optional AbortConditionMonitor for safety checks
         decision_framework: Optional DecisionFramework for adaptive task selection
         parameter_adapter: Optional ParameterAdapter for learning from outcomes
+        task_executor: Optional TaskExecutor for robust task execution with retry logic
+        goal_store: Optional GoalStore for goal-driven task selection (Phase 1)
 
     Returns:
         TaskScheduler instance
@@ -809,5 +1207,7 @@ def create_task_scheduler(
         raw_store=raw_store,
         abort_monitor=abort_monitor,
         decision_framework=decision_framework,
-        parameter_adapter=parameter_adapter
+        parameter_adapter=parameter_adapter,
+        task_executor=task_executor,
+        goal_store=goal_store
     )
