@@ -1300,6 +1300,31 @@ This revision represents growth in my self-understanding. My past statements wer
                         "required": ["file_path", "new_content", "reason"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "execute_goal",
+                    "description": "Autonomously execute a coding goal end-to-end using HTN planning and task execution. The system will decompose the goal, create files, run tests, and return results. Use this for implementing features, fixing bugs, or refactoring code autonomously.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "goal_text": {
+                                "type": "string",
+                                "description": "High-level goal description. Supported goals: 'implement_feature' (creates implementation + test files), 'fix_bug' (modifies code + runs tests), 'refactor_code' (refactors + tests), 'add_tests' (creates test file + runs tests)"
+                            },
+                            "context": {
+                                "type": "object",
+                                "description": "Optional context for HTN planner (e.g., {'has_codebase': true, 'file_path': 'src/foo.py'})"
+                            },
+                            "timeout_ms": {
+                                "type": "integer",
+                                "description": "Maximum execution time in milliseconds (default: 60000 = 1 minute)"
+                            }
+                        },
+                        "required": ["goal_text"]
+                    }
+                }
             }
         ]
 
@@ -1676,6 +1701,71 @@ This revision represents growth in my self-understanding. My past statements wer
                         except Exception as e:
                             result = f"Error scheduling code modification: {str(e)}"
                             logger.error(f"Code modification scheduling error: {e}")
+
+            elif tool_name == "execute_goal":
+                # Autonomous goal execution via HTN planning + task execution
+                if not self.code_access_service:
+                    result = "Error: Code access service not available. Cannot execute goals autonomously."
+                else:
+                    import asyncio
+                    from src.services.goal_execution_service import GoalExecutionService
+
+                    goal_text = arguments.get("goal_text")
+                    context = arguments.get("context", {})
+                    timeout_ms = arguments.get("timeout_ms", 60000)
+
+                    try:
+                        # Initialize execution service
+                        exec_service = GoalExecutionService(
+                            code_access=self.code_access_service,
+                            identity_ledger=None,  # TODO: wire identity ledger
+                            workdir=str(self.code_access_service.project_root),
+                            max_concurrent=2
+                        )
+
+                        # Execute goal (async - run in new loop since we're in sync context)
+                        exec_result = asyncio.run(exec_service.execute_goal(
+                            goal_text=goal_text,
+                            context=context,
+                            timeout_ms=timeout_ms
+                        ))
+
+                        # Format result for persona
+                        result = f"🎯 Goal Execution Complete\n\n"
+                        result += f"GOAL: {goal_text}\n"
+                        result += f"STATUS: {'✓ SUCCESS' if exec_result.success else '✗ FAILED'}\n"
+                        result += f"EXECUTION TIME: {exec_result.execution_time_ms:.1f}ms\n\n"
+
+                        result += f"📊 TASKS:\n"
+                        result += f"  Total: {exec_result.total_tasks}\n"
+                        result += f"  Completed: {len(exec_result.completed_tasks)}\n"
+                        result += f"  Failed: {len(exec_result.failed_tasks)}\n\n"
+
+                        if exec_result.completed_tasks:
+                            result += "✓ COMPLETED TASKS:\n"
+                            for task in exec_result.completed_tasks:
+                                result += f"  - {task.task_name}"
+                                if "file_path" in task.artifacts:
+                                    result += f" ({task.artifacts['file_path']})"
+                                result += "\n"
+                            result += "\n"
+
+                        if exec_result.failed_tasks:
+                            result += "✗ FAILED TASKS:\n"
+                            for task in exec_result.failed_tasks:
+                                result += f"  - {task.task_name}: {task.error}\n"
+                            result += "\n"
+
+                        if exec_result.errors:
+                            result += "⚠️  ERRORS:\n"
+                            for error in exec_result.errors[:5]:  # Show first 5 errors
+                                result += f"  - {error}\n"
+
+                        logger.info(f"Goal execution completed: {exec_result.goal_id} - success={exec_result.success}")
+
+                    except Exception as e:
+                        result = f"Error executing goal: {str(e)}"
+                        logger.error(f"Goal execution error: {e}", exc_info=True)
 
             else:
                 result = f"Unknown tool: {tool_name}"
