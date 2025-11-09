@@ -462,6 +462,103 @@ class GoalStore:
             )
         )
 
+    async def execute_goal(
+        self,
+        goal_id: str,
+        code_access_service,
+        timeout_ms: int = 600000
+    ):
+        """Execute an adopted goal using GoalExecutionService.
+
+        Args:
+            goal_id: ID of goal to execute
+            code_access_service: CodeAccessService instance for file operations
+            timeout_ms: Maximum execution time in milliseconds
+
+        Returns:
+            GoalExecutionResult with task outcomes and artifacts
+
+        Raises:
+            ValueError: If goal doesn't exist or is not ADOPTED
+        """
+        from src.services.goal_execution_service import GoalExecutionService
+
+        goal = self.get_goal(goal_id)
+        if not goal:
+            raise ValueError(f"Goal not found: {goal_id}")
+
+        if goal.state != GoalState.ADOPTED:
+            raise ValueError(f"Goal must be ADOPTED to execute. Current state: {goal.state}")
+
+        # Update goal state to EXECUTING
+        self.update_goal(goal_id, {"state": GoalState.EXECUTING}, expected_version=goal.version)
+
+        # Initialize execution service
+        exec_service = GoalExecutionService(
+            code_access=code_access_service,
+            identity_ledger=None,  # TODO: wire in Phase 4
+            workdir=str(code_access_service.project_root),
+            max_concurrent=3
+        )
+
+        try:
+            # Execute goal
+            result = await exec_service.execute_goal(
+                goal_text=goal.text,
+                context=goal.metadata,
+                timeout_ms=timeout_ms
+            )
+
+            # Update goal state based on result
+            final_state = GoalState.SATISFIED if result.success else GoalState.ADOPTED
+            updated_goal = self.get_goal(goal_id)
+            if updated_goal:
+                self.update_goal(
+                    goal_id,
+                    {
+                        "state": final_state,
+                        "metadata": {
+                            **updated_goal.metadata,
+                            "execution_result": {
+                                "success": result.success,
+                                "completed_tasks": len(result.completed_tasks),
+                                "failed_tasks": len(result.failed_tasks),
+                                "execution_time_ms": result.execution_time_ms,
+                            }
+                        }
+                    },
+                    expected_version=updated_goal.version
+                )
+
+            # Emit ledger event
+            append_event(
+                LedgerEvent(
+                    ts=datetime.now(timezone.utc).timestamp(),
+                    schema=2,
+                    event="goal_executed",
+                    meta={
+                        "goal_id": goal_id,
+                        "success": result.success,
+                        "total_tasks": result.total_tasks,
+                        "completed_tasks": len(result.completed_tasks),
+                        "failed_tasks": len(result.failed_tasks),
+                    }
+                )
+            )
+
+            return result
+
+        except Exception as e:
+            # Revert to ADOPTED on error
+            updated_goal = self.get_goal(goal_id)
+            if updated_goal and updated_goal.state == GoalState.EXECUTING:
+                self.update_goal(
+                    goal_id,
+                    {"state": GoalState.ADOPTED},
+                    expected_version=updated_goal.version
+                )
+            raise
+
 
 def create_goal_store(db_path: str) -> GoalStore:
     return GoalStore(db_path)
