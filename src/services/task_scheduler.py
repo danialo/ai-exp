@@ -103,7 +103,8 @@ class TaskScheduler:
         decision_framework: Optional[Any] = None,
         parameter_adapter: Optional[Any] = None,
         task_executor: Optional[TaskExecutor] = None,
-        goal_store: Optional[Any] = None
+        goal_store: Optional[Any] = None,
+        code_access_service: Optional[Any] = None
     ):
         """
         Initialize task scheduler.
@@ -116,6 +117,7 @@ class TaskScheduler:
             parameter_adapter: Optional ParameterAdapter for learning from outcomes
             task_executor: Optional TaskExecutor for robust task execution (created if not provided)
             goal_store: Optional GoalStore for goal-driven task selection (Phase 1)
+            code_access_service: Optional CodeAccessService for code modification tasks
         """
         self.persona_space = Path(persona_space_path)
         self.tasks_dir = self.persona_space / "tasks"
@@ -124,6 +126,7 @@ class TaskScheduler:
         self.raw_store = raw_store
         self.abort_monitor = abort_monitor
         self.decision_framework = decision_framework
+        self.code_access_service = code_access_service
         self.parameter_adapter = parameter_adapter
         self.goal_store = goal_store
 
@@ -370,6 +373,119 @@ Document any new beliefs in your reflection, using the format: "I believe [state
 
         task.next_run = next_run.isoformat() if next_run else None
 
+    async def _execute_code_task(
+        self,
+        task: TaskDefinition,
+        trace_id: str
+    ) -> tuple[str, dict]:
+        """Execute a code access task (CODE_READ, CODE_MODIFY, CODE_TEST).
+
+        Args:
+            task: The task to execute
+            trace_id: Trace ID for logging
+
+        Returns:
+            (response_text, metadata) - Task result and metadata
+
+        Raises:
+            ValueError: If code_access_service not available or task params invalid
+        """
+        if not self.code_access_service:
+            raise ValueError("CodeAccessService not available - cannot execute code tasks")
+
+        # Extract task parameters from prompt
+        # For now, prompt should be a dict-like string or actual dict in metadata
+        # TODO: Better parameter extraction
+        metadata = task.metadata or {}
+
+        if task.type == TaskType.CODE_READ:
+            # Read a source file
+            file_path = metadata.get("file_path")
+            if not file_path:
+                raise ValueError("CODE_READ task requires 'file_path' in metadata")
+
+            content, error = await self.code_access_service.read_file(file_path)
+            if error:
+                raise ValueError(f"Failed to read {file_path}: {error}")
+
+            return content, {
+                "file_path": file_path,
+                "file_size": len(content),
+                "task_type": "code_read",
+            }
+
+        elif task.type == TaskType.CODE_TEST:
+            # Run tests
+            test_pattern = metadata.get("test_pattern")
+
+            test_result = await self.code_access_service.run_tests(test_pattern)
+
+            response = f"""Test Results:
+- Passed: {test_result.passed}
+- Total: {test_result.total_tests}
+- Passed: {test_result.passed_tests}
+- Failed: {test_result.failed_tests}
+- Duration: {test_result.duration_seconds:.2f}s
+
+Output:
+{test_result.output[:500]}
+"""
+
+            return response, {
+                "test_passed": test_result.passed,
+                "total_tests": test_result.total_tests,
+                "task_type": "code_test",
+            }
+
+        elif task.type == TaskType.CODE_MODIFY:
+            # Modify a source file
+            file_path = metadata.get("file_path")
+            new_content = metadata.get("new_content")
+            reason = metadata.get("reason", "Code modification from task")
+            goal_id = metadata.get("goal_id", "unknown")
+
+            if not file_path or not new_content:
+                raise ValueError("CODE_MODIFY task requires 'file_path' and 'new_content' in metadata")
+
+            modification, error = await self.code_access_service.modify_file(
+                file_path=file_path,
+                new_content=new_content,
+                reason=reason,
+                goal_id=goal_id,
+            )
+
+            if error:
+                raise ValueError(f"Failed to modify {file_path}: {error}")
+
+            # Commit the modification
+            commit_success, commit_error = await self.code_access_service.commit_modification(modification)
+            if not commit_success:
+                raise ValueError(f"Failed to commit modification: {commit_error}")
+
+            response = f"""Code Modified:
+- File: {file_path}
+- Modification ID: {modification.id}
+- Branch: {modification.branch_name}
+- Status: {modification.status.value}
+
+Reason: {reason}
+
+Next steps:
+1. Run tests: CODE_TEST task
+2. Request approval
+3. Merge to main
+"""
+
+            return response, {
+                "modification_id": modification.id,
+                "branch_name": modification.branch_name,
+                "file_path": file_path,
+                "task_type": "code_modify",
+            }
+
+        else:
+            raise ValueError(f"Unknown code task type: {task.type}")
+
     async def execute_task(self, task_id: str, persona_service) -> TaskResult:
         """
         Execute a scheduled task.
@@ -453,41 +569,67 @@ Document any new beliefs in your reflection, using the format: "I believe [state
         status = "success"
 
         try:
-            # Execute task by generating response with persona
-            response, reconciliation = persona_service.generate_response(
-                user_message=task.prompt,
-                retrieve_memories=True,
-                top_k=10  # More context for reflection tasks
+            # Route task based on type
+            is_code_task = task.type in (
+                TaskType.CODE_READ,
+                TaskType.CODE_MODIFY,
+                TaskType.CODE_TEST,
+                TaskType.CODE_ANALYZE,
             )
 
-            response_text = response
-            completed_at = datetime.now(timezone.utc)
+            if is_code_task:
+                # Execute code access task
+                response_text, task_metadata = await self._execute_code_task(task, trace_id)
+                completed_at = datetime.now(timezone.utc)
+                retrieval_metadata = {
+                    "memory_count": 0,
+                    "query": task.prompt[:100] if task.prompt else "",
+                    "filters": {},
+                    "latency_ms": 0,
+                    "source": ["code_access"],
+                }
+                reconciliation = None
+            else:
+                # Execute cognitive task by generating response with persona
+                response, reconciliation = persona_service.generate_response(
+                    user_message=task.prompt,
+                    retrieve_memories=True,
+                    top_k=10  # More context for reflection tasks
+                )
 
-            # TODO: Capture actual retrieval metadata from persona_service
-            # For now, set default values
-            retrieval_metadata = {
-                "memory_count": 0,  # We don't have access to this yet
-                "query": task.prompt[:100],  # Use prompt as query
-                "filters": {},
-                "latency_ms": 0,  # Unknown
-                "source": ["experiences"],  # Assumed
-            }
+                response_text = response
+                completed_at = datetime.now(timezone.utc)
+
+                # TODO: Capture actual retrieval metadata from persona_service
+                # For now, set default values
+                retrieval_metadata = {
+                    "memory_count": 0,  # We don't have access to this yet
+                    "query": task.prompt[:100],  # Use prompt as query
+                    "filters": {},
+                    "latency_ms": 0,  # Unknown
+                    "source": ["experiences"],  # Assumed
+                }
+                task_metadata = {}
 
             # Create result
+            result_metadata = {
+                "reconciliation": reconciliation,
+                "task_type": task.type,
+                "trace_id": trace_id,
+                "span_id": span_id,
+                "decision_record_id": decision_record_id,  # For linking to DecisionFramework
+            }
+            # Merge task-specific metadata
+            result_metadata.update(task_metadata)
+
             result = TaskResult(
                 task_id=task.id,
                 task_name=task.name,
                 started_at=started_at.isoformat(),
                 completed_at=completed_at.isoformat(),
                 success=True,
-                response=response,
-                metadata={
-                    "reconciliation": reconciliation,
-                    "task_type": task.type,
-                    "trace_id": trace_id,
-                    "span_id": span_id,
-                    "decision_record_id": decision_record_id,  # For linking to DecisionFramework
-                }
+                response=response_text,
+                metadata=result_metadata
             )
 
             # Update task metadata

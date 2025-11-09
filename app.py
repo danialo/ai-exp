@@ -336,12 +336,26 @@ if settings.CONSOLIDATION_ENABLED and narrative_transformer:
 # Global session tracking
 current_session_id: Optional[str] = None
 
+# Initialize code access service
+from src.services.code_access import create_code_access_service
+from pathlib import Path as PathLib
+
+code_access_service = None
+if settings.PERSONA_MODE_ENABLED:
+    code_access_service = create_code_access_service(
+        project_root=PathLib(settings.PROJECT_ROOT),
+        max_file_size_kb=100,
+        auto_branch=True,
+    )
+    logger.info("Code access service initialized")
+
 # Initialize task scheduler
 task_scheduler = None
 if settings.PERSONA_MODE_ENABLED:
     task_scheduler = create_task_scheduler(
         persona_space_path=settings.PERSONA_SPACE_PATH,
-        raw_store=raw_store  # Enable task execution tracking (Phase 1)
+        raw_store=raw_store,  # Enable task execution tracking (Phase 1)
+        code_access_service=code_access_service  # Enable code modification tasks
     )
 
 # Initialize belief system (legacy)
