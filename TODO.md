@@ -19,12 +19,12 @@
   - See TODO_TOKEN_TRACKING.md for full implementation plan
   - Current spend: ~$24/month (healthy, but using estimates)
 
-- [ ] **Complete decision audit logging**
-  - [x] Add logging to form_belief_from_pattern()
-  - [ ] Add logging to consider_promotion()
-  - [ ] Add logging to consider_deprecation()
-  - [ ] Add abort logging to abort_condition_monitor.py
-  - [ ] Add adaptation logging to parameter_adapter.py
+- [x] **Complete decision audit logging** (COMPLETE)
+  - [x] Add logging to form_belief_from_pattern() - AdaptiveBeliefLifecycleManager
+  - [x] Add logging to consider_promotion() - AdaptiveBeliefLifecycleManager
+  - [x] Add logging to consider_deprecation() - AdaptiveBeliefLifecycleManager
+  - [x] Add abort logging to abort_condition_monitor.py - decision_aborted_event()
+  - [x] Add adaptation logging to parameter_adapter.py - parameter_adapted_event()
 
 - [ ] **MCP integration (Phase 2A)**
   - Tooling + tests landed in `src/mcp/task_execution_server.py`
