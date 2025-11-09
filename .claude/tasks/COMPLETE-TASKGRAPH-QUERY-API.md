@@ -119,22 +119,45 @@ Comprehensive test suite validating all rubric requirements.
 
 **Total: 24 tests, all passing ✅**
 
-## Running the API
+## Service Management
+
+**Start/Stop/Status:**
+```bash
+# Start service
+./scripts/taskgraph_service.sh start
+
+# Check status
+./scripts/taskgraph_service.sh status
+
+# View logs
+./scripts/taskgraph_service.sh logs
+
+# Stop service
+./scripts/taskgraph_service.sh stop
+
+# Restart service
+./scripts/taskgraph_service.sh restart
+```
+
+**Manual run:**
+```bash
+python3 scripts/taskgraph_viewer.py
+```
+
+## Querying Graphs
 
 ```bash
-# Start server
-python3 scripts/taskgraph_viewer.py
-
-# Server runs on http://172.239.66.45:8001
+# List all graphs
+curl http://172.239.66.45:8001/v1/taskgraphs
 
 # View ASCII graph
-curl http://172.239.66.45:8001/v1/taskgraphs/demo/ascii
+curl http://172.239.66.45:8001/v1/taskgraphs/{graph_id}/ascii
 
 # Get stats
-curl http://172.239.66.45:8001/v1/taskgraphs/demo/stats | jq
+curl http://172.239.66.45:8001/v1/taskgraphs/{graph_id}/stats | jq
 
 # View ready queue
-curl http://172.239.66.45:8001/v1/taskgraphs/demo/ready | jq
+curl http://172.239.66.45:8001/v1/taskgraphs/{graph_id}/ready | jq
 ```
 
 ## Example Responses
@@ -265,12 +288,28 @@ TestNegativeCases::test_duplicate_task_id PASSED
 - GraphViz DOT format with color-coded states
 - Dependency policy annotations
 
-## Integration Points
+## Real Data Integration
 
-The API integrates with existing TaskGraph infrastructure:
-- Uses real `src/services/task_graph.py` classes
-- Seeds demo graphs on startup
-- Can be extended to load graphs from HTN planner or persistence layer
+### Persistence
+**TaskGraphs automatically persisted** when HTN planner creates them:
+- Location: `persona_space/taskgraphs/{graph_id}.json`
+- Auto-saved by `htn_planner.py:_persist_task_graph()`
+- Loaded on viewer startup
+
+### Data Flow
+```
+HTN Planner creates TaskGraph
+        ↓
+Auto-persist to persona_space/taskgraphs/
+        ↓
+Viewer loads on startup
+        ↓
+Query via API
+```
+
+### Demo Data
+- If no persisted graphs exist, seeds single `demo` graph
+- Demo removed once real HTN plans execute
 
 ## Next Steps
 

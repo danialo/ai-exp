@@ -492,7 +492,29 @@ def plan_to_task_graph(plan: Plan, task_graph=None):
         f"{len(plan.tasks)} tasks with sequential dependencies"
     )
 
+    # Persist TaskGraph for querying
+    _persist_task_graph(task_graph)
+
     return task_graph
+
+
+def _persist_task_graph(task_graph: "TaskGraph") -> None:
+    """Persist TaskGraph to disk for query API."""
+    import json
+    from pathlib import Path
+
+    graph_dir = Path("persona_space/taskgraphs")
+    graph_dir.mkdir(parents=True, exist_ok=True)
+
+    graph_file = graph_dir / f"{task_graph.graph_id}.json"
+
+    try:
+        data = task_graph.to_dict()
+        with open(graph_file, 'w') as f:
+            json.dump(data, f, indent=2)
+        logger.info(f"Persisted TaskGraph: {graph_file}")
+    except Exception as e:
+        logger.error(f"Failed to persist TaskGraph {task_graph.graph_id}: {e}")
 
 
 # === Helper Functions ===

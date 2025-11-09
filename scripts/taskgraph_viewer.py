@@ -37,28 +37,93 @@ from src.services.task_graph import TaskGraph, TaskState, DependencyPolicy
 app = FastAPI()
 GRAPHS: Dict[str, TaskGraph] = {}
 
-# Seed demo graph
-def seed_demo():
+# Load graphs from persistence
+def load_persisted_graphs():
+    """Load TaskGraphs from persona_space/taskgraphs/ directory."""
+    import json
+    from pathlib import Path
+    from datetime import datetime
+
+    graph_dir = Path("persona_space/taskgraphs")
+    if not graph_dir.exists():
+        logger.info(f"No persisted graphs directory: {graph_dir}")
+        return
+
+    for graph_file in graph_dir.glob("*.json"):
+        try:
+            with open(graph_file) as f:
+                data = json.load(f)
+
+            # Reconstruct TaskGraph from persisted data
+            graph_id = data["graph_id"]
+            g = TaskGraph(
+                graph_id=graph_id,
+                graph_timeout_ms=data.get("graph_timeout_ms", 3600000),
+                max_retry_tokens=data.get("max_retry_tokens", 100),
+                max_parallel=data.get("max_parallel", 4)
+            )
+
+            # Restore timestamps
+            if data.get("created_at"):
+                g.created_at = datetime.fromisoformat(data["created_at"])
+            if data.get("started_at"):
+                g.started_at = datetime.fromisoformat(data["started_at"])
+            if data.get("completed_at"):
+                g.completed_at = datetime.fromisoformat(data["completed_at"])
+
+            # Add all nodes
+            for task_id, node_data in data.get("nodes", {}).items():
+                # Reconstruct dependencies from node data
+                deps = node_data.get("dependencies", [])
+
+                g.add_task(
+                    task_id=task_id,
+                    action_name=node_data["action_name"],
+                    normalized_args=node_data.get("normalized_args", {}),
+                    resource_ids=node_data.get("resource_ids", []),
+                    version=node_data.get("version", "1.0"),
+                    dependencies=deps,
+                    on_dep_fail=DependencyPolicy(node_data.get("on_dep_fail", "abort")),
+                    priority=node_data.get("priority", 0.5),
+                    deadline=datetime.fromisoformat(node_data["deadline"]) if node_data.get("deadline") else None,
+                    cost=node_data.get("cost", 1.0),
+                    task_timeout_ms=node_data.get("task_timeout_ms", 300000),
+                    max_retries=node_data.get("max_retries", 3)
+                )
+
+                # Restore state
+                node = g.nodes[task_id]
+                node.state = TaskState(node_data["state"])
+                node.retry_count = node_data.get("retry_count", 0)
+                if node_data.get("started_at"):
+                    node.started_at = datetime.fromisoformat(node_data["started_at"])
+                if node_data.get("completed_at"):
+                    node.completed_at = datetime.fromisoformat(node_data["completed_at"])
+                node.last_error = node_data.get("last_error")
+                node.error_class = node_data.get("error_class")
+                node.attempts = node_data.get("attempts", [])
+
+            # Restore runtime state
+            g.retry_tokens_used = data.get("retry_tokens_used", 0)
+
+            GRAPHS[graph_id] = g
+            logger.info(f"Loaded graph: {graph_id} ({len(g.nodes)} tasks)")
+
+        except Exception as e:
+            logger.error(f"Failed to load graph from {graph_file}: {e}")
+
+# Try to load persisted graphs
+load_persisted_graphs()
+
+# If no graphs loaded, seed a demo for testing
+if not GRAPHS:
+    logger.info("No persisted graphs found, seeding demo graph")
     g = TaskGraph(graph_id="demo", max_parallel=4)
     g.add_task("build_fe", "npm_build", {}, [], "1.0", priority=0.7)
     g.add_task("build_be", "go_build", {}, [], "1.0", priority=0.7)
     g.add_task("test", "pytest", {}, [], "1.0", dependencies=["build_fe", "build_be"])
     g.add_task("deploy", "deploy_prod", {}, [], "1.0", dependencies=["test"], priority=0.9)
     GRAPHS["demo"] = g
-
-    # Complex example with failures
-    g2 = TaskGraph(graph_id="complex", max_parallel=3)
-    g2.add_task("fetch_data", "http_get", {}, [], "1.0")
-    g2.add_task("validate", "schema_check", {}, [], "1.0", dependencies=["fetch_data"])
-    g2.add_task("transform", "etl", {}, [], "1.0", dependencies=["validate"])
-    g2.add_task("analyze_a", "ml_inference", {}, [], "1.0", dependencies=["transform"])
-    g2.add_task("analyze_b", "stats", {}, [], "1.0", dependencies=["transform"],
-                on_dep_fail=DependencyPolicy.CONTINUE_IF_ANY)
-    g2.add_task("report", "generate_pdf", {}, [], "1.0",
-                dependencies=["analyze_a", "analyze_b"], on_dep_fail=DependencyPolicy.SKIP)
-    GRAPHS["complex"] = g2
-
-seed_demo()
 
 @app.get("/healthz")
 def healthz():
