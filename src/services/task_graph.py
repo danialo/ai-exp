@@ -83,6 +83,7 @@ class TaskNode:
     retry_count: int = 0
     max_retries: int = 3
     retry_tokens_used: int = 0
+    next_run_at: Optional[float] = None  # Monotonic timestamp for retry scheduling
 
     # Execution metadata
     started_at: Optional[datetime] = None
@@ -500,8 +501,20 @@ class TaskGraph:
 
     def _update_ready_queue(self) -> None:
         """Update ready queue with newly ready tasks."""
+        import time
+        current_time = time.monotonic()
+
         for task_id, node in self.nodes.items():
             if node.state == TaskState.PENDING:
+                # Check if this is a retry-scheduled task waiting for its retry time
+                if node.next_run_at is not None:
+                    if current_time < node.next_run_at:
+                        # Retry time hasn't arrived yet, skip this task
+                        continue
+                    # Retry time has arrived, clear next_run_at and proceed
+                    node.next_run_at = None
+                    logger.info(f"Task {task_id} retry time arrived, moving to ready check")
+
                 # Check if should skip/abort due to dep failure
                 if node.should_skip(self.failed | self.aborted):
                     node.state = TaskState.SKIPPED
@@ -532,31 +545,58 @@ class TaskGraph:
                         (-priority, deadline_ts, -cost, task_id)
                     )
 
-    def mark_running(self, task_id: str) -> None:
-        """Mark task as running."""
+    def mark_running(
+        self,
+        task_id: str,
+        worker_id: Optional[str] = None,
+        attempt_no: Optional[int] = None
+    ) -> None:
+        """Mark task as running.
+
+        Args:
+            task_id: Task ID
+            worker_id: Optional worker ID executing the task
+            attempt_no: Optional attempt number (for retry tracking)
+        """
         node = self.nodes[task_id]
         node.state = TaskState.RUNNING
         node.started_at = datetime.now(timezone.utc)
 
+        if worker_id:
+            node.worker_id = worker_id
+
         self.running_tasks.add(task_id)
         self.action_concurrency[node.action_name] += 1
 
-        logger.info(f"Task {task_id}: READY → RUNNING")
+        logger.info(f"Task {task_id}: READY → RUNNING (attempt {attempt_no or 1})")
 
     def mark_completed(
         self,
         task_id: str,
-        success: bool,
+        success: bool = True,
+        result: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
         error_class: Optional[str] = None
     ) -> None:
-        """Mark task as completed (succeeded or failed)."""
+        """Mark task as completed (succeeded or failed).
+
+        Args:
+            task_id: Task ID
+            success: True for success, False for failure (default: True)
+            result: Optional result artifacts dictionary
+            error: Optional error message
+            error_class: Optional error class name
+        """
         node = self.nodes[task_id]
         node.completed_at = datetime.now(timezone.utc)
 
         if success:
             node.state = TaskState.SUCCEEDED
             self.completed.add(task_id)
+
+            # Store result artifacts if provided
+            if result:
+                node.normalized_args["_result"] = result
 
             # Update circuit breaker
             breaker = self._get_breaker(node.action_name)
@@ -578,6 +618,84 @@ class TaskGraph:
         # Cleanup
         self.running_tasks.discard(task_id)
         self.action_concurrency[node.action_name] -= 1
+
+    def mark_failed(
+        self,
+        task_id: str,
+        error: str,
+        error_class: str,
+        retry_scheduled_ms: Optional[int] = None
+    ) -> None:
+        """Mark task as failed.
+
+        Args:
+            task_id: Task ID
+            error: Error message
+            error_class: Error class name
+            retry_scheduled_ms: If set, indicates retry is scheduled in N milliseconds
+        """
+        node = self.nodes[task_id]
+        node.state = TaskState.FAILED
+        node.last_error = error
+        node.error_class = error_class
+        node.completed_at = datetime.now(timezone.utc)
+        node.retry_count += 1
+
+        self.failed.add(task_id)
+
+        # Update circuit breaker
+        breaker = self._get_breaker(node.action_name)
+        breaker.record_failure(error_class or "unknown")
+
+        # Cleanup running state
+        if task_id in self.running_tasks:
+            self.running_tasks.discard(task_id)
+            self.action_concurrency[node.action_name] -= 1
+
+        if retry_scheduled_ms:
+            logger.warning(
+                f"Task {task_id}: RUNNING → FAILED ({error_class}), "
+                f"retry in {retry_scheduled_ms}ms"
+            )
+        else:
+            logger.error(f"Task {task_id}: RUNNING → FAILED ({error_class})")
+
+    def schedule_retry(self, task_id: str, next_run_at: float) -> None:
+        """Schedule task for retry.
+
+        Args:
+            task_id: Task ID
+            next_run_at: Monotonic timestamp when task should be retried
+        """
+        node = self.nodes[task_id]
+
+        # Store next run time (we'll check this in get_ready_tasks)
+        node.next_run_at = next_run_at
+
+        # Move from failed back to pending for retry
+        self.failed.discard(task_id)
+        node.state = TaskState.PENDING
+
+        logger.info(f"Task {task_id} scheduled for retry at {next_run_at}")
+
+    def can_retry(self, task: "TaskNode") -> bool:
+        """Check if task can be retried based on graph-level budget and task limits.
+
+        Args:
+            task: Task to check
+
+        Returns:
+            True if retry is allowed
+        """
+        # Check task-level retry limit
+        if task.retry_count >= task.max_retries:
+            return False
+
+        # Check graph-level retry budget
+        if self.retry_tokens_used >= self.max_retry_tokens:
+            return False
+
+        return True
 
     def mark_aborted(self, task_id: str, reason: str) -> None:
         """Mark task as aborted by safety envelope."""
