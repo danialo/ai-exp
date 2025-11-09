@@ -32,12 +32,19 @@ logger = logging.getLogger(__name__)
 
 class TaskType(str, Enum):
     """Types of scheduled tasks."""
+    # Cognitive tasks (LLM-based)
     SELF_REFLECTION = "self_reflection"
     GOAL_ASSESSMENT = "goal_assessment"
     MEMORY_CONSOLIDATION = "memory_consolidation"
     CAPABILITY_EXPLORATION = "capability_exploration"
     EMOTIONAL_RECONCILIATION = "emotional_reconciliation"
     CUSTOM = "custom"
+
+    # Code access tasks (file operations)
+    CODE_READ = "code_read"          # Read source files
+    CODE_ANALYZE = "code_analyze"    # Analyze code patterns
+    CODE_MODIFY = "code_modify"      # Modify source files
+    CODE_TEST = "code_test"          # Run tests
 
 
 class TaskSchedule(str, Enum):
