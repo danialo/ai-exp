@@ -11,6 +11,79 @@ from src.services.goal_execution_service import (
     DEFAULT_CODING_METHODS,
     DEFAULT_PRIMITIVE_TASKS
 )
+from src.services.task_executors.base import RunContext, ExecutionResult, TaskExecutor
+
+
+# === Mock Executors for Testing ===
+
+class MockCodeExecutor(TaskExecutor):
+    """Mock executor for code operations."""
+    actions = {"create_file", "modify_code", "delete_file"}
+
+    def __init__(self):
+        self.executed_tasks = []
+
+    async def admit(self, task, ctx):
+        return True, ""
+
+    async def preflight(self, task, ctx):
+        return True, ""
+
+    async def execute(self, task, ctx):
+        self.executed_tasks.append(task.task_id)
+        await asyncio.sleep(0.001)  # Tiny delay to simulate work
+        return ExecutionResult(
+            success=True,
+            stdout=f"Executed {task.action_name}",
+            artifacts={"file_path": task.normalized_args.get("file_path", "unknown")}
+        )
+
+    async def postcondition(self, task, ctx, res):
+        return True, ""
+
+
+class MockTestExecutor(TaskExecutor):
+    """Mock executor for test operations."""
+    actions = {"run_tests", "pytest"}
+
+    def __init__(self):
+        self.tests_run = []
+
+    async def admit(self, task, ctx):
+        return True, ""
+
+    async def preflight(self, task, ctx):
+        return True, ""
+
+    async def execute(self, task, ctx):
+        self.tests_run.append(task.task_id)
+        await asyncio.sleep(0.001)
+        return ExecutionResult(
+            success=True,
+            stdout="All tests passed",
+            artifacts={"tests_passed": 10, "tests_failed": 0}
+        )
+
+    async def postcondition(self, task, ctx, res):
+        return True, ""
+
+
+class MockShellExecutor(TaskExecutor):
+    """Mock executor for shell commands."""
+    actions = {"shell_command", "bash"}
+
+    async def admit(self, task, ctx):
+        return True, ""
+
+    async def preflight(self, task, ctx):
+        return True, ""
+
+    async def execute(self, task, ctx):
+        await asyncio.sleep(0.001)
+        return ExecutionResult(success=True, stdout="command executed")
+
+    async def postcondition(self, task, ctx, res):
+        return True, ""
 
 
 # === Mock CodeAccessService ===
@@ -66,17 +139,20 @@ async def test_execute_goal_implement_feature():
 
     Flow:
     1. Service receives goal "implement_feature"
-    2. HTN planner decomposes to: [create_file, write_tests, run_tests]
+    2. HTN planner decomposes to: [create_file, create_file, run_tests]
     3. TaskGraph creates sequential dependency chain
     4. Execution engine runs tasks
     5. Result shows success with all tasks completed
     """
     code_access = MockCodeAccessService()
+    executors = [MockCodeExecutor(), MockTestExecutor(), MockShellExecutor()]
+
     service = GoalExecutionService(
         code_access=code_access,
         identity_ledger=None,
         workdir="/tmp/test",
-        max_concurrent=2
+        max_concurrent=2,
+        executors=executors
     )
 
     # Execute goal
@@ -117,9 +193,12 @@ async def test_execute_goal_implement_feature():
 async def test_execute_goal_fix_bug():
     """Test executing 'fix_bug' goal."""
     code_access = MockCodeAccessService()
+    executors = [MockCodeExecutor(), MockTestExecutor(), MockShellExecutor()]
+
     service = GoalExecutionService(
         code_access=code_access,
-        workdir="/tmp/test"
+        workdir="/tmp/test",
+        executors=executors
     )
 
     result = await service.execute_goal(
@@ -165,9 +244,12 @@ async def test_execute_goal_no_plan_found():
 async def test_execute_goal_with_artifacts():
     """Test that task artifacts are collected."""
     code_access = MockCodeAccessService()
+    executors = [MockCodeExecutor(), MockTestExecutor(), MockShellExecutor()]
+
     service = GoalExecutionService(
         code_access=code_access,
-        workdir="/tmp/test"
+        workdir="/tmp/test",
+        executors=executors
     )
 
     result = await service.execute_goal(
@@ -188,9 +270,12 @@ async def test_execute_goal_with_artifacts():
 async def test_execute_goal_tracks_retries():
     """Test that retry counts are tracked (even if no retries occur)."""
     code_access = MockCodeAccessService()
+    executors = [MockCodeExecutor(), MockTestExecutor(), MockShellExecutor()]
+
     service = GoalExecutionService(
         code_access=code_access,
-        workdir="/tmp/test"
+        workdir="/tmp/test",
+        executors=executors
     )
 
     result = await service.execute_goal(

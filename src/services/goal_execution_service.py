@@ -156,7 +156,8 @@ class GoalExecutionService:
         workdir: str = "/home/d/git/ai-exp",
         methods: Optional[List[Method]] = None,
         primitive_tasks: Optional[Set[str]] = None,
-        max_concurrent: int = 3
+        max_concurrent: int = 3,
+        executors: Optional[List[TaskExecutor]] = None
     ):
         """Initialize goal execution service.
 
@@ -167,6 +168,7 @@ class GoalExecutionService:
             methods: HTN decomposition methods (uses defaults if None)
             primitive_tasks: Set of primitive task names (uses defaults if None)
             max_concurrent: Maximum concurrent task execution
+            executors: Custom executors (uses defaults if None)
         """
         self.code_access = code_access
         self.identity_ledger = identity_ledger
@@ -180,12 +182,15 @@ class GoalExecutionService:
             primitive_tasks=primitive_tasks or DEFAULT_PRIMITIVE_TASKS
         )
 
-        # Initialize executors
-        self.executors: List[TaskExecutor] = [
-            CodeModificationExecutor(code_access),
-            TestExecutor(),
-            ShellCommandExecutor()
-        ]
+        # Initialize executors (use provided or create defaults)
+        if executors is not None:
+            self.executors = executors
+        else:
+            self.executors = [
+                CodeModificationExecutor(code_access),
+                TestExecutor(),
+                ShellCommandExecutor()
+            ]
 
         logger.info(
             f"GoalExecutionService initialized: "
