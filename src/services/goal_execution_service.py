@@ -407,13 +407,13 @@ class GoalExecutionService:
         # Add default parameters based on action type
         if action_name in ("create_file", "modify_code", "delete_file"):
             if "file_path" not in params:
-                # Generate default file path
+                # Generate default file path in tests/generated/ (allowed by CodeAccessService)
                 if action_num == 1:
-                    params["file_path"] = f"feature_{goal_id[:8]}.py"
+                    params["file_path"] = f"tests/generated/feature_{goal_id[:8]}.py"
                 elif action_num == 2:
-                    params["file_path"] = f"test_{goal_id[:8]}.py"
+                    params["file_path"] = f"tests/generated/test_{goal_id[:8]}.py"
                 else:
-                    params["file_path"] = f"file_{action_num}_{goal_id[:8]}.py"
+                    params["file_path"] = f"tests/generated/file_{action_num}_{goal_id[:8]}.py"
 
             if "content" not in params and action_name in ("create_file", "modify_code"):
                 params["content"] = f"# Auto-generated for {action_name}\ndef placeholder():\n    pass\n"
@@ -423,7 +423,8 @@ class GoalExecutionService:
 
         elif action_name in ("run_tests", "pytest"):
             if "cmd" not in params:
-                params["cmd"] = ["pytest", "-v"]
+                # Use python -m pytest to ensure it works without activating venv
+                params["cmd"] = ["python3", "-m", "pytest", "-v", "--tb=short"]
 
         elif action_name in ("shell_command", "bash"):
             if "cmd" not in params:

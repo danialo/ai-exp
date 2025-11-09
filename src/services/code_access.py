@@ -257,15 +257,20 @@ class CodeAccessService:
         # Get absolute path
         abs_path = self.project_root / file_path
 
-        # Read original content
+        # Read original content (or empty string if file doesn't exist yet)
         try:
             original_content = abs_path.read_text()
+        except FileNotFoundError:
+            # File doesn't exist yet - this is a creation, not modification
+            original_content = ""
+            logger.info(f"Creating new file: {file_path}")
         except Exception as e:
             logger.error(f"Failed to read original content from {file_path}: {e}")
             return None, f"read_error:{str(e)}"
 
-        # Write new content
+        # Write new content (create parent directories if needed)
         try:
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
             abs_path.write_text(new_content)
             logger.info(f"Modified file: {file_path}")
         except Exception as e:
