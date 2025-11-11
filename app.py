@@ -54,6 +54,10 @@ from src.pipeline.self_consolidate import create_self_consolidation_pipeline
 from src.services.emotional_extractor import create_emotional_extractor
 from src.services.persona_service import PersonaService
 from src.services.task_scheduler import create_task_scheduler, TaskDefinition, TaskType, TaskSchedule
+
+# Multi-agent imports
+from src.agents.coder_agent import CoderAgent
+from src.agents.router import AgentRouter
 from src.services.belief_system import create_belief_system
 from src.services.belief_store import create_belief_store, DeltaOp
 from src.services.belief_migration import run_migration
@@ -175,6 +179,10 @@ llm_service = None
 mini_llm_service = None  # For cost-effective introspection
 experience_lens = None
 
+# Multi-agent system
+agent_router = None
+coder_agent = None
+
 # Determine which LLM provider to use
 api_key = None
 base_url = None
@@ -190,6 +198,17 @@ elif settings.VENICEAI_API_KEY:  # Fallback to Venice if available
 elif settings.OPENAI_API_KEY:  # Fallback to OpenAI if available
     api_key = settings.OPENAI_API_KEY
     base_url = None
+
+# LOCK PROVIDER: No silent fallbacks allowed
+assert settings.LLM_PROVIDER in ["openai", "venice"], f"Invalid LLM_PROVIDER: {settings.LLM_PROVIDER}"
+if settings.LLM_PROVIDER == "openai":
+    assert settings.OPENAI_API_KEY, "OpenAI provider configured but OPENAI_API_KEY not set"
+    assert api_key == settings.OPENAI_API_KEY, f"Provider routing failed: expected OpenAI, got different key"
+elif settings.LLM_PROVIDER == "venice":
+    assert settings.VENICEAI_API_KEY, "Venice provider configured but VENICEAI_API_KEY not set"
+    assert api_key == settings.VENICEAI_API_KEY, f"Provider routing failed: expected Venice, got different key"
+
+logger.info(f"🔒 LLM PROVIDER LOCKED: {settings.LLM_PROVIDER} | Model: {settings.LLM_MODEL}")
 
 if api_key:
     # Initialize self-aware prompt builder (before LLM service)
@@ -349,6 +368,9 @@ if settings.PERSONA_MODE_ENABLED:
         auto_branch=True,
     )
     logger.info("Code access service initialized")
+
+# Code generator will be initialized after persona_llm is created (see below)
+code_generator = None
 
 # Initialize task scheduler
 task_scheduler = None
@@ -614,6 +636,12 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         frequency_penalty=settings.PERSONA_FREQUENCY_PENALTY,
     )
 
+    # Initialize code generator using the same LLM service
+    from src.services.code_generator import CodeGenerator, LLMServiceWrapper
+    llm_wrapper = LLMServiceWrapper(persona_llm)
+    code_generator = CodeGenerator(llm=llm_wrapper)
+    logger.info("Code generator initialized with persona LLM")
+
     persona_service = PersonaService(
         llm_service=persona_llm,
         persona_space_path=settings.PERSONA_SPACE_PATH,
@@ -632,7 +660,27 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         web_interpretation_service=web_interpretation_service,  # Enable content interpretation
         code_access_service=code_access_service,  # Enable code reading and modification scheduling
         task_scheduler=task_scheduler,  # Enable task scheduling
+        code_generator=code_generator,  # Enable LLM-based code generation for execute_goal
     )
+
+    # Initialize CoderAgent with separate lightweight LLM (no beliefs, smaller context)
+    coder_llm = create_llm_service(
+        api_key=api_key,
+        model=settings.LLM_MODEL,
+        temperature=0.2,  # Lower temp for deterministic code
+        max_tokens=8000,  # Smaller than Astra's 16k
+        base_url=base_url,
+        self_aware_prompt_builder=None,  # No self-awareness for coder
+    )
+    coder_agent = CoderAgent(llm_service=coder_llm)
+    logger.info("CoderAgent initialized with lightweight LLM (no beliefs, 8k tokens)")
+
+    # Initialize AgentRouter for multi-agent dispatching
+    agent_router = AgentRouter(
+        astra_agent=persona_service,
+        coder_agent=coder_agent
+    )
+    logger.info("AgentRouter initialized - routing logic: keyword detection + tool requests")
 
 # Initialize awareness loop (Redis-backed continuous presence)
 awareness_loop: Optional[AwarenessLoop] = None
@@ -1088,6 +1136,8 @@ class ChatRequest(BaseModel):
     top_k: int = 3
     conversation_history: List[Dict[str, str]] = []  # List of {"role": "user"|"assistant", "content": "..."}
     model: Optional[str] = None  # Optional model override (format: "provider:model" e.g., "openai:gpt-4o")
+    use_agent_router: bool = False  # Phase 1: Opt-in multi-agent routing (default: direct to Astra)
+    agent_type_override: Optional[str] = None  # Optional explicit agent selection ("coder", "astra_chat")
 
 
 class Memory(BaseModel):
@@ -1198,7 +1248,12 @@ async def taskgraphs_page():
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Handle chat interactions with emergent personality via affect tracking."""
+    """Handle chat interactions with emergent personality via affect tracking.
+
+    ⚠️  WARNING: This endpoint does NOT support tool calling (no execute_goal, no file operations).
+    ⚠️  For tool support including execute_goal, use /api/persona/chat instead.
+    ⚠️  This endpoint uses ExperienceLens which only does simple LLM generation.
+    """
     global previous_user_valence, current_session_id
 
     if not request.message.strip():
@@ -2181,7 +2236,10 @@ async def get_detected_patterns():
 
 @app.post("/api/persona/chat")
 async def persona_chat(request: ChatRequest):
-    """Chat with the persona directly - includes memory storage for continuity."""
+    """Chat with the persona directly - includes memory storage for continuity.
+
+    Supports multi-agent routing via use_agent_router=True (Phase 1: opt-in).
+    """
     if not persona_service:
         raise HTTPException(status_code=503, detail="Persona mode not enabled")
 
@@ -2192,47 +2250,100 @@ async def persona_chat(request: ChatRequest):
         # Log user message
         multi_logger.log_conversation("user", request.message, metadata={
             "retrieve_memories": request.retrieve_memories,
-            "top_k": request.top_k
+            "top_k": request.top_k,
+            "use_agent_router": request.use_agent_router
         })
 
-        # Use the main persona service (model selection disabled to preserve belief system)
-        active_persona_service = persona_service
+        # MULTI-AGENT ROUTING (Phase 1: opt-in via flag)
+        if request.use_agent_router and agent_router:
+            logger.info(f"🔀 Using AgentRouter for request: {request.message[:50]}...")
 
-        # Generate persona response with emotional co-analysis and memory retrieval
-        result = active_persona_service.generate_response(
-            user_message=request.message,
-            retrieve_memories=request.retrieve_memories,
-            top_k=request.top_k,
-            conversation_history=request.conversation_history
-        )
+            # Route through multi-agent system
+            router_result = await agent_router.process(
+                user_message=request.message,
+                agent_type_override=request.agent_type_override,
+                retrieve_memories=request.retrieve_memories,
+                top_k=request.top_k,
+                conversation_history=request.conversation_history
+            )
 
-        # Check if response is blocked due to dissonance
-        if isinstance(result, dict) and result.get("resolution_required"):
-            # Store belief statements for later resolution processing
-            # Extract from dissonance patterns if available
-            if "belief_statements" in result:
-                # Store in session or temp storage for next request
-                # For now, we'll extract them from the prompt when needed
-                pass
+            # Handle CoderAgent response (JSON artifacts)
+            if router_result.get("_agent_type") == "coder":
+                logger.info(f"✅ CoderAgent generated {len(router_result.get('artifacts', []))} artifacts")
 
-            # Return resolution prompt without storing in memory
-            return {
-                "response": result["response"],
-                "resolution_required": True,
-                "dissonance_count": result.get("dissonance_count", 0),
-                "belief_statements": result.get("belief_statements", []),
-                "reconciliation": None,
-                "internal_assessment": None,
-                "external_assessment": None,
-                "reconciled_state": None,
-                "experience_id": None,
-                "user_valence": 0.0,
-                "user_arousal": 0.0,
-                "user_dominance": 0.0,
-            }
+                # Format artifacts for user display
+                response_parts = []
+                response_parts.append(f"**Plan:**")
+                for i, step in enumerate(router_result.get("plan", []), 1):
+                    response_parts.append(f"{i}. {step}")
 
-        # Normal response (tuple unpacking)
-        response_text, reconciliation = result
+                response_parts.append(f"\n**Generated {len(router_result.get('artifacts', []))} files:**")
+                for artifact in router_result.get("artifacts", []):
+                    response_parts.append(f"\n📄 `{artifact['filename']}`")
+                    response_parts.append(f"```{artifact['language']}")
+                    response_parts.append(artifact['code'])
+                    response_parts.append("```")
+
+                # Add checks summary
+                checks = router_result.get("checks", {})
+                response_parts.append(f"\n**Safety Checks:**")
+                response_parts.append(f"✅ Ruff/Black: {checks.get('ruff_black_clean', False)}")
+                response_parts.append(f"✅ MyPy: {checks.get('mypy_clean', False)}")
+                response_parts.append(f"✅ No forbidden APIs: {len(checks.get('forbidden_apis_used', [])) == 0}")
+                response_parts.append(f"✅ Size OK: {checks.get('size_ok', False)}")
+
+                response_text = "\n".join(response_parts)
+                reconciliation = None  # CoderAgent doesn't use reconciliation
+
+            # Handle Astra response (normal chat)
+            elif router_result.get("_agent_type") == "astra_chat":
+                logger.info("✅ Astra handled request via router")
+                response_text = router_result.get("response", "")
+                reconciliation = router_result.get("reconciliation")
+
+            else:
+                raise ValueError(f"Unknown agent type: {router_result.get('_agent_type')}")
+
+        # DIRECT PERSONA SERVICE (Original path, default behavior)
+        else:
+            # Use the main persona service (model selection disabled to preserve belief system)
+            active_persona_service = persona_service
+
+            # Generate persona response with emotional co-analysis and memory retrieval
+            result = active_persona_service.generate_response(
+                user_message=request.message,
+                retrieve_memories=request.retrieve_memories,
+                top_k=request.top_k,
+                conversation_history=request.conversation_history
+            )
+
+            # Check if response is blocked due to dissonance
+            if isinstance(result, dict) and result.get("resolution_required"):
+                # Store belief statements for later resolution processing
+                # Extract from dissonance patterns if available
+                if "belief_statements" in result:
+                    # Store in session or temp storage for next request
+                    # For now, we'll extract them from the prompt when needed
+                    pass
+
+                # Return resolution prompt without storing in memory
+                return {
+                    "response": result["response"],
+                    "resolution_required": True,
+                    "dissonance_count": result.get("dissonance_count", 0),
+                    "belief_statements": result.get("belief_statements", []),
+                    "reconciliation": None,
+                    "internal_assessment": None,
+                    "external_assessment": None,
+                    "reconciled_state": None,
+                    "experience_id": None,
+                    "user_valence": 0.0,
+                    "user_arousal": 0.0,
+                    "user_dominance": 0.0,
+                }
+
+            # Normal response (tuple unpacking)
+            response_text, reconciliation = result
 
         # Feed agent response to awareness loop
         if awareness_loop and awareness_loop.running:
