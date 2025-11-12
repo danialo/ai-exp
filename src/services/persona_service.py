@@ -1384,7 +1384,8 @@ This revision represents growth in my self-understanding. My past statements wer
                         "properties": {
                             "goal_text": {
                                 "type": "string",
-                                "description": "High-level goal description. Supported goals: 'implement_feature' (creates implementation + test files), 'fix_bug' (modifies code + runs tests), 'refactor_code' (refactors + tests), 'add_tests' (creates test file + runs tests)"
+                                "description": "MUST be one of these exact task names: 'implement_feature', 'fix_bug', 'refactor_code', or 'add_tests'. Do NOT use free-form descriptions - use only these task names.",
+                                "enum": ["implement_feature", "fix_bug", "refactor_code", "add_tests"]
                             },
                             "context": {
                                 "type": "object",
