@@ -12,8 +12,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Prompt versions for cache invalidation
-PROMPT_VERSION = "impl_v1.0"
-TEST_PROMPT_VERSION = "test_v1.0"
+PROMPT_VERSION = "codeagent5_v2.0"  # Updated to CodeAgent-5 template
+TEST_PROMPT_VERSION = "codeagent5_test_v2.0"
 
 # Policy: forbidden imports and builtins
 FORBIDDEN_IMPORTS = {
@@ -215,7 +215,7 @@ class CodeGenerator:
         )
 
     def _build_prompts(self, req: GenRequest) -> tuple[str, str]:
-        """Build prompt and system message for generation.
+        """Build prompt and system message using CodeAgent-5 template.
 
         Args:
             req: Generation request
@@ -223,39 +223,194 @@ class CodeGenerator:
         Returns:
             (prompt, system) tuple
         """
-        system = "You produce minimal, production-grade code. Respond with a JSON object containing fields filename, language, and code. No prose."
-
         if req.role == "implementation":
-            prompt = f"""
-Return JSON with exactly these keys: filename, language, code.
+            return self._build_implementation_prompt(req)
+        else:
+            return self._build_test_prompt(req)
 
-Context:
-- Goal: {req.goal_text}
-- Target file: {req.file_path}
-- Language: {req.language}
+    def _build_implementation_prompt(self, req: GenRequest) -> tuple[str, str]:
+        """Build CodeAgent-5 implementation prompt."""
+        # Extract context
+        codebase_context = req.context.get("codebase_context", "No additional context")
+        similar_patterns = req.context.get("similar_patterns", "")
+        dependencies = req.context.get("dependencies", [])
 
-Requirements:
-- Pure function or small module with docstring, type hints, and errors handled
-- No network calls, no file writes unless explicitly required
-- Keep under 150 lines
-- No forbidden imports: {', '.join(sorted(FORBIDDEN_IMPORTS))}
-- No forbidden builtins: {', '.join(sorted(FORBIDDEN_BUILTINS))}
-"""
-        else:  # test
-            impl_hint = req.context.get("implementation_code", "")
-            prompt = f"""
-Return JSON with exactly these keys: filename, language, code.
+        system = "You are CodeAgent-5, a senior software engineer. Produce production-grade code only."
 
-Generate tests for the implementation at {req.file_path}.
+        prompt = f"""<ROLE>
+You are CodeAgent-5, a senior software engineer specializing in Python. Your objective is:
+Implement {req.goal_text}
+</ROLE>
 
-Requirements:
-- Use pytest
-- Cover edge cases and error paths
+<CONTEXT>
+Target file: {req.file_path}
+Language: {req.language}
+Runtime: Python 3.11
+Build system: pytest for tests
+
+Codebase context:
+{codebase_context}
+
+{f"Similar patterns in codebase:\\n{similar_patterns}" if similar_patterns else ""}
+
+Available dependencies: {', '.join(dependencies) if dependencies else 'Standard library only'}
+</CONTEXT>
+
+<DELIVERABLES>
+- Working implementation of: {req.goal_text}
+- Production-ready with type hints, docstrings, and error handling
+- Must return JSON with keys: filename, language, code
+</DELIVERABLES>
+
+<REQUIREMENTS>
+<SCOPE>
+Functional requirements:
+- Implement {req.goal_text}
+- Include comprehensive docstrings with Args, Returns, Raises sections
+- Add type hints for all function signatures
+- Handle errors gracefully with specific exception types
+- Keep implementation focused and minimal (under 150 lines)
+
+Performance requirements:
+- O(n) or better time complexity where applicable
+- No blocking operations unless explicitly required
+- Memory efficient (no large in-memory caches without bounds)
+</SCOPE>
+
+<CONSTRAINTS>
+- Language: Python {req.language}
+- Max size: {MAX_LINES['implementation']} lines, {MAX_BYTES['implementation']} bytes
+- FORBIDDEN imports: {', '.join(sorted(list(FORBIDDEN_IMPORTS)[:10]))}... (and others)
+- FORBIDDEN builtins: {', '.join(sorted(FORBIDDEN_BUILTINS))}
+- No network calls unless explicitly required by goal
+- No file system writes unless explicitly required by goal
+</CONSTRAINTS>
+
+<FORMAT>
+Return JSON with exactly these keys:
+{{
+  "filename": "{os.path.basename(req.file_path)}",
+  "language": "{req.language}",
+  "code": "...full implementation as string with actual newlines..."
+}}
+
+Do NOT use escaped newlines like \\n - use actual newlines in the JSON string value.
+</FORMAT>
+
+<EVALUATION_CRITERIA>
+- Correctness: Implements the goal specification exactly
+- Completeness: Handles edge cases and errors
+- Security: Validates inputs, no injection risks
+- Performance: Efficient algorithms and data structures
+- Readability: Clear names, good structure, helpful comments
+- Pythonic: Follows PEP 8, uses standard library idioms
+</EVALUATION_CRITERIA>
+</REQUIREMENTS>
+
+<QUALITY_GUARDS>
+- Security: Validate all inputs, use type checking, avoid injection
+- Errors: Never swallow exceptions silently - log or re-raise
+- Performance: Use generators for large sequences, avoid O(n²) unless necessary
+- Logging: Include informative log messages at appropriate levels
+- Documentation: Every public function needs a docstring
+</QUALITY_GUARDS>
+
+<OUTPUT>
+Return ONLY the JSON object. No markdown fences, no explanations.
+
+Example format:
+{{
+  "filename": "example.py",
+  "language": "python",
+  "code": "import logging\\n\\nlogger = logging.getLogger(__name__)\\n\\ndef process_data(items: list[str]) -> dict[str, int]:\\n    \\"\\"\\"Process items and return counts.\\n    \\n    Args:\\n        items: List of items to process\\n        \\n    Returns:\\n        Dictionary mapping items to counts\\n    \\"\\"\\"\\n    return {{item: items.count(item) for item in set(items)}}"
+}}
+</OUTPUT>"""
+
+        return prompt.strip(), system
+
+    def _build_test_prompt(self, req: GenRequest) -> tuple[str, str]:
+        """Build CodeAgent-5 test prompt."""
+        impl_code = req.context.get("implementation_code", "")
+        impl_preview = impl_code[:1000] if impl_code else "No implementation provided"
+
+        system = "You are CodeAgent-5, a senior software engineer specializing in test engineering. Produce comprehensive test code."
+
+        prompt = f"""<ROLE>
+You are CodeAgent-5, a test engineering specialist. Your objective is:
+Create comprehensive tests for {req.file_path}
+</ROLE>
+
+<CONTEXT>
+Target test file: {req.file_path}
+Language: Python 3.11
+Test framework: pytest
+Coverage target: Critical paths and edge cases
+
+Implementation being tested:
+```python
+{impl_preview}
+```
+</CONTEXT>
+
+<DELIVERABLES>
+- pytest test suite covering critical functionality
+- Tests for edge cases, errors, and boundary conditions
+- Must return JSON with keys: filename, language, code
+</DELIVERABLES>
+
+<REQUIREMENTS>
+<SCOPE>
+Test requirements:
+- Test normal operation (happy path)
+- Test edge cases (empty inputs, None, large values)
+- Test error conditions (invalid inputs, exceptions)
+- Test boundary conditions (min/max values, limits)
+- Use pytest fixtures where appropriate
 - Keep under 120 lines
+
+Test structure:
+- One test class or multiple test functions
+- Clear, descriptive test names (test_function_name_condition_expected_behavior)
+- Use assert statements with helpful messages
+- Mock external dependencies if any
+</SCOPE>
+
+<CONSTRAINTS>
+- Framework: pytest only
+- Max size: {MAX_LINES['test']} lines, {MAX_BYTES['test']} bytes
 - No forbidden imports or builtins
-"""
-            if impl_hint:
-                prompt += f"\n\nImplementation to test:\n{impl_hint[:500]}..."
+- No network calls or file system access (use mocks)
+</CONSTRAINTS>
+
+<FORMAT>
+Return JSON with exactly these keys:
+{{
+  "filename": "{os.path.basename(req.file_path)}",
+  "language": "{req.language}",
+  "code": "...full test code as string with actual newlines..."
+}}
+
+Do NOT use escaped newlines like \\n - use actual newlines in the JSON string value.
+</FORMAT>
+
+<EVALUATION_CRITERIA>
+- Coverage: All critical paths tested
+- Quality: Tests are clear, focused, and deterministic
+- Robustness: Tests catch real bugs, not just exercise code
+- Maintainability: Easy to understand what's being tested
+</EVALUATION_CRITERIA>
+</REQUIREMENTS>
+
+<OUTPUT>
+Return ONLY the JSON object. No markdown fences, no explanations.
+
+Example format:
+{{
+  "filename": "test_example.py",
+  "language": "python",
+  "code": "import pytest\\nfrom src.example import process_data\\n\\ndef test_process_data_empty_list():\\n    \\"\\"\\"Test processing empty list.\\"\\"\\"\\n    result = process_data([])\\n    assert result == {{}}, \\"Expected empty dict for empty list\\""
+}}
+</OUTPUT>"""
 
         return prompt.strip(), system
 

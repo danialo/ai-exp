@@ -28,6 +28,7 @@ from uuid import uuid4
 from src.services.htn_planner import HTNPlanner, Method, Plan
 from src.services.task_graph import TaskGraph, TaskNode, TaskState
 from src.services.task_execution_engine import TaskExecutionEngine
+from src.services.project_manager import ProjectManager, ProjectMetadata
 from src.services.task_executors.base import RunContext, TaskExecutor
 from src.services.task_executors.code_modification import CodeModificationExecutor
 from src.services.task_executors.test_runner import TestExecutor
@@ -159,7 +160,8 @@ class GoalExecutionService:
         methods: Optional[List[Method]] = None,
         primitive_tasks: Optional[Set[str]] = None,
         max_concurrent: int = 3,
-        executors: Optional[List[TaskExecutor]] = None
+        executors: Optional[List[TaskExecutor]] = None,
+        project_manager: Optional[ProjectManager] = None
     ):
         """Initialize goal execution service.
 
@@ -172,17 +174,20 @@ class GoalExecutionService:
             primitive_tasks: Set of primitive task names (uses defaults if None)
             max_concurrent: Maximum concurrent task execution
             executors: Custom executors (uses defaults if None)
+            project_manager: Optional ProjectManager for workspace projects
         """
         self.code_access = code_access
         self.code_generator = code_generator
         self.identity_ledger = identity_ledger
         self.workdir = workdir
         self.max_concurrent = max_concurrent
+        self.project_manager = project_manager or ProjectManager()
 
         # Current execution context (set during execute_goal)
         self.current_goal_text: Optional[str] = None
         self.current_context: Dict[str, Any] = {}
         self.current_goal_id: Optional[str] = None
+        self.current_project: Optional[ProjectMetadata] = None
 
         # Initialize HTN planner
         self.planner = HTNPlanner(
@@ -245,6 +250,20 @@ class GoalExecutionService:
 
         logger.info(f"Starting goal execution: {goal_id} - {goal_text}")
 
+        # Create workspace project for this goal
+        try:
+            project = self.project_manager.create_project(
+                goal_text=goal_text,
+                template="python-module",
+                description=f"Autonomous implementation of: {goal_text}"
+            )
+            self.current_project = project
+            logger.info(f"Created workspace project: {project.project_id} at {project.project_dir}")
+        except Exception as e:
+            logger.error(f"Failed to create workspace project: {e}")
+            # Fall back to tests/generated if project creation fails
+            self.current_project = None
+
         # Store execution context for code generation
         self.current_goal_id = goal_id
         self.current_goal_text = goal_text
@@ -294,6 +313,24 @@ class GoalExecutionService:
             # Determine overall success
             result.success = (len(result.failed_tasks) == 0 and len(result.completed_tasks) > 0)
 
+            # Update workspace project status
+            if self.current_project:
+                try:
+                    self.project_manager.update_project(
+                        project_id=self.current_project.project_id,
+                        status="completed" if result.success else "failed",
+                        test_results={
+                            "status": "passed" if result.success else "failed",
+                            "passed": len(result.completed_tasks),
+                            "failed": len(result.failed_tasks)
+                        },
+                        implementation_notes=f"Executed {result.total_tasks} tasks",
+                        next_steps="Review generated code and tests" if result.success else "Fix errors and retry"
+                    )
+                    logger.info(f"Updated project {self.current_project.project_id}: status={'completed' if result.success else 'failed'}")
+                except Exception as e:
+                    logger.warning(f"Failed to update project status: {e}")
+
             logger.info(
                 f"Goal {goal_id} completed: "
                 f"success={result.success}, "
@@ -309,6 +346,19 @@ class GoalExecutionService:
             result.errors.append(f"Execution exception: {str(e)}")
             result.success = False
             result.completed_at = datetime.now(timezone.utc)
+
+            # Update workspace project as failed
+            if self.current_project:
+                try:
+                    self.project_manager.update_project(
+                        project_id=self.current_project.project_id,
+                        status="failed",
+                        error_message=str(e),
+                        next_steps="Review error and retry"
+                    )
+                except Exception as update_error:
+                    logger.warning(f"Failed to update project status: {update_error}")
+
             return result
 
     async def _materialize_task_content(
@@ -467,13 +517,26 @@ class GoalExecutionService:
         # Add default parameters based on action type
         if action_name in ("create_file", "modify_code", "delete_file"):
             if "file_path" not in params:
-                # Generate default file path in tests/generated/ (allowed by CodeAccessService)
-                if action_num == 1:
-                    params["file_path"] = f"tests/generated/feature_{goal_id[:8]}.py"
-                elif action_num == 2:
-                    params["file_path"] = f"tests/generated/test_{goal_id[:8]}.py"
+                # Use workspace project paths if available
+                if self.current_project:
+                    # Generate paths in workspace project
+                    if action_num == 1:
+                        # First file = implementation in src/
+                        params["file_path"] = f"{self.current_project.project_dir}/src/feature_{goal_id[:8]}.py"
+                    elif action_num == 2:
+                        # Second file = tests in tests/
+                        params["file_path"] = f"{self.current_project.project_dir}/tests/test_{goal_id[:8]}.py"
+                    else:
+                        # Additional files in appropriate directory
+                        params["file_path"] = f"{self.current_project.project_dir}/src/module_{action_num}_{goal_id[:8]}.py"
                 else:
-                    params["file_path"] = f"tests/generated/file_{action_num}_{goal_id[:8]}.py"
+                    # Fallback to tests/generated/ if no project
+                    if action_num == 1:
+                        params["file_path"] = f"tests/generated/feature_{goal_id[:8]}.py"
+                    elif action_num == 2:
+                        params["file_path"] = f"tests/generated/test_{goal_id[:8]}.py"
+                    else:
+                        params["file_path"] = f"tests/generated/file_{action_num}_{goal_id[:8]}.py"
 
             # Generate code content if not provided
             if "content" not in params and action_name in ("create_file", "modify_code"):
