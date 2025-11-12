@@ -89,6 +89,7 @@ class CodeAccessService:
             "tests/",
             "scripts/",
             "docs/",
+            "/home/d/astra-workspace/",  # Astra's autonomous workspace
         ]
 
         # Default forbidden paths
