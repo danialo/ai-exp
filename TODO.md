@@ -1,6 +1,6 @@
 # TODO List - Astra AI Experience
 
-**Last Updated**: 2025-11-11
+**Last Updated**: 2025-11-12
 
 ## In Progress
 
@@ -22,19 +22,6 @@
   - See TODO_TOKEN_TRACKING.md for full implementation plan
   - Current spend: ~$24/month (healthy, but using estimates)
 
-- [x] **Complete decision audit logging** (COMPLETE)
-  - [x] Add logging to form_belief_from_pattern() - AdaptiveBeliefLifecycleManager
-  - [x] Add logging to consider_promotion() - AdaptiveBeliefLifecycleManager
-  - [x] Add logging to consider_deprecation() - AdaptiveBeliefLifecycleManager
-  - [x] Add abort logging to abort_condition_monitor.py - decision_aborted_event()
-  - [x] Add adaptation logging to parameter_adapter.py - parameter_adapted_event()
-
-- [ ] **MCP integration (Phase 2A)**
-  - Tooling + tests landed in `src/mcp/task_execution_server.py`
-  - Install `modelcontextprotocol` in active runtime and smoke test
-  - Add CLI/service entrypoint to expose the server in deployment
-  - Spec remains in `.claude/tasks/prompt-008-mcp-task-execution.md`
-
 - [ ] **Identity boundary definition**
   - Define what constitutes "identity" vs "state"
   - Implement boundary protections
@@ -47,6 +34,15 @@
 
 ## Completed ✅
 
+- [x] **MCP Autonomous Scheduling (COMPLETE)** - Full MCP server with scheduling and introspection (2025-11-12)
+  - **9 MCP tools**: Task introspection (tasks_list, tasks_by_trace, tasks_last_failed, astra.health), scheduling (create/modify/pause/resume/list), desires (record/list/reinforce)
+  - **ScheduleService** (565 lines): NDJSON+index persistence, cron scheduling with croniter, 3-tier safety model, per-day budget enforcement
+  - **DesireStore** (349 lines): Vague wish tracking with strength decay, deterministic IDs, automatic reinforcement
+  - **MCP tools** (507 lines): Complete tool handlers for schedule and desire management
+  - **67 tests passing**: ScheduleService (27 tests), DesireStore (26 tests), MCP tools (14 tests)
+  - **Comprehensive documentation** (2,080+ lines across 11 files): Quick start, complete guide, API reference, architecture deep dive
+  - **Stdio transport**: bin/mcp wrapper script, Claude Desktop integration, on-demand startup pattern
+  - **Production-ready**: Tier 0 (read-only) and Tier 1 (local writes with budgets) fully operational
 - [x] **Phase 3 Production Fixes (COMPLETE)** - Bug fixes and verification (2025-11-11)
   - Fixed logger initialization bug in `src/services/llm.py` (UnboundLocalError)
   - Added defensive None checks in `belief_consistency_checker.py`
@@ -85,9 +81,19 @@
 - [x] **End-to-end task tracking for auditability (Phase 1)** - Full correlation system
 - [x] **Wire adaptive framework into app.py** - Integrated with feature flag
 - [x] **HTTPS setup with self-signed certificates** - Working on port 8443
+- [x] **Complete decision audit logging (COMPLETE)**
+  - Added logging to form_belief_from_pattern() - AdaptiveBeliefLifecycleManager
+  - Added logging to consider_promotion() - AdaptiveBeliefLifecycleManager
+  - Added logging to consider_deprecation() - AdaptiveBeliefLifecycleManager
+  - Added abort logging to abort_condition_monitor.py - decision_aborted_event()
+  - Added adaptation logging to parameter_adapter.py - parameter_adapted_event()
 
 ## Notes
 
+- **MCP Server**: Production-ready with 9 tools, 67 tests passing, comprehensive documentation
+  - Start with: `bin/mcp`
+  - Configure Claude Desktop: Add command path to `~/.config/Claude/claude_desktop_config.json`
+  - Documentation: `docs/MCP_QUICKSTART.md`, `docs/MCP_COMPLETE_GUIDE.md`
 - Adaptive Decision Framework is fully implemented (~3,700 lines) and tested end-to-end
 - Framework is enabled in production (DECISION_FRAMEWORK_ENABLED=true)
 - All decision points registered: goal_selected, plan_generated
