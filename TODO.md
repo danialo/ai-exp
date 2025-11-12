@@ -4,11 +4,6 @@
 
 ## In Progress
 
-- [ ] **Code generation quality improvements**
-  - Current: LLM generates generic test code instead of specific implementations
-  - Need: Better prompt engineering for CodeGenerator
-  - Impact: execute_goal pipeline is functional but output quality needs tuning
-
 ## Ready to Start
 
 ## Backlog
@@ -34,6 +29,15 @@
 
 ## Completed ✅
 
+- [x] **Astra's Autonomous Workspace (COMPLETE)** - Dedicated workspace with CodeAgent-5 prompts (2025-11-12)
+  - **Workspace structure**: /home/d/astra-workspace/ with projects/, templates/, logs/
+  - **ProjectManager service** (344 lines): Creates/manages timestamped projects with metadata
+  - **CodeAgent-5 prompts**: Structured prompt template with ROLE, CONTEXT, REQUIREMENTS, QUALITY_GUARDS sections
+  - **Workspace integration**: execute_goal now creates projects in workspace instead of tests/generated/
+  - **Project lifecycle**: created → in_progress → completed/failed with full metadata tracking
+  - **Improved code quality**: Prompts now include codebase context, evaluation criteria, security guards
+  - **Testing**: Verified project creation and metadata tracking work correctly
+  - Addresses: "LLM generates generic test code instead of specific implementations"
 - [x] **MCP Autonomous Scheduling (COMPLETE)** - Full MCP server with scheduling and introspection (2025-11-12)
   - **9 MCP tools**: Task introspection (tasks_list, tasks_by_trace, tasks_last_failed, astra.health), scheduling (create/modify/pause/resume/list), desires (record/list/reinforce)
   - **ScheduleService** (565 lines): NDJSON+index persistence, cron scheduling with croniter, 3-tier safety model, per-day budget enforcement
