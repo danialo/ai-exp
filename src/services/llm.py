@@ -271,7 +271,7 @@ class LLMService:
         print("="*80)
         print(f"Model: {self.model}")
         print(f"Provider: {self.client.base_url}")
-        print(f"Tools count: {len(tools)}")
+        print(f"Tools count: {len(tools) if tools else 0}")
         print(f"Tool names: {tool_names}")
         print(f"execute_goal present: {has_execute_goal}")
         print(f"Messages count: {len(messages)}")
@@ -280,7 +280,7 @@ class LLMService:
         print(f"Max tokens: {kwargs.get('max_tokens', 'default')}")
         print("="*80 + "\n")
 
-        logger.info(f"LLM API CALL: model={self.model}, tools={len(tools)}, execute_goal={has_execute_goal}")
+        logger.info(f"LLM API CALL: model={self.model}, tools={len(tools) if tools else 0}, execute_goal={has_execute_goal}")
 
         try:
             response = self.client.chat.completions.create(**kwargs)
