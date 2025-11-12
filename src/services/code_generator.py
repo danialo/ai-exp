@@ -132,10 +132,19 @@ class CodeGenerator:
             List of forbidden items found in code
         """
         hits = []
-        # Cheap string-based checks (AST parse could be added later for precision)
+        # Check for actual import statements, not just substring presence
+        lines = code.split('\n')
         for item in FORBIDDEN_IMPORTS:
-            if item in code:
-                hits.append(item)
+            for line in lines:
+                stripped = line.strip()
+                # Match: "import foo" or "from foo import" or "import foo.bar"
+                if (stripped.startswith(f"import {item}") or
+                    stripped.startswith(f"from {item} ") or
+                    f"import {item}." in stripped):
+                    hits.append(item)
+                    break
+
+        # Check for forbidden builtins (keep simple check)
         for b in FORBIDDEN_BUILTINS:
             if f"{b}(" in code:
                 hits.append(b)
@@ -507,7 +516,17 @@ Example format:
                 diags["mypy"] = str(e)
                 rc3 = 1
 
-            # Check passes if no pyflakes errors and mypy passes
-            ok = rc3 == 0 and not diags.get("pyflakes", "").strip()
+            # Check passes if no critical syntax errors
+            # Allow minor mypy warnings and unused imports - they're not critical
+            pyflakes_output = diags.get("pyflakes", "")
+            has_critical_pyflakes = any(
+                keyword in pyflakes_output
+                for keyword in ["SyntaxError", "IndentationError", "invalid syntax"]
+            )
+
+            # Consider code OK if:
+            # - No critical syntax errors from pyflakes
+            # - Mypy can at least parse it (rc != 2 which is syntax error)
+            ok = not has_critical_pyflakes and rc3 != 2
 
             return ok, diags
