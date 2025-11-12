@@ -6,7 +6,7 @@ MCP (Model Context Protocol) stdio server for Astra self-scheduling and introspe
 
 ```bash
 # Create runtime directories
-mkdir -p var/schedules var/approvals/pending
+mkdir -p var/schedules var/approvals/pending var/desires logs
 
 # Install MCP library (if not already installed)
 pip install mcp>=1.0.0
@@ -14,9 +14,30 @@ pip install mcp>=1.0.0
 
 ## Running
 
-### Via command line:
+The MCP server uses **stdio transport** - it's started on-demand by MCP clients.
+
+### Via wrapper script (recommended):
+```bash
+bin/mcp
+```
+
+### Via Python module:
 ```bash
 python -m bin.mcp_server
+```
+
+### Configure in MCP clients:
+
+For Claude Desktop (`~/.config/Claude/claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "astra": {
+      "command": "/home/d/git/ai-exp/bin/mcp",
+      "args": []
+    }
+  }
+}
 ```
 
 ### Via systemd user unit:
@@ -47,20 +68,22 @@ systemctl --user status astra-mcp
 ## Tools
 
 ### Introspection (Tier 0 - Read-only)
-- `astra.health` - Server health check
-- `tasks_list` - Query task execution history
-- `tasks_by_trace` - Inspect specific task trace
+- `astra.health` - Server health check and tool listing
+- `tasks_list` - Query task execution history with filters
+- `tasks_by_trace` - Inspect specific task execution trace
 - `tasks_last_failed` - Recent failures and error patterns
 
 ### Scheduling (Tier 1 - Local writes)
-- `astra.schedule.create` - Create cron schedule
-- `astra.schedule.modify` - Modify existing schedule
-- `astra.schedule.pause` - Pause schedule
-- `astra.schedule.resume` - Resume paused schedule
+- `astra.schedule.create` - Create cron schedule with safety tier and budget
+- `astra.schedule.modify` - Modify existing schedule (cron, payload, budget)
+- `astra.schedule.pause` - Pause a schedule to stop execution
+- `astra.schedule.resume` - Resume a paused schedule
+- `astra.schedule.list` - List all schedules (optionally filtered by status)
 
-### Desires & Goals (Tier 1 - Local writes)
-- `astra.desires.record` - Record a desire/wish
-- `astra.goals.create` - Create actionable goal
+### Desires (Tier 1 - Local writes)
+- `astra.desires.record` - Record a vague wish or desire
+- `astra.desires.list` - List top desires sorted by strength
+- `astra.desires.reinforce` - Manually boost a desire's strength
 
 ## Safety Tiers
 

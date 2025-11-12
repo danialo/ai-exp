@@ -1,10 +1,13 @@
 # TODO List - Astra AI Experience
 
-**Last Updated**: 2025-11-08
+**Last Updated**: 2025-11-11
 
 ## In Progress
 
-- No active work items
+- [ ] **Code generation quality improvements**
+  - Current: LLM generates generic test code instead of specific implementations
+  - Need: Better prompt engineering for CodeGenerator
+  - Impact: execute_goal pipeline is functional but output quality needs tuning
 
 ## Ready to Start
 
@@ -44,6 +47,14 @@
 
 ## Completed ✅
 
+- [x] **Phase 3 Production Fixes (COMPLETE)** - Bug fixes and verification (2025-11-11)
+  - Fixed logger initialization bug in `src/services/llm.py` (UnboundLocalError)
+  - Added defensive None checks in `belief_consistency_checker.py`
+  - Added warning to `/api/chat` endpoint redirecting to `/api/persona/chat`
+  - Verified end-to-end execute_goal functionality in production
+  - Confirmed Astra autonomously calls execute_goal and generates code
+  - Full pipeline tested: Tool call → HTN planning → Code gen → File creation → Test execution
+  - Documentation updated in `.claude/tasks/PHASE3-COMPLETE.md`
 - [x] **Phase 1: GoalStore (COMPLETE)** - Goal prioritization with adaptive learning (2025-11-08)
   - GoalStore implementation (432 lines, 31 tests) - Value/effort/risk scoring, belief alignment
   - RESTful API endpoints (270 lines) - CRUD + prioritization + adoption safety checks

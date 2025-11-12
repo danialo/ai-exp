@@ -32,6 +32,7 @@ from src.services.task_executors.base import RunContext, TaskExecutor
 from src.services.task_executors.code_modification import CodeModificationExecutor
 from src.services.task_executors.test_runner import TestExecutor
 from src.services.task_executors.shell_command import ShellCommandExecutor
+from src.services.code_generator import CodeGenerator, GenRequest
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,7 @@ class GoalExecutionService:
     def __init__(
         self,
         code_access: Any,
+        code_generator: Optional[CodeGenerator] = None,
         identity_ledger: Optional[Any] = None,
         workdir: str = "/home/d/git/ai-exp",
         methods: Optional[List[Method]] = None,
@@ -163,6 +165,7 @@ class GoalExecutionService:
 
         Args:
             code_access: CodeAccessService instance
+            code_generator: Optional CodeGenerator for LLM-based code generation
             identity_ledger: Optional IdentityLedger for event tracking
             workdir: Working directory for execution
             methods: HTN decomposition methods (uses defaults if None)
@@ -171,9 +174,15 @@ class GoalExecutionService:
             executors: Custom executors (uses defaults if None)
         """
         self.code_access = code_access
+        self.code_generator = code_generator
         self.identity_ledger = identity_ledger
         self.workdir = workdir
         self.max_concurrent = max_concurrent
+
+        # Current execution context (set during execute_goal)
+        self.current_goal_text: Optional[str] = None
+        self.current_context: Dict[str, Any] = {}
+        self.current_goal_id: Optional[str] = None
 
         # Initialize HTN planner
         self.planner = HTNPlanner(
@@ -236,6 +245,11 @@ class GoalExecutionService:
 
         logger.info(f"Starting goal execution: {goal_id} - {goal_text}")
 
+        # Store execution context for code generation
+        self.current_goal_id = goal_id
+        self.current_goal_text = goal_text
+        self.current_context = context or {}
+
         result = GoalExecutionResult(
             goal_id=goal_id,
             goal_text=goal_text,
@@ -262,7 +276,7 @@ class GoalExecutionService:
             )
 
             # Step 2: Create TaskGraph
-            graph = self._plan_to_taskgraph(plan, goal_id)
+            graph = await self._plan_to_taskgraph(plan, goal_id)
 
             logger.info(f"Goal {goal_id}: TaskGraph created with {len(graph.nodes)} nodes")
 
@@ -297,6 +311,52 @@ class GoalExecutionService:
             result.completed_at = datetime.now(timezone.utc)
             return result
 
+    async def _materialize_task_content(
+        self,
+        action_name: str,
+        params: Dict[str, Any],
+        action_num: int,
+        goal_id: str
+    ) -> str:
+        """Generate code content using LLM.
+
+        Args:
+            action_name: Name of the action (create_file, modify_code)
+            params: Task parameters including file_path
+            action_num: Action sequence number (1=impl, 2=test)
+            goal_id: Current goal ID
+
+        Returns:
+            Generated code as string
+        """
+        # Determine role based on action number
+        role = "implementation" if action_num == 1 else "test"
+
+        # Build generation request
+        req = GenRequest(
+            goal_text=self.current_goal_text or "implement feature",
+            context={
+                **self.current_context,
+                "goal_id": goal_id,
+                "action_name": action_name,
+            },
+            file_path=params.get("file_path", "generated.py"),
+            role=role,
+            language=params.get("language", "python")
+        )
+
+        logger.info(f"Generating {role} code for {req.file_path}")
+
+        # Generate code
+        result = await self.code_generator.generate(req)
+
+        logger.info(
+            f"Generated {len(result.code)} bytes "
+            f"({'cache hit' if result.cache_hit else 'new generation'})"
+        )
+
+        return result.code
+
     async def _plan_goal(
         self,
         goal_id: str,
@@ -318,7 +378,7 @@ class GoalExecutionService:
 
         return plan
 
-    def _plan_to_taskgraph(
+    async def _plan_to_taskgraph(
         self,
         plan: Plan,
         goal_id: str,
@@ -348,7 +408,7 @@ class GoalExecutionService:
             action_name = task.task_name
 
             # Enrich parameters with defaults based on action type
-            params = self._enrich_task_parameters(
+            params = await self._enrich_task_parameters(
                 action_name=action_name,
                 original_params=task.parameters or {},
                 task_id=task_id,
@@ -375,7 +435,7 @@ class GoalExecutionService:
 
         return graph
 
-    def _enrich_task_parameters(
+    async def _enrich_task_parameters(
         self,
         action_name: str,
         original_params: Dict[str, Any],
@@ -415,8 +475,23 @@ class GoalExecutionService:
                 else:
                     params["file_path"] = f"tests/generated/file_{action_num}_{goal_id[:8]}.py"
 
+            # Generate code content if not provided
             if "content" not in params and action_name in ("create_file", "modify_code"):
-                params["content"] = f"# Auto-generated for {action_name}\ndef placeholder():\n    pass\n"
+                if self.code_generator:
+                    # Use LLM to generate real code
+                    try:
+                        params["content"] = await self._materialize_task_content(
+                            action_name=action_name,
+                            params=params,
+                            action_num=action_num,
+                            goal_id=goal_id
+                        )
+                    except Exception as e:
+                        logger.warning(f"Code generation failed: {e}, using placeholder")
+                        params["content"] = f"# Auto-generated for {action_name}\ndef placeholder():\n    pass\n"
+                else:
+                    # Fallback to placeholder if no code generator
+                    params["content"] = f"# Auto-generated for {action_name}\ndef placeholder():\n    pass\n"
 
             if "reason" not in params:
                 params["reason"] = f"Generated by goal {goal_id}"

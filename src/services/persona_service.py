@@ -52,6 +52,7 @@ class PersonaService:
         awareness_loop=None,
         code_access_service=None,
         task_scheduler=None,
+        code_generator=None,
     ):
         """
         Initialize persona service.
@@ -74,6 +75,7 @@ class PersonaService:
             web_interpretation_service: Optional web interpretation service
             code_access_service: Optional code access service for reading/modifying source code
             task_scheduler: Optional task scheduler for scheduling code modifications
+            code_generator: Optional code generator for LLM-based code generation in execute_goal
         """
         self.llm = llm_service
         self.prompt_builder = PersonaPromptBuilder(persona_space_path, belief_system=belief_system)
@@ -103,6 +105,7 @@ class PersonaService:
         # Code access and task scheduling
         self.code_access_service = code_access_service
         self.task_scheduler = task_scheduler
+        self.code_generator = code_generator
 
         # Rate limiting for web operations (per conversation)
         self.url_fetch_count = 0
@@ -295,6 +298,17 @@ class PersonaService:
                                     if has_immutable:
                                         logger.warning("🔒 Immutable beliefs detected - applying anti-hedging logit bias")
 
+                                    # Log what dissonance was detected
+                                    print(f"\n{'='*80}")
+                                    print(f"⚠️  DISSONANCE DETECTED")
+                                    print(f"{'='*80}")
+                                    for i, pattern in enumerate(high_severity_patterns, 1):
+                                        print(f"\nPattern {i}: {pattern.pattern_type}")
+                                        print(f"  Belief: {pattern.belief_statement[:80]}...")
+                                        print(f"  Severity: {pattern.severity:.0%}")
+                                        print(f"  Immutable: {getattr(pattern, 'immutable', False)}")
+                                    print(f"{'='*80}\n")
+
                                     # Build prompt for internal resolution
                                     internal_prompt = self.prompt_builder.build_prompt(
                                         user_message,
@@ -330,6 +344,37 @@ class PersonaService:
                                     internal_response = internal_result["message"].content or ""
                                     logger.info(f"✅ Internal resolution generated ({len(internal_response)} chars)")
 
+                                    # CAPTURE INTERNAL THOUGHT PROCESS
+                                    print(f"\n{'='*80}")
+                                    print(f"💭 ASTRA'S INTERNAL REASONING (hidden from user)")
+                                    print(f"{'='*80}")
+                                    print(f"Query: {user_message[:100]}...")
+                                    print(f"Dissonance patterns: {len(high_severity_patterns)}")
+                                    print(f"\n--- Internal Resolution Response ---")
+                                    print(internal_response)
+                                    print(f"{'='*80}\n")
+
+                                    logger.info(f"💭 INTERNAL REASONING:\n{internal_response}")
+
+                                    # Also save to dedicated thought log
+                                    import os
+                                    from datetime import datetime
+                                    thought_log_path = "logs/thoughts"
+                                    os.makedirs(thought_log_path, exist_ok=True)
+                                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                                    with open(f"{thought_log_path}/internal_reasoning_{timestamp}.txt", "w") as f:
+                                        f.write(f"TIMESTAMP: {timestamp}\n")
+                                        f.write(f"USER QUERY: {user_message}\n\n")
+                                        f.write(f"DISSONANCE PATTERNS: {len(high_severity_patterns)}\n")
+                                        for i, p in enumerate(high_severity_patterns, 1):
+                                            f.write(f"\n  {i}. {p.pattern_type} - {p.belief_statement[:100]}...\n")
+                                            f.write(f"     Severity: {p.severity:.0%}, Immutable: {getattr(p, 'immutable', False)}\n")
+                                        f.write(f"\n{'='*80}\n")
+                                        f.write(f"INTERNAL REASONING:\n")
+                                        f.write(f"{'='*80}\n\n")
+                                        f.write(internal_response)
+                                        f.write(f"\n\n{'='*80}\n")
+
                                     # Parse and apply resolutions from internal response
                                     resolution_data = self.parse_resolution_response(internal_response)
                                     if resolution_data and resolution_data.get("has_resolutions"):
@@ -362,7 +407,9 @@ class PersonaService:
                                     resolution_required = False
                                     resolution_belief_statements = []
                         except Exception as e:
+                            import traceback
                             logger.error(f"Failed to check consistency: {e}")
+                            logger.error(f"Traceback: {traceback.format_exc()}")
 
                 # Fallback to regular memory retrieval
                 elif self.retrieval_service:
@@ -405,6 +452,32 @@ class PersonaService:
         messages.append({"role": "user", "content": user_message})
 
         tools = self._get_tool_definitions()
+
+        # VERBOSE DIAGNOSTIC: Log what tools are available
+        tool_names = [t['function']['name'] for t in tools]
+        execute_goal_present = 'execute_goal' in tool_names
+
+        print("\n" + "="*80)
+        print(f"🔧 VERBOSE TOOL DIAGNOSTIC")
+        print("="*80)
+        print(f"Total tools: {len(tools)}")
+        print(f"Tool names: {tool_names}")
+        print(f"execute_goal present: {execute_goal_present}")
+        print(f"code_access_service: {self.code_access_service is not None}")
+        print(f"code_generator: {self.code_generator is not None}")
+        print(f"User message: {user_message[:200]}")
+
+        if execute_goal_present:
+            # Find and print the execute_goal tool definition
+            for tool in tools:
+                if tool['function']['name'] == 'execute_goal':
+                    print(f"\nexecute_goal tool definition:")
+                    print(f"  Description: {tool['function']['description'][:150]}...")
+                    print(f"  Parameters: {list(tool['function']['parameters']['properties'].keys())}")
+
+        print("="*80 + "\n")
+
+        logger.info(f"TOOL DIAGNOSTIC: {len(tools)} tools, execute_goal={execute_goal_present}, msg='{user_message[:100]}'")
 
         # Tool execution loop (max 5 iterations to prevent infinite loops)
         max_iterations = 5
@@ -1718,17 +1791,31 @@ This revision represents growth in my self-understanding. My past statements wer
                         # Initialize execution service
                         exec_service = GoalExecutionService(
                             code_access=self.code_access_service,
+                            code_generator=self.code_generator,
                             identity_ledger=None,  # TODO: wire identity ledger
                             workdir=str(self.code_access_service.project_root),
                             max_concurrent=2
                         )
 
-                        # Execute goal (async - run in new loop since we're in sync context)
-                        exec_result = asyncio.run(exec_service.execute_goal(
-                            goal_text=goal_text,
-                            context=context,
-                            timeout_ms=timeout_ms
-                        ))
+                        # Run in separate thread with its own event loop (uvloop incompatible with nest_asyncio)
+                        import concurrent.futures
+                        import threading
+
+                        def run_in_new_loop():
+                            new_loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(new_loop)
+                            try:
+                                return new_loop.run_until_complete(exec_service.execute_goal(
+                                    goal_text=goal_text,
+                                    context=context,
+                                    timeout_ms=timeout_ms
+                                ))
+                            finally:
+                                new_loop.close()
+
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(run_in_new_loop)
+                            exec_result = future.result(timeout=timeout_ms/1000 + 5)
 
                         # Format result for persona
                         result = f"🎯 Goal Execution Complete\n\n"

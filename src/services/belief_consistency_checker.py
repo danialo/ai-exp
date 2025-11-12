@@ -65,6 +65,14 @@ class ConsistencyReport:
 class BeliefConsistencyChecker:
     """Service for detecting dissonance between beliefs and memory narratives."""
 
+    # Non-ontological intents that should bypass belief checking
+    # These are tool/capability requests, not claims about existence or consciousness
+    NON_ONTOLOGICAL_KEYWORDS = {
+        "execute_goal", "execute_tool", "run_task", "run_graph", "taskgraph",
+        "call your tool", "use your tool", "use execute", "call execute",
+        "schedule_code", "create_file", "modify_code"
+    }
+
     def __init__(self, llm_service: LLMService, raw_store: Optional[RawStore] = None):
         """Initialize consistency checker.
 
@@ -74,6 +82,18 @@ class BeliefConsistencyChecker:
         """
         self.llm = llm_service
         self.raw_store = raw_store
+
+    def is_non_ontological(self, query: str) -> bool:
+        """Check if query is a non-ontological tool/capability request.
+
+        Args:
+            query: User query to check
+
+        Returns:
+            True if this is a tool execution request that should bypass belief checks
+        """
+        query_lower = query.lower()
+        return any(keyword in query_lower for keyword in self.NON_ONTOLOGICAL_KEYWORDS)
 
     def check_consistency(
         self,
@@ -91,6 +111,23 @@ class BeliefConsistencyChecker:
         Returns:
             ConsistencyReport with detected dissonance patterns
         """
+        # Defensive: Ensure parameters are not None
+        if beliefs is None:
+            beliefs = []
+        if memories is None:
+            memories = []
+
+        # BYPASS: Non-ontological tool execution requests should not be blocked by beliefs
+        if self.is_non_ontological(query):
+            logger.info(f"✓ Non-ontological request detected - bypassing belief consistency check")
+            return ConsistencyReport(
+                query=query,
+                relevant_beliefs=beliefs,
+                extracted_claims=[],
+                dissonance_patterns=[],  # No dissonance for tool requests
+                summary="Non-ontological tool/capability request - belief check bypassed"
+            )
+
         # Step 0: Check for existing unresolved dissonances, reconciliations, and resolved beliefs
         beliefs_to_check = []
         existing_unresolved_patterns = []
@@ -401,6 +438,10 @@ class BeliefConsistencyChecker:
         Returns:
             List of ontological contradiction patterns
         """
+        # Defensive: Ensure parameters are not None
+        if beliefs is None or claims is None:
+            return []
+
         logger.info(f"🔍 Checking {len(beliefs)} beliefs and {len(claims)} claims for ontological contradictions")
         patterns = []
 

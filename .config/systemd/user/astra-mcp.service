@@ -1,0 +1,15 @@
+[Unit]
+Description=Astra MCP Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/d/git/ai-exp
+ExecStart=/home/d/git/ai-exp/venv/bin/python -m bin.mcp_server
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/d/git/ai-exp/logs/mcp_server.log
+StandardError=append:/home/d/git/ai-exp/logs/mcp_server.log
+
+[Install]
+WantedBy=default.target

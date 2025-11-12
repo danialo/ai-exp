@@ -367,36 +367,76 @@ def create_task_execution_server(raw_store: RawStore) -> "Server":
     tooling = TaskExecutionTooling(raw_store)
     server = Server("astra-task-executions")
 
-    @server.tool(name="tasks_list", description="List task executions with filters")
-    async def tasks_list(payload: Optional[dict[str, Any]] = None) -> ToolResult:
-        payload = payload or {}
-        result = tooling.tasks_list(
-            task_id=payload.get("task_id"),
-            status=payload.get("status"),
-            limit=payload.get("limit", 20),
-            since=payload.get("since"),
-            backfilled=payload.get("backfilled"),
-        )
-        return ToolResult(content=[TextContent(type="text", text=json.dumps(result))])
+    # Register list_tools handler
+    @server.list_tools()
+    async def handle_list_tools() -> list[Tool]:
+        """Return list of available task execution tools."""
+        return [
+            Tool(
+                name="tasks_list",
+                description="List task executions with filters",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string"},
+                        "status": {"type": "string", "enum": ["success", "failed"]},
+                        "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+                        "since": {"type": "string", "description": "ISO8601 timestamp"},
+                        "backfilled": {"type": "boolean"},
+                    },
+                },
+            ),
+            Tool(
+                name="tasks_by_trace",
+                description="Inspect a task execution trace",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "trace_id": {"type": "string"},
+                    },
+                    "required": ["trace_id"],
+                },
+            ),
+            Tool(
+                name="tasks_last_failed",
+                description="List recent task failures and summarise error patterns",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+                        "task_id": {"type": "string"},
+                        "unique_errors": {"type": "boolean", "default": False},
+                    },
+                },
+            ),
+        ]
 
-    @server.tool(name="tasks_by_trace", description="Inspect a task execution trace")
-    async def tasks_by_trace(payload: Optional[dict[str, Any]] = None) -> ToolResult:
-        payload = payload or {}
-        result = tooling.tasks_by_trace(trace_id=payload.get("trace_id"))
-        return ToolResult(content=[TextContent(type="text", text=json.dumps(result))])
+    # Register call_tool handler
+    @server.call_tool()
+    async def handle_call_tool(name: str, arguments: Optional[dict[str, Any]]) -> list[TextContent]:
+        """Route tool calls to appropriate handlers."""
+        arguments = arguments or {}
 
-    @server.tool(
-        name="tasks_last_failed",
-        description="List recent task failures and summarise error patterns",
-    )
-    async def tasks_last_failed(payload: Optional[dict[str, Any]] = None) -> ToolResult:
-        payload = payload or {}
-        result = tooling.tasks_last_failed(
-            limit=payload.get("limit", 10),
-            task_id=payload.get("task_id"),
-            unique_errors=payload.get("unique_errors", False),
-        )
-        return ToolResult(content=[TextContent(type="text", text=json.dumps(result))])
+        if name == "tasks_list":
+            result = tooling.tasks_list(
+                task_id=arguments.get("task_id"),
+                status=arguments.get("status"),
+                limit=arguments.get("limit", 20),
+                since=arguments.get("since"),
+                backfilled=arguments.get("backfilled"),
+            )
+        elif name == "tasks_by_trace":
+            result = tooling.tasks_by_trace(trace_id=arguments.get("trace_id"))
+        elif name == "tasks_last_failed":
+            result = tooling.tasks_last_failed(
+                limit=arguments.get("limit", 10),
+                task_id=arguments.get("task_id"),
+                unique_errors=arguments.get("unique_errors", False),
+            )
+        else:
+            raise ValueError(f"Unknown tool: {name}")
+
+        return [TextContent(type="text", text=json.dumps(result))]
 
     return server
 

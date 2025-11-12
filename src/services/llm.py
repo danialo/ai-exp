@@ -1,9 +1,12 @@
 """LLM service for generating responses with context from memories."""
 
+import logging
 from typing import Protocol, List, Dict, Any, Optional
 from datetime import datetime
 
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 
 class Memory(Protocol):
@@ -258,11 +261,50 @@ class LLMService:
             if logit_bias is not None and len(logit_bias) > 0:
                 kwargs["logit_bias"] = logit_bias
 
+        # VERBOSE DIAGNOSTIC LOGGING
+        tool_names = [t["function"]["name"] for t in tools] if tools else []
+        has_execute_goal = "execute_goal" in tool_names
+        last_msg = messages[-1].get("content", "")[:150] if messages else ""
+
+        print("\n" + "="*80)
+        print("🔧 LLM API CALL")
+        print("="*80)
+        print(f"Model: {self.model}")
+        print(f"Provider: {self.client.base_url}")
+        print(f"Tools count: {len(tools)}")
+        print(f"Tool names: {tool_names}")
+        print(f"execute_goal present: {has_execute_goal}")
+        print(f"Messages count: {len(messages)}")
+        print(f"Last user message: {last_msg}")
+        print(f"Temperature: {kwargs.get('temperature', 'default')}")
+        print(f"Max tokens: {kwargs.get('max_tokens', 'default')}")
+        print("="*80 + "\n")
+
+        logger.info(f"LLM API CALL: model={self.model}, tools={len(tools)}, execute_goal={has_execute_goal}")
+
         try:
             response = self.client.chat.completions.create(**kwargs)
+
+            # LOG RESPONSE
+            finish_reason = response.choices[0].finish_reason
+            message = response.choices[0].message
+            has_tool_calls = hasattr(message, 'tool_calls') and message.tool_calls is not None and len(message.tool_calls) > 0
+
+            print("\n" + "="*80)
+            print("🔧 LLM API RESPONSE")
+            print("="*80)
+            print(f"Finish reason: {finish_reason}")
+            print(f"Has tool calls: {has_tool_calls}")
+            if has_tool_calls:
+                print(f"Tool calls count: {len(message.tool_calls)}")
+                for tc in message.tool_calls:
+                    print(f"  - {tc.function.name}()")
+            else:
+                print(f"Text response: {message.content[:200] if message.content else 'None'}...")
+            print("="*80 + "\n")
+
+            logger.info(f"LLM RESPONSE: finish={finish_reason}, tool_calls={has_tool_calls}")
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"LLM API error for model {self.model}: {e}")
             logger.error(f"Request kwargs: {kwargs}")
             raise
@@ -271,8 +313,6 @@ class LLMService:
 
         # Debug logging for reasoning models
         if any(x in self.model.lower() for x in ["gpt-5", "o1", "o3"]):
-            import logging
-            logger = logging.getLogger(__name__)
             logger.info(f"Reasoning model response - content: {repr(choice.message.content)}, refusal: {choice.message.refusal}")
             logger.info(f"Full message object: {choice.message}")
             logger.info(f"Finish reason: {choice.finish_reason}")

@@ -28,6 +28,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import settings
 from src.memory.raw_store import create_raw_store
 from src.mcp.task_execution_server import create_task_execution_server
+from src.mcp.tools.schedule import create_schedule_tools
+from src.mcp.tools.desires import create_desire_tools
 
 # Optional MCP imports (graceful degradation)
 try:
@@ -71,31 +73,215 @@ def create_astra_mcp_server() -> Server:
     # Create server with task execution tools
     server = create_task_execution_server(raw_store=raw_store)
 
-    # Add health check tool
-    @server.tool(name="astra.health", description="Health check for MCP server")
-    async def health_check(payload=None):
-        """Return server health status and registered tools."""
-        # Get list of registered tools
-        tool_names = [tool.name for tool in server.list_tools()]
+    # Initialize schedule and desire tools
+    schedule_tools = create_schedule_tools()
+    desire_tools = create_desire_tools()
 
-        health_info = {
-            "ok": True,
-            "server": "astra-mcp",
-            "tools": tool_names,
-            "tool_count": len(tool_names),
-        }
+    # Get existing tools from base server
+    existing_list_tools_handler = server.request_handlers.get(
+        Tool.__class__.__bases__[0]  # Get ListToolsRequest type
+    )
 
-        return {
-            "content": [
-                TextContent(type="text", text=json.dumps(health_info, indent=2))
-            ]
-        }
+    # Register combined list_tools handler
+    @server.list_tools()
+    async def handle_list_tools():
+        """Return all available tools (task execution + schedule + health)."""
+        # Get task execution tools from base server
+        if existing_list_tools_handler:
+            base_result = await existing_list_tools_handler(None)
+            base_tools = base_result.result.tools if hasattr(base_result, "result") else []
+        else:
+            base_tools = []
 
-    logger.info(f"MCP server created with {len(server.list_tools())} tools")
+        # Add schedule tools
+        schedule_tool_defs = [
+            Tool(
+                name="astra.schedule.create",
+                description="Create a scheduled task with cron expression and safety tier",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "cron_expression": {"type": "string"},
+                        "target_tool": {"type": "string"},
+                        "payload": {"type": "object"},
+                        "safety_tier": {"type": "integer", "enum": [0, 1, 2], "default": 1},
+                        "per_day_budget": {"type": "integer", "default": 4},
+                    },
+                    "required": ["name", "cron_expression", "target_tool", "payload"],
+                },
+            ),
+            Tool(
+                name="astra.schedule.modify",
+                description="Modify an existing schedule (cron, payload, or budget)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "schedule_id": {"type": "string"},
+                        "cron_expression": {"type": "string"},
+                        "target_tool": {"type": "string"},
+                        "payload": {"type": "object"},
+                        "per_day_budget": {"type": "integer"},
+                    },
+                    "required": ["schedule_id"],
+                },
+            ),
+            Tool(
+                name="astra.schedule.pause",
+                description="Pause a schedule to stop execution",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"schedule_id": {"type": "string"}},
+                    "required": ["schedule_id"],
+                },
+            ),
+            Tool(
+                name="astra.schedule.resume",
+                description="Resume a paused schedule",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"schedule_id": {"type": "string"}},
+                    "required": ["schedule_id"],
+                },
+            ),
+            Tool(
+                name="astra.schedule.list",
+                description="List all schedules (optionally filtered by status)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string", "enum": ["active", "paused"]},
+                    },
+                },
+            ),
+            Tool(
+                name="astra.health",
+                description="Health check for MCP server",
+                inputSchema={"type": "object"},
+            ),
+        ]
 
-    # TODO: Register schedule tools from src/mcp/tools/schedule.py
-    # TODO: Register desire tools from src/mcp/tools/desires.py
-    # TODO: Register goal tools from src/mcp/tools/goals.py
+        # Add desire tools
+        desire_tool_defs = [
+            Tool(
+                name="astra.desires.record",
+                description="Record a new vague wish or desire",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "strength": {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 1.0},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "context": {"type": "object"},
+                    },
+                    "required": ["text"],
+                },
+            ),
+            Tool(
+                name="astra.desires.list",
+                description="List top desires sorted by strength",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+                        "min_strength": {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.0},
+                        "tag": {"type": "string"},
+                    },
+                },
+            ),
+            Tool(
+                name="astra.desires.reinforce",
+                description="Manually reinforce a desire to boost its strength",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "desire_id": {"type": "string"},
+                        "delta": {"type": "number", "default": 0.1},
+                    },
+                    "required": ["desire_id"],
+                },
+            ),
+        ]
+
+        return base_tools + schedule_tool_defs + desire_tool_defs
+
+    # Get existing call_tool handler
+    existing_call_tool_handler = None
+    from mcp import types as mcp_types
+    if mcp_types.CallToolRequest in server.request_handlers:
+        # Save reference to original handler for task execution tools
+        original_handler = server.request_handlers[mcp_types.CallToolRequest]
+
+        async def existing_call_tool_handler(name: str, arguments: dict):
+            # Reconstruct request to call original handler
+            req = mcp_types.CallToolRequest(
+                method="tools/call",
+                params=mcp_types.CallToolRequestParams(name=name, arguments=arguments),
+            )
+            result = await original_handler(req)
+            return result.result.content
+
+    # Register combined call_tool handler
+    @server.call_tool()
+    async def handle_call_tool(name: str, arguments: dict):
+        """Route tool calls to appropriate handlers."""
+        arguments = arguments or {}
+
+        # Route schedule tools
+        if name == "astra.schedule.create":
+            result = schedule_tools.create(arguments)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "astra.schedule.modify":
+            result = schedule_tools.modify(arguments)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "astra.schedule.pause":
+            result = schedule_tools.pause(arguments)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "astra.schedule.resume":
+            result = schedule_tools.resume(arguments)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "astra.schedule.list":
+            result = schedule_tools.list_schedules(arguments)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "astra.health":
+            # Get tool count from list_tools
+            all_tools = await handle_list_tools()
+            health_info = {
+                "ok": True,
+                "server": "astra-mcp",
+                "tools": [t.name for t in all_tools],
+                "tool_count": len(all_tools),
+            }
+            return [TextContent(type="text", text=json.dumps(health_info, indent=2))]
+
+        # Route desire tools
+        elif name == "astra.desires.record":
+            result = desire_tools.record(arguments)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "astra.desires.list":
+            result = desire_tools.list_desires(arguments)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "astra.desires.reinforce":
+            result = desire_tools.reinforce(arguments)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        # Fall back to task execution tools
+        elif existing_call_tool_handler:
+            return await existing_call_tool_handler(name, arguments)
+
+        else:
+            raise ValueError(f"Unknown tool: {name}")
+
+    logger.info("MCP server created with task execution, schedule, and desire tools")
+
+    # TODO: Register goal tools from src/mcp/tools/goals.py (future work)
 
     return server
 
