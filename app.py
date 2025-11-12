@@ -2240,6 +2240,9 @@ async def persona_chat(request: ChatRequest):
 
     Supports multi-agent routing via use_agent_router=True (Phase 1: opt-in).
     """
+    # DEBUG: Log incoming request details
+    logger.info(f"🔍 PERSONA_CHAT REQUEST: message='{request.message[:50]}...', retrieve_memories={request.retrieve_memories}, conversation_history_length={len(request.conversation_history) if request.conversation_history else 0}")
+
     if not persona_service:
         raise HTTPException(status_code=503, detail="Persona mode not enabled")
 
@@ -2436,6 +2439,7 @@ async def persona_chat(request: ChatRequest):
         })
 
         # Return response with reconciliation data and detected user emotion
+        logger.info(f"✅ PERSONA_CHAT SUCCESS: About to return response, response_length={len(response_text)}, has_reconciliation={reconciliation is not None}")
         return {
             "response": response_text,
             "reconciliation": reconciliation,
@@ -2448,6 +2452,8 @@ async def persona_chat(request: ChatRequest):
             "user_dominance": user_dominance,  # Detected user control level
         }
     except Exception as e:
+        logger.error(f"❌ PERSONA_CHAT EXCEPTION: {type(e).__name__}: {str(e)}")
+        logger.exception("Full traceback:")
         multi_logger.log_error(f"Persona generation error: {str(e)}", exception=e)
         raise HTTPException(status_code=500, detail=f"Persona generation error: {str(e)}")
 
