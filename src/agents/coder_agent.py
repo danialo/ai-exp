@@ -103,7 +103,7 @@ class CoderAgent(BaseAgent):
         ]
 
         # Use low temperature for deterministic code generation
-        response = await self.llm.generate_with_tools(
+        response = self.llm.generate_with_tools(
             messages=messages,
             tools=None,  # No tools for coder
             temperature=0.2,  # Low temp for consistency

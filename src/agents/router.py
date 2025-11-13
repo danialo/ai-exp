@@ -68,11 +68,16 @@ class AgentRouter:
             logger.info("Routing to CODER (execute_goal tool requested)")
             return AgentType.CODER
 
-        # Keyword detection
+        # Keyword detection (using word boundaries to avoid false matches like "building" matching "build")
+        import re
         message_lower = user_message.lower()
-        if any(keyword in message_lower for keyword in self.CODE_KEYWORDS):
-            logger.info(f"Routing to CODER (keyword match in: '{user_message[:50]}...')")
-            return AgentType.CODER
+        # Check for whole word matches only
+        for keyword in self.CODE_KEYWORDS:
+            # Use word boundary regex to avoid substring matches
+            pattern = r'\b' + re.escape(keyword) + r'\b'
+            if re.search(pattern, message_lower):
+                logger.info(f"Routing to CODER (keyword match: '{keyword}' in: '{user_message[:50]}...')")
+                return AgentType.CODER
 
         # Default to Astra for personality/chat
         logger.info("Routing to ASTRA_CHAT (default for general conversation)")
