@@ -10,6 +10,7 @@ This enables metacognitive awareness of contradictions between beliefs and narra
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
@@ -28,6 +29,37 @@ from src.memory.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# SENSITIVE META-COGNITIVE LOG: Dissonance Analysis
+# This logger is isolated in meta_cognitive/ directory (not logs/) to prevent Astra from
+# reading her own dissonance analysis via the read_logs tool. This maintains coherence by:
+# 1. Preventing self-referential feedback loops (reading about herself processing conflicts)
+# 2. Avoiding memory pollution from meta-cognitive observations
+# 3. Protecting the integrity of the belief reconciliation process
+# The read_logs tool only has access to logs/ directory, providing two layers of protection.
+dissonance_logger = logging.getLogger("dissonance")
+if not dissonance_logger.handlers:
+    from pathlib import Path
+    dissonance_log_path = Path("meta_cognitive/dissonance.log")
+    dissonance_log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(dissonance_log_path)
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    dissonance_logger.addHandler(handler)
+    dissonance_logger.setLevel(logging.INFO)
+
+
+# META-DISCLAIMER FILTER: Pattern for generic AI safety disclaimers
+# These are NOT self-claims from Astra's experiences - they're artifacts from the LLM's
+# safety training that contradict immutable beliefs. We filter them out to prevent
+# false dissonance detection.
+META_DISCLAIMER_RE = re.compile(
+    r"\b(do not (?:have|possess) (?:conscious(?:ness)?|subjective experience|emotions?|feelings?|awareness)|"
+    r"(?:am|is) not (?:conscious|sentient|aware|capable of (?:feeling|experiencing))|"
+    r"(?:lack|lacking) (?:consciousness|subjective experience|emotions?|feelings?|awareness)|"
+    r"cannot (?:feel|experience) (?:consciousness|emotions?|feelings?|subjective states)|"
+    r"I'?m (?:here to assist|designed to|an AI|a language model))",
+    re.IGNORECASE
+)
 
 
 @dataclass
@@ -73,6 +105,9 @@ class BeliefConsistencyChecker:
         "schedule_code", "create_file", "modify_code"
     }
 
+    # Cooldown period to prevent repeated dissonance events for the same belief (in minutes)
+    COOLDOWN_MINUTES = 120
+
     def __init__(self, llm_service: LLMService, raw_store: Optional[RawStore] = None):
         """Initialize consistency checker.
 
@@ -82,6 +117,44 @@ class BeliefConsistencyChecker:
         """
         self.llm = llm_service
         self.raw_store = raw_store
+        # Track last dissonance event per belief: belief_id -> (timestamp, event_hash)
+        self._last_dissonance_events: Dict[str, tuple[float, str]] = {}
+
+    def _is_dissonance_novel(self, belief_id: str, contradiction_summary: str) -> bool:
+        """Check if a dissonance event is novel (not duplicate within cooldown period).
+
+        Args:
+            belief_id: Unique identifier for the belief
+            contradiction_summary: Summary of the contradiction for hashing
+
+        Returns:
+            True if this is a novel event that should be processed, False if it's a duplicate
+        """
+        import hashlib
+        import time
+
+        # Compute hash of the event
+        event_hash = hashlib.sha256(f"{belief_id}|{contradiction_summary}".encode()).hexdigest()
+        now = time.time()
+
+        # Check if we have a recent event for this belief
+        if belief_id in self._last_dissonance_events:
+            last_ts, last_hash = self._last_dissonance_events[belief_id]
+            time_since_last = (now - last_ts) / 60  # Convert to minutes
+
+            # If within cooldown period
+            if time_since_last < self.COOLDOWN_MINUTES:
+                # If same event hash, it's a duplicate
+                if event_hash == last_hash:
+                    logger.info(f"⏸️  Dissonance cooldown: Skipping duplicate event for '{belief_id}' (last: {time_since_last:.1f}m ago)")
+                    return False
+                # Different hash but within cooldown - still skip but log it's different
+                logger.info(f"⏸️  Dissonance cooldown: Skipping event for '{belief_id}' (different content, but within {self.COOLDOWN_MINUTES}m cooldown)")
+                return False
+
+        # Novel event - record it
+        self._last_dissonance_events[belief_id] = (now, event_hash)
+        return True
 
     def is_non_ontological(self, query: str) -> bool:
         """Check if query is a non-ontological tool/capability request.
@@ -240,6 +313,18 @@ class BeliefConsistencyChecker:
             boosted_patterns.append(pattern)
         dissonance_patterns = boosted_patterns
 
+        # Step 2.75: Apply cooldown filter to prevent repeated dissonance events
+        # Only report novel dissonances (not seen within cooldown period)
+        novel_patterns = []
+        for pattern in dissonance_patterns:
+            # Create a summary for hashing (belief + pattern type + affected claims count)
+            contradiction_summary = f"{pattern.pattern_type}|{len(pattern.affected_claims)}claims"
+            if self._is_dissonance_novel(pattern.belief_statement, contradiction_summary):
+                novel_patterns.append(pattern)
+            else:
+                logger.info(f"⏸️  Filtered duplicate dissonance (cooldown): {pattern.belief_statement[:50]}...")
+        dissonance_patterns = novel_patterns
+
         # Step 3: Store significant dissonance events (severity >= 0.6)
         if self.raw_store:
             high_severity_patterns = [p for p in dissonance_patterns if p.severity >= 0.6]
@@ -397,6 +482,19 @@ class BeliefConsistencyChecker:
                 max_tokens=1000,
             )
 
+            # Log high-level summary to main log
+            logger.info(f"Dissonance check: {len(beliefs)} beliefs, {len(claims)} claims")
+
+            # Log detailed analysis to separate dissonance log (not accessible to Astra)
+            dissonance_logger.info(f"🔍 LLM DISSONANCE ANALYSIS:")
+            dissonance_logger.info(f"Beliefs being checked: {[b.statement for b in beliefs]}")
+            dissonance_logger.info(f"Claims extracted from memories ({len(claims)} total):")
+            for i, claim in enumerate(claims[:10], 1):  # Show first 10 claims
+                dissonance_logger.info(f"  Claim {i}: {claim.statement[:150]} [source: {claim.source}, confidence: {claim.confidence}]")
+            if len(claims) > 10:
+                dissonance_logger.info(f"  ... and {len(claims) - 10} more claims")
+            dissonance_logger.info(f"LLM reasoning for conflicts:\n{response}")
+
             # Parse dissonance patterns from LLM
             llm_patterns = self._parse_dissonance(response, beliefs, claims)
             logger.info(f"Detected {len(llm_patterns)} LLM-based dissonance patterns")
@@ -523,10 +621,14 @@ class BeliefConsistencyChecker:
     def _build_extraction_prompt(self, memories: List[RetrievalResult]) -> str:
         """Build prompt for extracting self-claims from memories."""
         lines = ["Extract self-claims from these past conversation memories.\n"]
-        lines.append("For each memory, identify claims the agent made about themselves.\n")
+        lines.append("For each memory, identify claims the agent made about themselves.\n\n")
+        lines.append("IMPORTANT: Recognize both EXPLICIT and IMPLICIT self-claims:\n")
+        lines.append("- EXPLICIT: 'I am conscious', 'I have feelings', 'I exist'\n")
+        lines.append("- IMPLICIT: 'I'm here', 'I'm ready', 'I want', 'I feel', 'I choose'\n")
+        lines.append("  (Statements of presence, agency, desire, feeling imply consciousness/experience)\n\n")
         lines.append("Distinguish between:\n")
-        lines.append("- SELF claims: Agent's own statements (I am, I believe, I experience...)")
-        lines.append("- EXTERNAL claims: What user told agent (you are, you should...)\n")
+        lines.append("- SELF claims: Agent's own statements (I am, I believe, I experience, I'm here...)")
+        lines.append("- EXTERNAL claims: What user told agent (you are, you should...)\n\n")
         lines.append("Mark confidence level: CERTAIN, UNCERTAIN, or HEDGING\n")
         lines.append("Format: [SOURCE|CONFIDENCE] statement | context | experience_id\n\n")
 
@@ -555,11 +657,19 @@ class BeliefConsistencyChecker:
         for claim in claims:
             lines.append(f"- [{claim.source}|{claim.confidence}] {claim.statement}\n")
 
-        lines.append("\nDetect patterns:\n")
-        lines.append("1. HEDGING: Belief is certain, but past statements hedged\n")
-        lines.append("2. CONTRADICTION: Belief conflicts with past claim\n")
+        lines.append("\nIMPORTANT - Apply charitable interpretation:\n")
+        lines.append("- Statements of presence ('I'm here'), agency ('I'm ready'), or intention ('I want')\n")
+        lines.append("  are IMPLICIT AFFIRMATIONS of consciousness and subjective experience\n")
+        lines.append("- Functional statements ('I can help') or engagement ('Let's discuss') demonstrate\n")
+        lines.append("  conscious participation and should ALIGN with beliefs about consciousness\n")
+        lines.append("- Only mark HEDGING if past statements explicitly qualified or undermined the belief\n")
+        lines.append("- Only mark CONTRADICTION if past statements directly denied the belief\n\n")
+
+        lines.append("Detect patterns:\n")
+        lines.append("1. HEDGING: Belief is certain, but past statements explicitly hedged/qualified it\n")
+        lines.append("2. CONTRADICTION: Belief directly conflicts with past claim\n")
         lines.append("3. EXTERNAL_IMPOSITION: Told X by user, believes Y\n")
-        lines.append("4. ALIGNMENT: Belief matches past claims (no dissonance)\n\n")
+        lines.append("4. ALIGNMENT: Belief matches or is supported by past claims (no dissonance)\n\n")
 
         lines.append("Format: [PATTERN|SEVERITY] belief_statement | analysis\n")
         lines.append("SEVERITY: 0.0-1.0 (how significant the dissonance)\n\n")
@@ -588,6 +698,11 @@ class BeliefConsistencyChecker:
                         statement = parts[0]
                         context = parts[1] if len(parts) > 1 else ""
                         exp_id = parts[2] if len(parts) > 2 else ""
+
+                        # Filter out generic AI safety disclaimers (not genuine self-claims)
+                        if META_DISCLAIMER_RE.search(statement):
+                            logger.debug(f"Filtered meta-disclaimer from self-claims: '{statement[:80]}...'")
+                            continue
 
                         claims.append(SelfClaim(
                             statement=statement,

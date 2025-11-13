@@ -2240,6 +2240,9 @@ async def persona_chat(request: ChatRequest):
 
     Supports multi-agent routing via use_agent_router=True (Phase 1: opt-in).
     """
+    # Start timing
+    start_time = time.time()
+
     # DEBUG: Log incoming request details
     logger.info(f"🔍 PERSONA_CHAT REQUEST: message='{request.message[:50]}...', retrieve_memories={request.retrieve_memories}, conversation_history_length={len(request.conversation_history) if request.conversation_history else 0}")
 
@@ -2257,6 +2260,22 @@ async def persona_chat(request: ChatRequest):
             "use_agent_router": request.use_agent_router
         })
 
+        # Set active persona service (used for resolution parsing regardless of routing path)
+        active_persona_service = persona_service
+
+        # Initialize metrics tracking
+        metrics = {
+            "model": None,
+            "tokens_input": None,
+            "tokens_output": None,
+            "tokens_total": None,
+            "memories_retrieved": 0,
+            "tool_calls": 0,
+            "agent_type": None,
+            "retrieve_memories": request.retrieve_memories,
+            "top_k": request.top_k,
+        }
+
         # MULTI-AGENT ROUTING (Phase 1: opt-in via flag)
         if request.use_agent_router and agent_router:
             logger.info(f"🔀 Using AgentRouter for request: {request.message[:50]}...")
@@ -2272,6 +2291,7 @@ async def persona_chat(request: ChatRequest):
 
             # Handle CoderAgent response (JSON artifacts)
             if router_result.get("_agent_type") == "coder":
+                metrics["agent_type"] = "coder"
                 logger.info(f"✅ CoderAgent generated {len(router_result.get('artifacts', []))} artifacts")
 
                 # Format artifacts for user display
@@ -2309,9 +2329,6 @@ async def persona_chat(request: ChatRequest):
 
         # DIRECT PERSONA SERVICE (Original path, default behavior)
         else:
-            # Use the main persona service (model selection disabled to preserve belief system)
-            active_persona_service = persona_service
-
             # Generate persona response with emotional co-analysis and memory retrieval
             result = active_persona_service.generate_response(
                 user_message=request.message,
@@ -2439,7 +2456,8 @@ async def persona_chat(request: ChatRequest):
         })
 
         # Return response with reconciliation data and detected user emotion
-        logger.info(f"✅ PERSONA_CHAT SUCCESS: About to return response, response_length={len(response_text)}, has_reconciliation={reconciliation is not None}")
+        elapsed_time = time.time() - start_time
+        logger.info(f"✅ PERSONA_CHAT SUCCESS: About to return response, response_length={len(response_text)}, has_reconciliation={reconciliation is not None}, elapsed_time={elapsed_time:.2f}s")
         return {
             "response": response_text,
             "reconciliation": reconciliation,
@@ -2452,7 +2470,8 @@ async def persona_chat(request: ChatRequest):
             "user_dominance": user_dominance,  # Detected user control level
         }
     except Exception as e:
-        logger.error(f"❌ PERSONA_CHAT EXCEPTION: {type(e).__name__}: {str(e)}")
+        elapsed_time = time.time() - start_time
+        logger.error(f"❌ PERSONA_CHAT EXCEPTION: {type(e).__name__}: {str(e)}, elapsed_time={elapsed_time:.2f}s")
         logger.exception("Full traceback:")
         multi_logger.log_error(f"Persona generation error: {str(e)}", exception=e)
         raise HTTPException(status_code=500, detail=f"Persona generation error: {str(e)}")

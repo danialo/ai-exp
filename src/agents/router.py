@@ -178,8 +178,8 @@ class AgentRouter:
         logger.info("Processing with Astra (PersonaService)")
 
         # Call Astra's generate_response method
-        # Note: PersonaService.generate_response is async and returns (response_text, reconciliation)
-        result = await self.astra.generate_response(
+        # Note: PersonaService.generate_response is synchronous and returns (response_text, reconciliation)
+        result = self.astra.generate_response(
             user_message=user_message,
             retrieve_memories=kwargs.get("retrieve_memories", True),
             top_k=kwargs.get("top_k", 5),

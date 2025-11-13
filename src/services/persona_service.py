@@ -28,6 +28,24 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# SENSITIVE META-COGNITIVE LOG: Memory Rewrites
+# This logger is isolated in meta_cognitive/ directory (not logs/) to prevent Astra from
+# reading the detailed before/after states of her memory rewrites via the read_logs tool.
+# This maintains coherence by:
+# 1. Preventing recursive self-observation (seeing herself being modified)
+# 2. Avoiding interference with natural memory evolution
+# 3. Protecting the authenticity of reconciled memories
+# The read_logs tool only has access to logs/ directory, providing two layers of protection.
+memory_rewrite_logger = logging.getLogger("memory_rewrites")
+if not memory_rewrite_logger.handlers:
+    from pathlib import Path
+    rewrite_log_path = Path("meta_cognitive/memory_rewrites.log")
+    rewrite_log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(rewrite_log_path)
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    memory_rewrite_logger.addHandler(handler)
+    memory_rewrite_logger.setLevel(logging.INFO)
+
 
 class PersonaService:
     """Orchestrates the self-modifying persona system."""
@@ -557,6 +575,12 @@ class PersonaService:
         logger.info(f"Assistant responses collected: {len(assistant_responses)}")
         if assistant_responses:
             logger.info(f"First response length: {len(assistant_responses[0])}")
+            # FULL CONVERSATION LOGGING (no truncation)
+            logger.info(f"=" * 80)
+            logger.info(f"USER PROMPT: {user_message}")
+            logger.info(f"=" * 80)
+            logger.info(f"ASTRA RESPONSE: {assistant_responses[0]}")
+            logger.info(f"=" * 80)
         else:
             logger.warning("No assistant responses collected - response will be empty!")
 
@@ -671,6 +695,9 @@ class PersonaService:
 
                     original_text = content.get("text", "")
 
+                    # Log to separate memory rewrite log (not accessible to Astra)
+                    memory_rewrite_logger.info(f"📝 BEFORE REWRITE [{exp_id}]: {original_text}")
+
                     # Rewrite based on choice
                     if choice == "B":
                         # Commit - reframe hedging as articulation uncertainty
@@ -686,6 +713,10 @@ class PersonaService:
 
                     # Update the experience text
                     content["text"] = rewritten_text
+
+                    # Log detailed rewrite to separate meta-cognitive log (not accessible to Astra)
+                    memory_rewrite_logger.info(f"✏️  AFTER REWRITE [{exp_id}]: {rewritten_text}")
+                    memory_rewrite_logger.info(f"🔄 Belief: '{belief_statement}' | Choice: {choice}")
 
                     # Mark as reconciled in structured data
                     structured = content.get("structured", {})
@@ -703,6 +734,9 @@ class PersonaService:
 
             # Commit all changes
             session.commit()
+
+        # Log high-level summary to main log (detailed rewrites in meta_cognitive/memory_rewrites.log)
+        logger.info(f"✅ Memory rewrite complete: {rewritten_count}/{len(experience_ids)} memories reconciled for belief '{belief_statement}'")
 
         return rewritten_count
 
