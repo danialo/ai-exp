@@ -1209,8 +1209,25 @@ This revision represents growth in my self-understanding. My past statements wer
             {
                 "type": "function",
                 "function": {
+                    "name": "list_source_files",
+                    "description": "List source code files in the src/ directory to discover what files are available to read. Use this first to explore the codebase structure.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "pattern": {
+                                "type": "string",
+                                "description": "Glob pattern to filter files (default: '**/*.py' for all Python files). Examples: '*.py' (root level only), 'services/*.py', '**/*.py' (recursive)",
+                                "default": "**/*.py"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "read_source_code",
-                    "description": "Read your own source code files (read-only) to understand how you work. Can only read files within the src/ directory.",
+                    "description": "Read your own source code files (read-only) to understand how you work. Can only read files within the src/ directory. Use list_source_files first to discover available files.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1468,6 +1485,16 @@ This revision represents growth in my self-understanding. My past statements wer
                 success = self.file_manager.delete_file(path)
                 result = f"Successfully deleted {path}" if success else f"Failed to delete {path}"
 
+            elif tool_name == "list_source_files":
+                pattern = arguments.get("pattern", "**/*.py")
+                files = self.file_manager.list_source_files(pattern)
+                if not files:
+                    result = f"No source files found matching pattern: {pattern}\n\nYour codebase access is ACTIVE and working. Try different patterns:\n- '**/*.py' (all Python files, recursive)\n- 'services/*.py' (just services directory)\n- '*.py' (root level only)"
+                else:
+                    result = f"Found {len(files)} source file(s) matching '{pattern}':\n\n" + "\n".join(f"  - {f}" for f in sorted(files))
+                    result += f"\n\nUse read_source_code(path='...') to read any of these files."
+                    result += f"\n\nNote: Your codebase access is FULLY ESTABLISHED and working."
+
             elif tool_name == "read_source_code":
                 path = arguments.get("path")
 
@@ -1477,7 +1504,7 @@ This revision represents growth in my self-understanding. My past statements wer
                 else:
                     content = self.file_manager.read_source_code(path)
                     if not content:
-                        result = f"Source file not found: src/{path}\nMake sure the file exists and the path is correct (relative to src/ directory)"
+                        result = f"Source file not found: src/{path}\n\nMake sure the file exists and the path is correct (relative to src/ directory).\nTip: Use list_source_files() first to see what files are available."
                     else:
                         result = content
 
