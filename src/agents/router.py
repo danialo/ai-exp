@@ -71,6 +71,13 @@ class AgentRouter:
         # Keyword detection (using word boundaries to avoid false matches like "building" matching "build")
         import re
         message_lower = user_message.lower()
+
+        # EXCEPTION: Questions about seeing/reading/accessing source code should go to Astra
+        # These are questions about capabilities, not requests to write code
+        if re.search(r'\b(can you|do you|are you able to).*(see|read|access|view).*(source code|your code|codebase)', message_lower):
+            logger.info(f"Routing to ASTRA_CHAT (question about source code access capability)")
+            return AgentType.ASTRA_CHAT
+
         # Check for whole word matches only
         for keyword in self.CODE_KEYWORDS:
             # Use word boundary regex to avoid substring matches
