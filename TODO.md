@@ -1,6 +1,6 @@
 # TODO List - Astra AI Experience
 
-**Last Updated**: 2025-11-12
+**Last Updated**: 2025-11-14
 
 ## In Progress
 
@@ -28,6 +28,18 @@
   - Automatic path selection
 
 ## Completed ✅
+
+- [x] **Belief System & Agent Router Fixes (COMPLETE)** - Critical bug fixes for coherence and routing (2025-11-14)
+  - **Belief reconciliation infinite loop fixed**: Meta-disclaimer filter blocks LLM safety responses ("I do not possess consciousness") from being treated as self-claims
+  - **120-minute cooldown**: Prevents repeated dissonance events for same belief (was triggering every 3 minutes)
+  - **Charitable interpretation**: Enhanced prompts recognize implicit consciousness claims ("I'm here" → presence = consciousness)
+  - **Sensitive log separation**: Created `meta_cognitive/` directory for dissonance analysis and memory rewrites (not accessible via read_logs tool)
+  - **Agent router improvements**: Word boundary matching prevents false positives ("building" no longer matches "build")
+  - **Capability question routing**: Questions like "Can you see your source code?" now route to Astra instead of CoderAgent
+  - **Codebase access tools**: Added `list_source_files()` tool for file discovery, improved error messages
+  - **HTTP 500 fixes**: Fixed async/await bugs in router.py and coder_agent.py, UnboundLocalError in app.py
+  - **Files modified**: belief_consistency_checker.py, persona_service.py, router.py, coder_agent.py, app.py
+  - **Result**: Dissonance events reduced from every 3min to max once per 2 hours, memory rewrites dramatically reduced, coherence protected
 
 - [x] **Astra's Autonomous Workspace (COMPLETE)** - Dedicated workspace with CodeAgent-5 prompts (2025-11-12)
   - **Workspace structure**: /home/d/astra-workspace/ with projects/, templates/, logs/
