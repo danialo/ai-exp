@@ -172,11 +172,15 @@ def format_research_answer(
     if contested_claims:
         answer += "**Points of Disagreement**:\n"
         for claim in contested_claims[:5]:  # Limit to 5
-            claim_text = claim.get("claim", "")
-            reason = claim.get("reason", "")
-            answer += f"• {claim_text}\n"
-            if reason:
-                answer += f"  *Why disputed*: {reason}\n"
+            # Handle both string and dict formats
+            if isinstance(claim, str):
+                answer += f"• {claim}\n"
+            else:
+                claim_text = claim.get("claim", "")
+                reason = claim.get("reason", "")
+                answer += f"• {claim_text}\n"
+                if reason:
+                    answer += f"  *Why disputed*: {reason}\n"
         answer += "\n"
 
     # 4. What's still unclear
