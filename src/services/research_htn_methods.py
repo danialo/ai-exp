@@ -143,9 +143,9 @@ Query:"""
         first_result = search_results[0]
 
         # 3. Fetch content
-        fetched = ctx.url_fetcher_service.fetch_url(first_result.get("url"))
+        fetched = ctx.url_fetcher_service.fetch_url(first_result.url)
         if not fetched or not fetched.clean_text:
-            logger.warning(f"Failed to fetch URL: {first_result.get('url')}")
+            logger.warning(f"Failed to fetch URL: {first_result.url}")
             return []
 
         # 4. Extract claims and follow-up questions
