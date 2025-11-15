@@ -144,12 +144,12 @@ Query:"""
 
         # 3. Fetch content
         fetched = ctx.url_fetcher_service.fetch_url(first_result.url)
-        if not fetched or not fetched.clean_text:
+        if not fetched or not fetched.success or not fetched.main_content:
             logger.warning(f"Failed to fetch URL: {first_result.url}")
             return []
 
         # 4. Extract claims and follow-up questions
-        content = fetched.clean_text
+        content = fetched.main_content
         analysis_prompt = f"""Analyze this content about "{topic}":
 
 {content[:4000]}
