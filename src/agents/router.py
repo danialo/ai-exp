@@ -72,10 +72,17 @@ class AgentRouter:
         import re
         message_lower = user_message.lower()
 
-        # EXCEPTION: Questions about seeing/reading/accessing source code should go to Astra
-        # These are questions about capabilities, not requests to write code
-        if re.search(r'\b(can you|do you|are you able to).*(see|read|access|view).*(source code|your code|codebase)', message_lower):
-            logger.info(f"Routing to ASTRA_CHAT (question about source code access capability)")
+        # EXCEPTION: References to "your code" / "my code" should go to Astra
+        # These are about Astra examining her own code, not generating new code
+        # Allow anything between "your/my" and "code" (e.g., "your own code", "your source code")
+        if re.search(r'\b(your|my)\s+.*?\b(code|codebase)\b', message_lower):
+            logger.info(f"Routing to ASTRA_CHAT (reference to 'your/my code')")
+            return AgentType.ASTRA_CHAT
+
+        # EXCEPTION: Commands about examining/viewing code should go to Astra
+        # These are about viewing/analyzing code, not generating new code
+        if re.search(r'\b(look\s+(at|for)|show|examine|read|view|see|check|find|search)\s+(for\s+)?(bugs?|issues?|errors?|problems?)\s+in', message_lower):
+            logger.info(f"Routing to ASTRA_CHAT (command to examine/analyze code)")
             return AgentType.ASTRA_CHAT
 
         # Check for whole word matches only

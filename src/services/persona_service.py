@@ -70,6 +70,7 @@ class PersonaService:
         awareness_loop=None,
         code_access_service=None,
         task_scheduler=None,
+        coder_agent=None,
         code_generator=None,
     ):
         """
@@ -122,6 +123,7 @@ class PersonaService:
 
         # Code access and task scheduling
         self.code_access_service = code_access_service
+        self.coder_agent = coder_agent
         self.task_scheduler = task_scheduler
         self.code_generator = code_generator
 
@@ -1451,6 +1453,25 @@ This revision represents growth in my self-understanding. My past statements wer
                     }
                 }
             }
+            # DISABLED: generate_code tool (causes token limit issues with 17 tools)
+            # Re-enable by uncommenting this block when needed
+            # {
+            #     "type": "function",
+            #     "function": {
+            #         "name": "generate_code",
+            #         "description": "Generate Python code with tests using specialized agent",
+            #         "parameters": {
+            #             "type": "object",
+            #             "properties": {
+            #                 "requirements": {
+            #                     "type": "string",
+            #                     "description": "What code to generate"
+            #                 }
+            #             },
+            #             "required": ["requirements"]
+            #         }
+            #     }
+            # }
         ]
 
     def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
@@ -1915,6 +1936,62 @@ This revision represents growth in my self-understanding. My past statements wer
                     except Exception as e:
                         result = f"Error executing goal: {str(e)}"
                         logger.error(f"Goal execution error: {e}", exc_info=True)
+
+            elif tool_name == "generate_code":
+                # Generate code via CoderAgent
+                if not self.coder_agent:
+                    result = "Error: Code generation service not available."
+                else:
+                    import asyncio
+                    requirements = arguments.get("requirements")
+                    goal_type = "implement_feature"  # Default
+                    existing_files = []  # Not exposed in simplified API
+
+                    try:
+                        # Build CoderAgent request
+                        request = {
+                            "goal_text": goal_type,
+                            "context": {
+                                "requirements": requirements,
+                                "existing_files": existing_files,
+                                "constraints": ["no network", "pure stdlib"]
+                            },
+                            "timeout_ms": 120000
+                        }
+
+                        # Call CoderAgent (it's async, so run it in event loop)
+                        import asyncio
+                        try:
+                            loop = asyncio.get_event_loop()
+                        except RuntimeError:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                        coder_result = loop.run_until_complete(self.coder_agent.process(request))
+
+                        # Format result for Astra
+                        result = f"📝 Code Generation Complete\n\n"
+                        result += f"**Plan:**\n"
+                        for i, step in enumerate(coder_result.get("plan", []), 1):
+                            result += f"{i}. {step}\n"
+
+                        result += f"\n**Generated {len(coder_result.get('artifacts', []))} files:**\n\n"
+                        for artifact in coder_result.get("artifacts", []):
+                            filename = artifact.get("filename", "unknown")
+                            code = artifact.get("code", "")
+                            result += f"📄 `{filename}`\n```python\n{code}\n```\n\n"
+
+                        checks = coder_result.get("checks", {})
+                        result += f"**Safety Checks:**\n"
+                        result += f"✅ Ruff/Black: {checks.get('ruff_black', False)}\n"
+                        result += f"✅ MyPy: {checks.get('mypy', False)}\n"
+                        result += f"✅ No forbidden APIs: {checks.get('no_forbidden_apis', False)}\n"
+                        result += f"✅ Size OK: {checks.get('size_ok', False)}\n"
+
+                        logger.info(f"Code generation completed: {len(coder_result.get('artifacts', []))} artifacts")
+
+                    except Exception as e:
+                        result = f"Error generating code: {str(e)}"
+                        logger.error(f"Code generation error: {e}", exc_info=True)
 
             else:
                 result = f"Unknown tool: {tool_name}"

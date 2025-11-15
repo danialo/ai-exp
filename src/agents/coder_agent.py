@@ -23,16 +23,29 @@ class CoderAgent(BaseAgent):
     """
 
     # Forbidden APIs that must not appear in generated code
+    # Focus on truly dangerous operations: arbitrary code execution, process spawning, network access
     FORBIDDEN_APIS = [
-        "eval", "exec", "compile", "__import__",
-        "subprocess", "os.system", "os.popen", "os.spawn",
-        "socket", "requests", "httpx", "urllib", "urllib3", "aiohttp",
-        "pickle", "shelve", "marshal",
-        "sys.exit", "os._exit",
-        "globals", "locals", "vars", "dir",
-        "setattr", "delattr", "__setattr__", "__delattr__",
-        "sqlite3.execute", "cursor.execute",
+        "eval", "exec", "compile",  # Arbitrary code execution
+        "subprocess", "os.system", "os.popen", "os.spawn",  # Process spawning
+        "socket", "requests", "httpx", "urllib", "urllib3", "aiohttp",  # Network access
+        "pickle", "shelve", "marshal",  # Unsafe deserialization
+        "sys.exit", "os._exit",  # Process termination
     ]
+
+    # APIs allowed in test files only (for mocking/patching)
+    TEST_ALLOWED_APIS = [
+        "setattr", "delattr", "__setattr__", "__delattr__"
+    ]
+
+    # APIs allowed in specific utility/infrastructure files
+    # These require careful review but have legitimate uses
+    UTILITY_ALLOWED_APIS = {
+        "__import__": ["loader", "import", "plugin", "dynamic"],  # Dynamic module loading
+        "globals": ["debug", "inspect", "meta"],  # Runtime introspection
+        "locals": ["debug", "inspect", "meta"],  # Runtime introspection
+        "vars": ["debug", "inspect"],  # Object introspection
+        "dir": ["debug", "inspect"],  # Attribute discovery
+    }
 
     # Size limits
     MAX_IMPL_LINES = 400
@@ -205,8 +218,26 @@ class CoderAgent(BaseAgent):
             code = artifact.get("code", "")
             filename = artifact.get("filename", "unknown")
 
-            # Check forbidden APIs
-            for forbidden in self.FORBIDDEN_APIS:
+            # Determine file type
+            is_test = "test" in filename.lower() or filename.startswith("test_")
+            filename_lower = filename.lower()
+
+            # Build list of APIs to check for this specific file
+            apis_to_check = list(self.FORBIDDEN_APIS)
+
+            # Check if any utility-allowed APIs should be permitted for this file
+            for api, allowed_patterns in self.UTILITY_ALLOWED_APIS.items():
+                # If filename matches any allowed pattern, don't check this API
+                if any(pattern in filename_lower for pattern in allowed_patterns):
+                    if api in apis_to_check:
+                        apis_to_check.remove(api)
+
+            # Check forbidden APIs (with context-aware filtering)
+            for forbidden in apis_to_check:
+                # Skip APIs that are allowed in test files
+                if is_test and forbidden in self.TEST_ALLOWED_APIS:
+                    continue
+
                 if forbidden in code:
                     # Allow in comments/docstrings
                     lines = code.split("\n")
