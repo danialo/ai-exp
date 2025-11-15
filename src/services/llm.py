@@ -59,6 +59,14 @@ class LLMService:
         self.presence_penalty = presence_penalty
         self.frequency_penalty = frequency_penalty
 
+        # Add call budgeter for chunking large operations
+        # Estimate context limit at 2x max_tokens (conservative for models with larger context)
+        from src.services.call_budgeter import CallBudgeter
+        self.call_budgeter = CallBudgeter(
+            max_tokens_per_call=max_tokens * 4,  # Assume 4x for context window
+            safety_margin=0.8
+        )
+
     def generate_response(
         self,
         prompt: str,
@@ -321,6 +329,247 @@ class LLMService:
             "message": choice.message,
             "finish_reason": choice.finish_reason,
         }
+
+    def _naive_token_estimate(self, text: str) -> int:
+        """Crude but safe token estimator: ~4 chars per token."""
+        if not text:
+            return 0
+        return max(1, len(text) // 4)
+
+    def _completion(self, system_prompt: str, user_prompt: str, max_tokens: int, response_format: Optional[Dict] = None) -> str:
+        """Low-level completion wrapper."""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.3,  # Lower temp for structured synthesis
+            "max_tokens": max_tokens,
+        }
+
+        if response_format:
+            kwargs["response_format"] = response_format
+
+        response = self.client.chat.completions.create(**kwargs)
+        return response.choices[0].message.content or ""
+
+    def _parse_json_or_die(self, text: str) -> Dict[str, Any]:
+        """Parse JSON response, with fallback structure on failure."""
+        import json
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parse failed: {e}. Raw text: {text[:500]}")
+            # Return minimal valid structure
+            return {
+                "narrative_summary": "Synthesis failed - JSON parse error",
+                "key_events": [],
+                "contested_claims": [],
+                "open_questions": [],
+                "coverage_stats": {"error": str(e)}
+            }
+
+    # === Research Synthesis with Chunking ===
+
+    def summarize_research_session(
+        self,
+        root_question: str,
+        docs: List[Dict[str, Any]],
+        tasks: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Main entry point for research synthesis with automatic chunking.
+
+        Args:
+            root_question: The original research question
+            docs: List of SourceDoc dicts with content, claims, url, etc.
+            tasks: List of executed HTN tasks
+
+        Returns:
+            dict with: narrative_summary, key_events, contested_claims,
+                       open_questions, coverage_stats
+        """
+        import json
+
+        if not docs:
+            return {
+                "narrative_summary": "No sources found for this question",
+                "key_events": [],
+                "contested_claims": [],
+                "open_questions": [],
+                "coverage_stats": {"sources_investigated": 0}
+            }
+
+        system_prompt = (
+            "You are Astra's research synthesis module. "
+            "You receive multiple source documents, each with claims and summaries, "
+            "plus a list of research tasks that were executed. "
+            "Your job is to synthesize a structured view of what was found."
+        )
+
+        instructions = (
+            f"Root research question:\n{root_question}\n\n"
+            "You will be given a batch of source docs from this research session.\n"
+            "For this batch, produce a structured summary with the following keys:\n"
+            "narrative_summary, key_events, contested_claims, open_questions, coverage_stats.\n"
+            "Do NOT speculate beyond what the docs support.\n"
+        )
+
+        # Build text payloads for each doc
+        doc_payloads = []
+        for d in docs:
+            claims_text = ""
+            for c in d.get("claims", []):
+                if isinstance(c, dict):
+                    claims_text += f"- {c.get('claim', c.get('text', str(c)))}\n"
+                else:
+                    claims_text += f"- {c}\n"
+
+            payload = (
+                f"ID: {d.get('id', 'unknown')}\n"
+                f"Title: {d.get('title', 'N/A')}\n"
+                f"URL: {d.get('url', 'N/A')}\n"
+                f"Published: {d.get('published_at', 'N/A')}\n"
+                f"Summary: {d.get('content_summary', d.get('content', 'N/A')[:500])}\n"
+                f"Claims:\n{claims_text}\n"
+            )
+            doc_payloads.append(payload)
+
+        # Decide single call vs chunked calls
+        partials = self._chunked_summarize_docs(
+            system_prompt=system_prompt,
+            instructions=instructions,
+            doc_payloads=doc_payloads,
+            root_question=root_question,
+        )
+
+        if len(partials) == 1:
+            return partials[0]
+
+        return self._merge_partial_summaries(
+            root_question=root_question,
+            partial_summaries=partials,
+        )
+
+    def _chunked_summarize_docs(
+        self,
+        system_prompt: str,
+        instructions: str,
+        doc_payloads: List[str],
+        root_question: str,
+        desired_response_tokens: int = 512,
+    ) -> List[Dict[str, Any]]:
+        """Map phase: Use CallBudgeter to split docs into chunks if needed."""
+
+        base_prompt_tokens = (
+            self._naive_token_estimate(system_prompt) +
+            self._naive_token_estimate(instructions)
+        )
+
+        # Precompute token estimates for docs
+        items = []
+        for idx, text in enumerate(doc_payloads):
+            items.append({
+                "index": idx,
+                "token_estimate": self._naive_token_estimate(text),
+            })
+
+        plans = self.call_budgeter.plan_chunked_calls(
+            items=items,
+            estimate_tokens_for_item=lambda it: it["token_estimate"],
+            base_prompt_tokens=base_prompt_tokens,
+            desired_response_tokens=desired_response_tokens,
+        )
+
+        partial_summaries: List[Dict[str, Any]] = []
+
+        logger.info(
+            f"Research synthesis: chunks={len(plans)} docs={len(doc_payloads)} question={repr(root_question[:80])}"
+        )
+
+        for plan in plans:
+            subset_payloads = [
+                doc_payloads[it["index"]] for it in items
+                if it["index"] in plan.item_indices
+            ]
+
+            # Build user prompt for this chunk
+            docs_block = "\n\n".join(subset_payloads)
+            user_prompt = (
+                instructions +
+                "\n\nHere is a batch of source documents from the research session:\n\n" +
+                docs_block +
+                "\n\nReturn JSON with the following keys only: "
+                "narrative_summary, key_events, contested_claims, open_questions, coverage_stats."
+            )
+
+            raw = self._completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=plan.response_token_budget,
+                response_format={"type": "json_object"}
+            )
+
+            summary_obj = self._parse_json_or_die(raw)
+            # Annotate that this is a partial summary
+            summary_obj.setdefault("coverage_stats", {})
+            summary_obj["coverage_stats"]["docs_in_batch"] = len(subset_payloads)
+            summary_obj["coverage_stats"]["chunk_index"] = plan.call_index
+            partial_summaries.append(summary_obj)
+
+        return partial_summaries
+
+    def _merge_partial_summaries(
+        self,
+        root_question: str,
+        partial_summaries: List[Dict[str, Any]],
+        max_tokens: int = 1024,
+    ) -> Dict[str, Any]:
+        """Reduce phase: Merge multiple partial summaries into final synthesis."""
+        import json
+
+        system_prompt = (
+            "You are Astra's global research synthesis module. "
+            "You receive multiple partial summaries, each already structured, "
+            "and must merge them into a single coherent global summary."
+        )
+
+        # Turn partials into text block
+        parts = []
+        for i, s in enumerate(partial_summaries):
+            parts.append(
+                f"PART {i+1}:\n"
+                f"narrative_summary:\n{s.get('narrative_summary', '')}\n\n"
+                f"key_events:\n{json.dumps(s.get('key_events', []), indent=2)}\n\n"
+                f"contested_claims:\n{json.dumps(s.get('contested_claims', []), indent=2)}\n\n"
+                f"open_questions:\n{json.dumps(s.get('open_questions', []), indent=2)}\n\n"
+                f"coverage_stats:\n{json.dumps(s.get('coverage_stats', {}), indent=2)}\n"
+            )
+        partials_block = "\n\n".join(parts)
+
+        user_prompt = (
+            f"Root research question:\n{root_question}\n\n"
+            "You are given several partial summaries from different batches of source documents.\n"
+            "Your job is to merge them into a single structured summary with the same schema:\n"
+            "narrative_summary, key_events, contested_claims, open_questions, coverage_stats.\n\n"
+            "Unify overlapping events, consolidate contested claims, remove duplicates, and compute global coverage "
+            "stats (total docs, total claims, count of contested claims, etc).\n\n"
+            f"Partial summaries:\n\n{partials_block}\n\n"
+            "Return only JSON with the keys: narrative_summary, key_events, contested_claims, open_questions, "
+            "coverage_stats."
+        )
+
+        raw = self._completion(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"}
+        )
+
+        merged = self._parse_json_or_die(raw)
+        return merged
 
 
 def create_llm_service(
