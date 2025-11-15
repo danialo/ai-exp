@@ -1,10 +1,18 @@
 # TODO List - Astra AI Experience
 
-**Last Updated**: 2025-11-14
+**Last Updated**: 2025-11-15
 
 ## In Progress
 
 ## Ready to Start
+
+- [ ] **Research HTN System - P2: Quality Guards** (See docs/RESEARCH_HTN_ROADMAP.md)
+  - Question deduplication with `research_session_questions` table
+  - Topic drift guard with relevance scoring
+  - Metrics and telemetry tracking
+  - Source quality control with domain parsing
+  - **Priority**: Week 1-2, prevents redundant work and off-rails behavior
+  - **Next Step**: Run benchmark suite (`test_research_benchmark.py`) to identify P2 priorities based on real data
 
 ## Backlog
 
@@ -28,6 +36,39 @@
   - Automatic path selection
 
 ## Completed ✅
+
+- [x] **Research System - Production Ready + Policy Layer + Observability (COMPLETE)** - Astra-integrated autonomous research with behavioral guidance and full logging (2025-11-15)
+  - **P0: Task Queue & Execution**: HTN task decomposition with budget controls (max_tasks, max_children_per_task, max_depth)
+  - **3 HTN Methods**: ResearchCurrentEvents, InvestigateTopic, InvestigateQuestion
+  - **Session Management**: ResearchSession model with task budgets and automatic cutoff
+  - **Provenance Tracking**: SourceDoc model with claims, URLs, and confidence levels
+  - **P1: Session Synthesis**: SynthesizeFindings terminal method with automatic triggering
+  - **Synthesis Output**: narrative_summary, key_events, contested_claims, open_questions, coverage_stats
+  - **Astra Integration**: Added `research_and_summarize` + `check_recent_research` tools to PersonaService
+  - **Automatic Belief Updates**: Kind classification (reinforce/contest_minor/informational) based on source quality
+  - **Policy Layer**: When to call research (current events vs general knowledge), how to speak from results (trust-calibrated hedging)
+  - **Presentation Layer**: `research_formatter.py` - structured answers with risk assessment, provenance clustering
+  - **Session Reuse**: `research_anchor_store.py` - lightweight anchors prevent redundant research within 7 days
+  - **QA Lab**: Benchmark harness through Astra herself (test_research_benchmark_astra.py), automated violation detector (analyze_benchmark_results.py), manual scoring framework (6 dimensions)
+  - **Tool Tracing**: PersonaService hooks capture tool usage, timing, metadata for observability
+  - **Logging & Observability**: Research logger in multi-logger system, 5 event types (task_done, session_complete, synthesis_complete, research_turn, benchmark_result), structured key-value format
+  - **Observability Scripts**: research_log_views.sh (quick queries), research_log_metrics.py (summary stats), research_health_check.py (regression detection with tunable thresholds)
+  - **Files created**: task_queue.py, htn_task_executor.py, research_session.py, research_htn_methods.py, research_tools.py, research_to_belief_adapter.py, research_formatter.py, research_anchor_store.py, test_research_benchmark_astra.py, analyze_benchmark_results.py, research_log_views.sh, research_log_metrics.py, research_health_check.py, config/__init__.py
+  - **Files modified**: persona_service.py (tools + formatter + tracing), logging_config.py (research logger), base_prompt.md (research policy)
+  - **Docs**: RESEARCH_HTN_IMPLEMENTATION.md, P1_SYNTHESIS_COMPLETE.md, RESEARCH_HTN_ROADMAP.md, ASTRA_READY_RESEARCH_SYSTEM.md, RESEARCH_SYSTEM_COMPLETE.md, RESEARCH_POLICY_LAYER.md, RESEARCH_BENCHMARK_HARNESS.md, RESEARCH_LOGGING_COMPLETE.md, RESEARCH_OBSERVABILITY.md, RESEARCH_NEXT_STEPS.md
+  - **Next**: Run first baseline benchmark, analyze violations/metrics, map to P2 priorities
+
+- [x] **Router Removal & Architecture Simplification (COMPLETE)** - Removed brittle regex routing in favor of tool-based approach (2025-11-15)
+  - **AgentRouter removed**: All requests now go directly to Astra; she chooses appropriate tools via semantic understanding
+  - **Router false positives eliminated**: "look at your source code" no longer routes to CoderAgent and generates new code
+  - **Tool-based architecture**: CoderAgent infrastructure added to PersonaService as generate_code tool (currently disabled due to token limits)
+  - **Automatic retry logic**: execute_script now auto-retries common failures (python→python3, pip→python -m pip) without narration
+  - **Relaxed API restrictions**: Context-aware validation allows APIs in appropriate contexts (setattr in tests, __import__ in loaders, globals in debug)
+  - **Async/await fixes**: Fixed await outside async function by using loop.run_until_complete() in synchronous tool handler
+  - **Token budget managed**: Disabled generate_code tool definition (kept handler code) to stay under 30k token limit
+  - **Files modified**: app.py, persona_service.py, persona_file_manager.py, coder_agent.py, base_prompt.md
+  - **Testing verified**: "read your source code" → uses read_source_code() ✓, "list your files" → uses list_source_files() ✓
+  - **Result**: No more routing interception, Astra has full control, regex brittleness eliminated
 
 - [x] **Belief System & Agent Router Fixes (COMPLETE)** - Critical bug fixes for coherence and routing (2025-11-14)
   - **Belief reconciliation infinite loop fixed**: Meta-disclaimer filter blocks LLM safety responses ("I do not possess consciousness") from being treated as self-claims
