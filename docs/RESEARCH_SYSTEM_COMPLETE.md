@@ -278,20 +278,58 @@ Based on real-world testing with benchmark suite, prioritize:
 
 ---
 
+### 5. ✅ Call Budgeting & Chunked Synthesis
+
+**Files**: `src/services/call_budgeter.py`, `src/services/llm.py`
+
+**Problem**: Research synthesis could overflow context limits with many/large documents.
+
+**Solution**: Map-reduce pattern with automatic chunking:
+1. **CallBudgeter**: Greedy bin packing plans LLM calls to stay within limits
+2. **Map phase**: `_chunked_summarize_docs()` processes docs in chunks
+3. **Reduce phase**: `_merge_partial_summaries()` combines partial results
+4. **Automatic decision**: Single call when everything fits, chunks when needed
+
+**Features**:
+- Safety margin (80% utilization) prevents context overflow
+- Handles oversized single items gracefully
+- Observable: logs when/why chunking happens
+- Separation of concerns: CallBudgeter only plans, never calls LLM
+
+**Usage** (automatic in `summarize_research_session`):
+```python
+# LLMService now has CallBudgeter integrated
+llm_service.summarize_research_session(
+    root_question="...",
+    docs=[...],  # Any number of docs - auto-chunks if needed
+    tasks=[...]
+)
+# Returns unified synthesis regardless of chunk count
+```
+
+**Benefits**:
+- No more "context too long" errors
+- Explicit and predictable chunking behavior
+- Future-proof for other large operations (beliefs, claims)
+
+---
+
 ## Bottom Line
 
 **Before Today**:
 - Research system existed but wasn't wired to Astra
 - Belief updates were static "informational" only
 - No benchmark suite or debugging tools
+- Context overflow risk with large research sessions
 
 **After Today**:
 - ✅ Astra has one-call autonomous research capability
 - ✅ Belief updates classified automatically based on quality
 - ✅ Golden path benchmark suite ready to run
 - ✅ Debug tools for rapid session inspection
+- ✅ Bulletproof context handling with automatic chunking
 
-**Status**: Production-ready. Run benchmark suite to identify P2 priorities.
+**Status**: Production-ready with context overflow protection. Run benchmark suite to identify P2 priorities.
 
 **Usage Example** (from Astra):
 ```python

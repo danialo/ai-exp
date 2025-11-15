@@ -37,7 +37,7 @@
 
 ## Completed ✅
 
-- [x] **Research System - Production Ready + Policy Layer + Observability (COMPLETE)** - Astra-integrated autonomous research with behavioral guidance and full logging (2025-11-15)
+- [x] **Research System - Production Ready + Policy + Observability + Call Budgeting (COMPLETE)** - Astra-integrated autonomous research with context overflow protection (2025-11-15)
   - **P0: Task Queue & Execution**: HTN task decomposition with budget controls (max_tasks, max_children_per_task, max_depth)
   - **3 HTN Methods**: ResearchCurrentEvents, InvestigateTopic, InvestigateQuestion
   - **Session Management**: ResearchSession model with task budgets and automatic cutoff
@@ -53,8 +53,10 @@
   - **Tool Tracing**: PersonaService hooks capture tool usage, timing, metadata for observability
   - **Logging & Observability**: Research logger in multi-logger system, 5 event types (task_done, session_complete, synthesis_complete, research_turn, benchmark_result), structured key-value format
   - **Observability Scripts**: research_log_views.sh (quick queries), research_log_metrics.py (summary stats), research_health_check.py (regression detection with tunable thresholds)
-  - **Files created**: task_queue.py, htn_task_executor.py, research_session.py, research_htn_methods.py, research_tools.py, research_to_belief_adapter.py, research_formatter.py, research_anchor_store.py, test_research_benchmark_astra.py, analyze_benchmark_results.py, research_log_views.sh, research_log_metrics.py, research_health_check.py, config/__init__.py
-  - **Files modified**: persona_service.py (tools + formatter + tracing), logging_config.py (research logger), base_prompt.md (research policy)
+  - **Call Budgeting**: CallBudgeter for automatic chunking with map-reduce pattern, prevents context overflow on large research sessions
+  - **Chunked Synthesis**: summarize_research_session() with automatic chunking (map phase: partial summaries, reduce phase: merge)
+  - **Files created**: task_queue.py, htn_task_executor.py, research_session.py, research_htn_methods.py, research_tools.py, research_to_belief_adapter.py, research_formatter.py, research_anchor_store.py, test_research_benchmark_astra.py, analyze_benchmark_results.py, research_log_views.sh, research_log_metrics.py, research_health_check.py, call_budgeter.py, config/__init__.py
+  - **Files modified**: persona_service.py (tools + formatter + tracing), logging_config.py (research logger), llm.py (chunked synthesis methods), base_prompt.md (research policy)
   - **Docs**: RESEARCH_HTN_IMPLEMENTATION.md, P1_SYNTHESIS_COMPLETE.md, RESEARCH_HTN_ROADMAP.md, ASTRA_READY_RESEARCH_SYSTEM.md, RESEARCH_SYSTEM_COMPLETE.md, RESEARCH_POLICY_LAYER.md, RESEARCH_BENCHMARK_HARNESS.md, RESEARCH_LOGGING_COMPLETE.md, RESEARCH_OBSERVABILITY.md, RESEARCH_NEXT_STEPS.md
   - **Next**: Run first baseline benchmark, analyze violations/metrics, map to P2 priorities
 
