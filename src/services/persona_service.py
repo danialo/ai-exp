@@ -790,7 +790,7 @@ class PersonaService:
         # Log research tool usage if any research tools were called
         if self.last_tool_trace:
             research_tools = [t for t in self.last_tool_trace if t["tool"] in ["research_and_summarize", "check_recent_research"]]
-            if research_tools and hasattr(self, 'llm_service') and self.llm_service:
+            if research_tools and hasattr(self, 'llm') and self.llm:
                 from src.utils.logging_config import get_multi_logger
                 get_multi_logger().log_research_event(
                     event_type="research_turn",
@@ -2318,7 +2318,7 @@ This revision represents growth in my self-understanding. My past statements wer
                     logger.error(f"Check recent research error: {e}", exc_info=True)
 
             elif tool_name == "research_and_summarize":
-                if not self.llm_service or not self.web_search_service or not self.url_fetcher_service:
+                if not self.llm or not self.web_search_service or not self.url_fetcher_service:
                     result = "Error: Research capabilities not available (missing LLM, web search, or URL fetcher service)"
                 else:
                     question = arguments.get("question")
@@ -2336,7 +2336,7 @@ This revision represents growth in my self-understanding. My past statements wer
                             question=question,
                             max_tasks=max_tasks,
                             max_depth=max_depth,
-                            llm_service=self.llm_service,
+                            llm_service=self.llm,
                             web_search_service=self.web_search_service,
                             url_fetcher_service=self.url_fetcher_service
                         )
