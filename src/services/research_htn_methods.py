@@ -261,6 +261,34 @@ def synthesize_findings(task, ctx) -> List[Dict[str, Any]]:
     docs = session_store.load_source_docs_for_session(task.session_id)
     tasks = task_store.list_tasks_for_session(task.session_id)
 
+    # Guard rail: Don't create beliefs or anchors for empty research
+    if not docs:
+        logger.warning(
+            f"SynthesizeFindings: No docs for session {task.session_id}, "
+            "skipping belief updates and anchor creation."
+        )
+        # Still log synthesis for observability
+        get_multi_logger().log_research_event(
+            event_type="synthesis_complete",
+            session_id=task.session_id,
+            data={
+                "docs": 0,
+                "claims": 0,
+                "key_events": 0,
+                "contested_claims": 0,
+                "open_questions": 0,
+            }
+        )
+        # Save minimal summary
+        session_store.save_session_summary(task.session_id, {
+            "narrative_summary": "No sources found for this question",
+            "key_events": [],
+            "contested_claims": [],
+            "open_questions": [],
+            "coverage_stats": {"total_docs": 0}
+        })
+        return []
+
     # Convert tasks to simple dicts for LLM
     task_dicts = [{
         "id": t.id,

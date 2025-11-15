@@ -181,11 +181,20 @@ def create_anchor_from_session(session_id: str, summary_obj: dict) -> None:
         summary_obj: Synthesis summary from research_and_summarize
     """
     from src.services.research_session import ResearchSessionStore
+    import logging
+
+    logger = logging.getLogger(__name__)
 
     # Load session to get root_question
     session_store = ResearchSessionStore()
     session = session_store.get_session(session_id)
     if not session:
+        return
+
+    # Guard rail: Don't create anchors for sessions with zero docs
+    doc_count = summary_obj.get("coverage_stats", {}).get("total_docs", 0)
+    if doc_count == 0:
+        logger.info(f"Skipping anchor creation for session {session_id} (zero docs)")
         return
 
     # Build one-sentence summary from key events
