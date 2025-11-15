@@ -11,6 +11,8 @@ This service coordinates:
 
 import json
 import logging
+import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List, Any
@@ -212,6 +214,168 @@ class PersonaService:
             logger.error(f"Failed to retrieve core ontological beliefs: {e}", exc_info=True)
             return []
 
+    def _is_research_query(self, message: str) -> bool:
+        """
+        Detect queries that should go through the HTN research pipeline
+        instead of the cheap search_web + browse_url path.
+
+        Args:
+            message: User message to analyze
+
+        Returns:
+            True if message should trigger HTN research, False otherwise
+        """
+        text = message.lower()
+
+        # Strong signals: user literally asks for research / investigation
+        strong_phrases = [
+            "research ", "research on", "research this",
+            "investigate ", "look into ",
+            "dig into ", "deep dive",
+            "what's going on with", "what is going on with",
+            "what is actually going on",
+        ]
+
+        if any(p in text for p in strong_phrases):
+            return True
+
+        # Current-events style queries
+        current_events_markers = [
+            "what happened with",
+            "what happened in",
+            "what happened to",
+            "latest on",
+            "latest with",
+            "current state of",
+            "current situation with",
+            "this week", "this month",
+            "recently", "in the news",
+        ]
+
+        if any(p in text for p in current_events_markers):
+            return True
+
+        # Heuristic: question + at least one uppercase word in middle of string
+        # catches things like "What's going on with the Epstein files story?"
+        if "?" in text:
+            words = message.split()
+            mid_caps = [
+                w for w in words[1:-1]
+                if len(w) > 2 and re.match(r"[A-Z]", w[0])
+            ]
+            if mid_caps:
+                # Only treat as research if also mentions time-ish language
+                timeish = ["now", "today", "lately", "recent", "currently"]
+                if any(t in text for t in timeish):
+                    return True
+
+        return False
+
+    def _forced_research_answer(self, question: str) -> str:
+        """
+        Hard-route a query through the HTN research pipeline:
+
+        1) Check for recent research session (anchors)
+        2) If none or stale, run research_and_summarize
+        3) Format result into final answer text
+
+        Args:
+            question: Research question to answer
+
+        Returns:
+            Formatted research answer string
+        """
+        from src.services.research_anchor_store import ResearchAnchorStore
+        from src.tools.research_tools import research_and_summarize
+        from src.services.research_formatter import format_research_answer
+
+        started_at = time.time()
+
+        try:
+            # Initialize anchor store
+            anchor_store = ResearchAnchorStore()
+
+            # 1. Check for recent research session
+            anchor = anchor_store.find_recent_anchor(question)
+            if anchor is not None:
+                logger.info(f"Research gating: Found recent anchor for '{question}', session_id={anchor.session_id}")
+                # Load existing session synthesis
+                session_id = anchor.session_id
+                from src.services.research_session import ResearchSessionStore
+                session_store = ResearchSessionStore()
+                session = session_store.get_session(session_id)
+
+                if session and session.session_summary:
+                    formatted = format_research_answer(
+                        question=question,
+                        session_id=session_id,
+                        synthesis=session.session_summary,
+                    )
+
+                    # Log trace
+                    self.last_tool_trace.append({
+                        "tool": "forced_research_pipeline",
+                        "args": {"question": question},
+                        "started_at": started_at,
+                        "ended_at": time.time(),
+                        "ok": True,
+                        "result_meta": {
+                            "session_id": session_id,
+                            "reused": True,
+                            "forced": True,
+                        },
+                    })
+
+                    return formatted
+
+            # 2. No recent session → run fresh research
+            logger.info(f"Research gating: No recent session, starting HTN research for '{question}'")
+
+            if not self.llm or not self.web_search_service or not self.url_fetcher_service:
+                logger.error("Research gating failed: missing required services")
+                return "I tried to research this, but my research subsystem is not fully configured."
+
+            synthesis = research_and_summarize(
+                question=question,
+                max_tasks=30,
+                max_children_per_task=3,
+                max_depth=4,
+                llm_service=self.llm,
+                web_search_service=self.web_search_service,
+                url_fetcher_service=self.url_fetcher_service,
+                metadata={"trigger": "forced_research_gating"}
+            )
+
+            # 3. Format answer
+            formatted = format_research_answer(
+                question=question,
+                session_id=synthesis["session_id"],
+                synthesis=synthesis,
+            )
+
+            # Log trace
+            self.last_tool_trace.append({
+                "tool": "forced_research_pipeline",
+                "args": {"question": question},
+                "started_at": started_at,
+                "ended_at": time.time(),
+                "ok": True,
+                "result_meta": {
+                    "session_id": synthesis["session_id"],
+                    "risk_level": synthesis.get("risk_level"),
+                    "docs": synthesis.get("coverage_stats", {}).get("total_docs"),
+                    "reused": False,
+                    "forced": True,
+                },
+            })
+
+            return formatted
+
+        except Exception as e:
+            logger.exception(f"Forced research failed: {e}")
+            # Failsafe: return error message, don't crash the whole response
+            return f"I tried to research '{question}', but encountered an error: {str(e)[:200]}. Please try rephrasing your question or use a different approach."
+
     def generate_response(self, user_message: str, retrieve_memories: bool = True, top_k: int = 5, conversation_history: list = None) -> Tuple[str, Dict]:
         """
         Generate a persona response with emotional co-analysis and tool use.
@@ -235,6 +399,15 @@ class PersonaService:
         """
         if conversation_history is None:
             conversation_history = []
+
+        # Research gating: detect if this should go through HTN research pipeline
+        if self._is_research_query(user_message):
+            logger.info(f"Research gating triggered for message: {user_message[:100]}...")
+            answer = self._forced_research_answer(user_message)
+            # Return with metadata matching normal flow
+            # reconciliation_data is None since we bypass emotional processing
+            reconciliation_data = None
+            return answer, reconciliation_data
 
         # Load persona's LLM configuration
         config = self.config_loader.load_config()
@@ -1310,7 +1483,7 @@ This revision represents growth in my self-understanding. My past statements wer
                 "type": "function",
                 "function": {
                     "name": "search_web",
-                    "description": "Search the web for current information, facts, or knowledge you don't have. Use this when you need up-to-date information, news, specific facts, or when your knowledge might be outdated. Returns search results with titles, URLs, and snippets.",
+                    "description": "Quick single web search for a small fact or one-off lookup. Do NOT use this for multi-step research, current events analysis, or questions like 'what is going on with X' or 'what happened with Y'. For those, use research_and_summarize instead. This tool is for narrow, single-fact queries only.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1491,7 +1664,7 @@ This revision represents growth in my self-understanding. My past statements wer
                 "type": "function",
                 "function": {
                     "name": "research_and_summarize",
-                    "description": "Autonomously research a question using web search, extract claims with provenance, and return a structured synthesis with key events, contested claims, and open questions. Use check_recent_research first to avoid duplicate work.",
+                    "description": "PRIMARY TOOL for any research question, current events, developing stories, or when the user asks you to 'research', 'investigate', or explain what is going on with a topic. Uses an HTN planner, web search, and multi-step synthesis to produce a structured summary with key events, contested claims, and open questions. Always prefer this over search_web for anything that requires understanding or investigation.",
                     "parameters": {
                         "type": "object",
                         "properties": {
