@@ -179,8 +179,8 @@ Return as JSON:
         from src.services.research_session import SourceDoc
         source_doc = SourceDoc(
             session_id=task.session_id,
-            url=first_result.get("url"),
-            title=first_result.get("title"),
+            url=first_result.url,
+            title=first_result.title,
             claims=analysis.get("claims", []),
             content_summary=analysis.get("summary")
         )
