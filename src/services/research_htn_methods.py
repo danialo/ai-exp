@@ -2,10 +2,87 @@
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Callable
 from src.utils.logging_config import get_multi_logger
 
 logger = logging.getLogger(__name__)
+
+# JSON extraction regex
+JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
+
+
+def coerce_json_object(raw: str) -> Dict[str, Any]:
+    """Extract and parse JSON object from potentially messy LLM output.
+
+    Handles:
+    - Pure JSON
+    - JSON wrapped in markdown code blocks
+    - JSON buried in prose
+    """
+    raw = raw.strip()
+
+    # Fast path: raw is already valid JSON
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+
+    # Strip markdown code blocks
+    if raw.startswith("```"):
+        # Remove opening ```json or ```
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        # Remove closing ```
+        raw = re.sub(r"\s*```$", "", raw)
+        try:
+            return json.loads(raw.strip())
+        except Exception:
+            pass
+
+    # Try to extract first JSON object substring
+    m = JSON_OBJECT_RE.search(raw)
+    if not m:
+        raise ValueError("No JSON object found in LLM output")
+
+    snippet = m.group(0)
+    return json.loads(snippet)
+
+
+def coerce_json_array(raw: str) -> List[Any]:
+    """Extract and parse JSON array from potentially messy LLM output."""
+    raw = raw.strip()
+
+    # Fast path: raw is already valid JSON
+    try:
+        result = json.loads(raw)
+        if isinstance(result, list):
+            return result
+        # If it's an object with a "topics" or similar key, extract that
+        if isinstance(result, dict):
+            for key in ["topics", "queries", "questions", "items"]:
+                if key in result and isinstance(result[key], list):
+                    return result[key]
+        raise ValueError(f"Parsed JSON but got {type(result)}, not array")
+    except Exception:
+        pass
+
+    # Strip markdown code blocks
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        try:
+            return json.loads(raw.strip())
+        except Exception:
+            pass
+
+    # Try to extract first JSON array substring
+    m = JSON_ARRAY_RE.search(raw)
+    if not m:
+        raise ValueError("No JSON array found in LLM output")
+
+    snippet = m.group(0)
+    return json.loads(snippet)
 
 # Global method registry
 METHODS: Dict[str, Callable] = {}
@@ -47,20 +124,29 @@ def research_current_events(task, ctx) -> List[Dict[str, Any]]:
     root_question = task.args.get("root_question", "What are the most important current events today?")
 
     # Generate seed topics using LLM
-    prompt = f"""Given this research question: "{root_question}"
+    prompt = f"""Generate 3 to 5 short web search queries that would help investigate this question:
 
-Generate 3-5 specific topics to investigate. Return as JSON:
-{{
-  "topics": ["topic1", "topic2", "topic3"]
-}}"""
+"{root_question}"
+
+Output:
+- Return ONLY a JSON array of strings.
+- No explanation, no markdown, no extra text.
+- Example: ["query one", "query two", "query three"]
+""".strip()
 
     try:
         response = ctx.llm_service.generate_with_tools(
             messages=[{"role": "user", "content": prompt}],
             tools=None,
-            temperature=0.7
+            temperature=0.1
         )
-        seed_topics = json.loads(response["message"].content).get("topics", [])
+        raw = response["message"].content
+        try:
+            seed_topics = coerce_json_array(raw)
+        except Exception as parse_err:
+            logger.warning(f"Failed to parse seed topics as array, trying object: {parse_err}")
+            data = coerce_json_object(raw)
+            seed_topics = data.get("topics", [])
     except Exception as e:
         logger.error(f"Failed to generate seed topics: {e}")
         seed_topics = [root_question]  # Fallback
@@ -150,30 +236,36 @@ Query:"""
 
         # 4. Extract claims and follow-up questions
         content = fetched.main_content
-        analysis_prompt = f"""Analyze this content about "{topic}":
+        analysis_prompt = f"""You are an information extraction engine.
 
+Task:
+- Read the following article excerpt about "{topic}".
+- Extract:
+  - "claims": a list of concise factual claims made in the text.
+  - "summary": a 2-4 sentence neutral summary.
+  - "follow_up_questions": 2-4 concrete questions that would advance understanding.
+
+Output:
+- Return ONLY a single JSON object.
+- Do NOT include any explanation or markdown.
+- JSON keys: "claims", "summary", "follow_up_questions".
+
+Text:
 {content[:4000]}
-
-Extract:
-1. Main claims (factual statements)
-2. Follow-up questions to investigate further
-
-Return as JSON:
-{{
-  "summary": "brief summary",
-  "claims": [
-    {{"claim": "statement", "confidence": "high/medium/low"}}
-  ],
-  "follow_up_questions": ["question1", "question2"]
-}}"""
+""".strip()
 
         analysis_response = ctx.llm_service.generate_with_tools(
             messages=[{"role": "user", "content": analysis_prompt}],
             tools=None,
-            temperature=0.3
+            temperature=0.0
         )
 
-        analysis = json.loads(analysis_response["message"].content)
+        try:
+            analysis = coerce_json_object(analysis_response["message"].content)
+        except Exception as e:
+            logger.error(f"InvestigateTopic JSON parse failed for '{topic}': {e}")
+            logger.debug(f"Raw LLM response: {analysis_response['message'].content[:500]}")
+            return []
 
         # 5. Create SourceDoc
         from src.services.research_session import SourceDoc
