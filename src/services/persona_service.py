@@ -130,6 +130,9 @@ class PersonaService:
         # Rate limiting for web operations (per conversation)
         self.url_fetch_count = 0
 
+        # Tool tracing for benchmarking/debugging
+        self.last_tool_trace = []
+
         # Anti-meta-talk system
         self.enable_anti_metatalk = enable_anti_metatalk
         self.auto_rewrite = auto_rewrite
@@ -626,6 +629,20 @@ class PersonaService:
                 internal_assessment=internal_assessment,
                 user_message=user_message
             )
+
+        # Log research tool usage if any research tools were called
+        if self.last_tool_trace:
+            research_tools = [t for t in self.last_tool_trace if t["tool"] in ["research_and_summarize", "check_recent_research"]]
+            if research_tools and hasattr(self, 'llm_service') and self.llm_service:
+                from src.utils.logging_config import get_multi_logger
+                get_multi_logger().log_research_event(
+                    event_type="research_turn",
+                    session_id="N/A",
+                    data={
+                        "question": repr(user_message[:120]),
+                        "tools": [t["tool"] for t in research_tools]
+                    }
+                )
 
         return clean_response, reconciliation_data
 
@@ -1452,6 +1469,50 @@ This revision represents growth in my self-understanding. My past statements wer
                         "required": ["goal_text"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "check_recent_research",
+                    "description": "Check if you recently researched a similar topic. Returns existing research session if found (within last 7 days), so you can reuse findings instead of re-researching. Use this BEFORE calling research_and_summarize to avoid duplicate work.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "topic": {
+                                "type": "string",
+                                "description": "Topic to check (e.g., 'epstein files', 'ai safety', 'government shutdown')"
+                            }
+                        },
+                        "required": ["topic"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "research_and_summarize",
+                    "description": "Autonomously research a question using web search, extract claims with provenance, and return a structured synthesis with key events, contested claims, and open questions. Use check_recent_research first to avoid duplicate work.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "Research question to investigate (e.g., 'What happened in AI safety this week?', 'What is the scientific consensus on ultra-processed foods?')"
+                            },
+                            "max_tasks": {
+                                "type": "integer",
+                                "description": "Maximum research tasks to execute (default: 30). Lower for quick research, higher for comprehensive investigation.",
+                                "default": 30
+                            },
+                            "max_depth": {
+                                "type": "integer",
+                                "description": "Maximum depth of research tree (default: 4). Controls how many follow-up questions to pursue.",
+                                "default": 4
+                            }
+                        },
+                        "required": ["question"]
+                    }
+                }
             }
             # DISABLED: generate_code tool (causes token limit issues with 17 tools)
             # Re-enable by uncommenting this block when needed
@@ -1474,6 +1535,57 @@ This revision represents growth in my self-understanding. My past statements wer
             # }
         ]
 
+    def _extract_meta_for_trace(self, tool_name: str, result: Any) -> dict:
+        """Extract minimal metadata from tool result for tracing.
+
+        Args:
+            tool_name: Name of tool that was executed
+            result: Tool result (usually string)
+
+        Returns:
+            Dict with tool-specific metadata
+        """
+        import time
+
+        meta = {}
+
+        if tool_name == "research_and_summarize":
+            # Parse result string to extract session_id
+            if isinstance(result, str) and "Session ID:" in result:
+                lines = result.split("\n")
+                for line in lines:
+                    if "Session ID:" in line:
+                        meta["session_id"] = line.split("Session ID:")[-1].strip()
+                        break
+            # Check for risk indicators
+            if isinstance(result, str):
+                if "early/contested" in result.lower() or "known so far" in result.lower():
+                    meta["risk_level"] = "high"
+                elif "disputed" in result.lower() or "according to most" in result.lower():
+                    meta["risk_level"] = "medium"
+                else:
+                    meta["risk_level"] = "low"
+
+        elif tool_name == "check_recent_research":
+            # Check if anchor was found
+            if isinstance(result, str):
+                meta["hit"] = "EXISTING RESEARCH FOUND" in result
+                if meta["hit"] and "Session ID:" in result:
+                    lines = result.split("\n")
+                    for line in lines:
+                        if "Session ID:" in line:
+                            meta["session_id"] = line.split("Session ID:")[-1].strip()
+                        if "Age:" in line:
+                            # Parse "Age: 2.5 hours ago"
+                            age_str = line.split("Age:")[-1].strip()
+                            if "hours ago" in age_str:
+                                try:
+                                    meta["age_hours"] = float(age_str.split()[0])
+                                except:
+                                    pass
+
+        return meta
+
     def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         """Execute a tool call and return the result.
 
@@ -1484,6 +1596,15 @@ This revision represents growth in my self-understanding. My past statements wer
         Returns:
             Result message string
         """
+        import time
+
+        # Start trace entry
+        trace_entry = {
+            "tool": tool_name,
+            "args": arguments,
+            "started_at": time.time(),
+        }
+
         try:
             if tool_name == "write_file":
                 path = arguments.get("path")
@@ -1993,8 +2114,109 @@ This revision represents growth in my self-understanding. My past statements wer
                         result = f"Error generating code: {str(e)}"
                         logger.error(f"Code generation error: {e}", exc_info=True)
 
+            elif tool_name == "check_recent_research":
+                topic = arguments.get("topic")
+                try:
+                    from src.services.research_anchor_store import ResearchAnchorStore
+                    from src.services.research_session import ResearchSessionStore
+                    from src.services.research_formatter import format_research_answer
+
+                    anchor_store = ResearchAnchorStore()
+                    anchor = anchor_store.find_recent_anchor(topic, max_age_days=7)
+
+                    if not anchor:
+                        result = f"No recent research found for '{topic}' (within last 7 days).\n\n"
+                        result += "You can call research_and_summarize to investigate this topic."
+                    else:
+                        # Found existing research - load and format it
+                        session_store = ResearchSessionStore()
+                        session = session_store.get_session(anchor.session_id)
+
+                        if not session or not session.session_summary:
+                            result = f"Found anchor but session data incomplete. Consider re-researching."
+                        else:
+                            # Load source docs
+                            source_docs = session_store.load_source_docs_for_session(anchor.session_id)
+
+                            # Format the existing research
+                            formatted = format_research_answer(
+                                summary_obj=session.session_summary,
+                                source_docs=source_docs,
+                                include_open_questions=True,
+                                verbose=False
+                            )
+
+                            age_hours = (time.time() - anchor.created_at) / 3600
+                            result = f"EXISTING RESEARCH FOUND: {topic}\n"
+                            result += f"Session ID: {anchor.session_id}\n"
+                            result += f"Age: {age_hours:.1f} hours ago\n"
+                            result += f"Summary: {anchor.one_sentence_summary}\n\n"
+                            result += "---\n\n"
+                            result += formatted
+                            result += "\n\n---\n"
+                            result += "This research is recent. You can reuse these findings or call research_and_summarize with a more targeted follow-up question if needed."
+
+                except Exception as e:
+                    result = f"Error checking recent research: {str(e)}"
+                    logger.error(f"Check recent research error: {e}", exc_info=True)
+
+            elif tool_name == "research_and_summarize":
+                if not self.llm_service or not self.web_search_service or not self.url_fetcher_service:
+                    result = "Error: Research capabilities not available (missing LLM, web search, or URL fetcher service)"
+                else:
+                    question = arguments.get("question")
+                    max_tasks = arguments.get("max_tasks", 30)
+                    max_depth = arguments.get("max_depth", 4)
+
+                    try:
+                        from src.tools.research_tools import research_and_summarize
+                        from src.services.research_formatter import format_research_answer
+                        from src.services.research_session import ResearchSessionStore
+
+                        # Run autonomous research
+                        logger.info(f"Starting autonomous research on: {question}")
+                        summary = research_and_summarize(
+                            question=question,
+                            max_tasks=max_tasks,
+                            max_depth=max_depth,
+                            llm_service=self.llm_service,
+                            web_search_service=self.web_search_service,
+                            url_fetcher_service=self.url_fetcher_service
+                        )
+
+                        # Load source docs for provenance
+                        session_id = summary.get("session_id")
+                        session_store = ResearchSessionStore()
+                        source_docs = session_store.load_source_docs_for_session(session_id)
+
+                        # Format using research_formatter
+                        formatted_answer = format_research_answer(
+                            summary_obj=summary,
+                            source_docs=source_docs,
+                            include_open_questions=True,
+                            verbose=False
+                        )
+
+                        # Build result with session ID and formatted answer
+                        result = f"RESEARCH COMPLETE: {question}\n"
+                        result += f"Session ID: {session_id}\n\n"
+                        result += "---\n\n"
+                        result += formatted_answer
+
+                        logger.info(f"Research complete for session {session_id}")
+
+                    except Exception as e:
+                        result = f"Error during research: {str(e)}"
+                        logger.error(f"Research error: {e}", exc_info=True)
+
             else:
                 result = f"Unknown tool: {tool_name}"
+
+            # Complete trace entry
+            trace_entry["ended_at"] = time.time()
+            trace_entry["ok"] = True
+            trace_entry["result_meta"] = self._extract_meta_for_trace(tool_name, result)
+            self.last_tool_trace.append(trace_entry)
 
             # Log the action
             self._log_action(tool_name, arguments, result)
@@ -2006,6 +2228,12 @@ This revision represents growth in my self-understanding. My past statements wer
             return result
 
         except Exception as e:
+            # Complete trace entry with error
+            trace_entry["ended_at"] = time.time()
+            trace_entry["ok"] = False
+            trace_entry["error"] = str(e)
+            self.last_tool_trace.append(trace_entry)
+
             error_msg = f"Error executing {tool_name}: {str(e)}"
             logger.error(error_msg)
             return error_msg
