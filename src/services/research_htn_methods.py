@@ -98,16 +98,44 @@ def investigate_topic(task, ctx) -> List[Dict[str, Any]]:
 
     try:
         # 1. Generate search query
-        query_prompt = f"Generate a concise web search query for: {topic}"
+        query_prompt = f"""Generate a web search query for: {topic}
+
+Rules:
+- Use 3-8 keyword phrases that a human would type into Google
+- NO quotation marks around the entire query
+- NO full sentences or natural language
+- NO extra explanation
+- Just keywords, separated by spaces
+
+Example good queries:
+- Elon Musk DOGE government efficiency 2024
+- climate change latest IPCC report
+- cryptocurrency regulation SEC
+
+Query:"""
         query_response = ctx.llm_service.generate_with_tools(
             messages=[{"role": "user", "content": query_prompt}],
             tools=None,
-            temperature=0.5
+            temperature=0.3
         )
-        search_query = query_response["message"].content.strip()
+        raw_query = query_response["message"].content.strip()
 
-        # 2. Search web
-        search_results = ctx.web_search_service.search(search_query, num_results=1)
+        # Sanitize query: strip wrapping quotes, collapse whitespace, limit tokens
+        search_query = raw_query.strip('"').strip("'")
+        search_query = " ".join(search_query.split())
+        tokens = search_query.split()
+        if len(tokens) > 10:
+            search_query = " ".join(tokens[:10])
+
+        # 2. Search web (try with more results)
+        search_results = ctx.web_search_service.search(search_query, num_results=5)
+
+        # Fallback: if no results, try simpler query with first 4 tokens
+        if not search_results and len(tokens) > 4:
+            simpler_query = " ".join(tokens[:4])
+            logger.warning(f"No results for '{search_query}', trying simpler: '{simpler_query}'")
+            search_results = ctx.web_search_service.search(simpler_query, num_results=5)
+
         if not search_results:
             logger.warning(f"No search results for: {search_query}")
             return []
