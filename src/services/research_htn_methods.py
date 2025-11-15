@@ -143,12 +143,13 @@ Query:"""
         first_result = search_results[0]
 
         # 3. Fetch content
-        content = ctx.url_fetcher_service.fetch(first_result.get("url"))
-        if not content:
+        fetched = ctx.url_fetcher_service.fetch_url(first_result.get("url"))
+        if not fetched or not fetched.clean_text:
             logger.warning(f"Failed to fetch URL: {first_result.get('url')}")
             return []
 
         # 4. Extract claims and follow-up questions
+        content = fetched.clean_text
         analysis_prompt = f"""Analyze this content about "{topic}":
 
 {content[:4000]}
