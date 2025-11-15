@@ -307,9 +307,7 @@ class PersonaService:
 
                 if session and session.session_summary:
                     formatted = format_research_answer(
-                        question=question,
-                        session_id=session_id,
-                        synthesis=session.session_summary,
+                        summary_obj=session.session_summary,
                     )
 
                     # Log trace
@@ -348,9 +346,7 @@ class PersonaService:
 
             # 3. Format answer
             formatted = format_research_answer(
-                question=question,
-                session_id=synthesis["session_id"],
-                synthesis=synthesis,
+                summary_obj=synthesis,
             )
 
             # Log trace

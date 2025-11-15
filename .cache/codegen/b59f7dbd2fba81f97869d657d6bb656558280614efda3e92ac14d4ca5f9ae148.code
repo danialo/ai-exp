@@ -1,0 +1,47 @@
+import json
+import logging
+from typing import Any, Dict, Union
+
+logger = logging.getLogger(__name__)
+
+
+def implement_feature(data: Union[str, bytes]) -> Dict[str, Union[str, int]]:
+    """
+    Process the provided data and return a JSON object as a dictionary.
+
+    Args:
+        data: Data input in the form of a JSON string or bytes.
+
+    Returns:
+        A dictionary containing the processed data from JSON with key-value pairs.
+
+    Raises:
+        ValueError: If the input data is not a valid JSON string or bytes.
+        TypeError: If the content of JSON cannot be processed.
+    """
+    try:
+        # Decode bytes input
+        if isinstance(data, bytes):
+            data = data.decode('utf-8')
+
+        # Attempt to parse the JSON data
+        parsed_data = json.loads(data)
+
+        # For this example, let's assume we perform a simple transformation:
+        # Convert all string values to their lengths and return the modified dictionary
+        return {key: len(value) if isinstance(value, str) else value for key, value in parsed_data.items()}
+
+    except json.JSONDecodeError as e:
+        logger.error("Invalid JSON input: %s", e)
+        raise ValueError("Invalid JSON input") from e
+    except TypeError as e:
+        logger.error("Error processing JSON data: %s", e)
+        raise
+
+# Example usage of the function for testing purposes:
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
+    try:
+        print(implement_feature('{"key1": "value1", "key2": 5}'))
+    except (ValueError, TypeError) as e:
+        print(f"Error occurred: {e}")
