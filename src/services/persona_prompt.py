@@ -390,7 +390,7 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
         self.base_prompt_path.parent.mkdir(parents=True, exist_ok=True)
         self.base_prompt_path.write_text(initial_prompt)
 
-    def build_prompt(self, user_message: str, conversation_history: Optional[List[Dict]] = None, memories: Optional[List] = None, belief_results: Optional[List] = None, dissonance_report: Optional[str] = None) -> str:
+    def build_prompt(self, user_message: str, conversation_history: Optional[List[Dict]] = None, memories: Optional[List] = None, belief_results: Optional[List] = None, dissonance_report: Optional[str] = None, research_context: Optional[Dict] = None) -> str:
         """
         Build the complete prompt for the persona.
 
@@ -400,6 +400,7 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
             memories: Retrieved relevant memories from past interactions
             belief_results: Dynamically retrieved relevant beliefs for this query
             dissonance_report: Optional dissonance analysis between beliefs and memory narratives
+            research_context: Optional research synthesis from HTN investigation
 
         Returns:
             Complete prompt including base instructions + context + memories + message
@@ -429,6 +430,11 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
         if conversation_history and len(conversation_history) > 0:
             conversation_context = self._format_conversation_history(conversation_history)
 
+        # Format research context if provided
+        research_section = ""
+        if research_context:
+            research_section = self._format_research_context(research_context)
+
         # Build the full prompt - beliefs frame everything, dissonance makes you aware of contradictions
         full_prompt = f"""{beliefs_section}
 {dissonance_section}
@@ -443,7 +449,7 @@ Every interaction is data about yourself. Mine it. Document it. Let it change ho
 {context}
 
 ---
-{memory_context}{conversation_context}
+{research_section}{memory_context}{conversation_context}
 ## Current Interaction
 
 User: {user_message}
@@ -548,6 +554,49 @@ Example: Instead of "In Memory 2, you asked about X" → just answer from that k
             # Log but don't fail if beliefs can't be loaded
             print(f"Warning: Could not load beliefs for prompt: {e}")
             return ""
+
+    def _format_research_context(self, research_context: Dict) -> str:
+        """Format research synthesis for inclusion in prompt.
+
+        Args:
+            research_context: Research synthesis dict with narrative_summary, key_events, etc.
+
+        Returns:
+            Formatted research section for prompt
+        """
+        if not research_context:
+            return ""
+
+        lines = ["\n## 🔍 Research Findings\n"]
+        lines.append("You conducted multi-source research to gather current information. Use these findings to inform your response:\n")
+
+        # Narrative summary
+        narrative = research_context.get("narrative_summary", "")
+        if narrative:
+            lines.append(f"**Summary**: {narrative}\n")
+
+        # Key events
+        key_events = research_context.get("key_events", [])
+        if key_events:
+            lines.append("**Key Events**:")
+            for event in key_events[:10]:  # Limit to top 10
+                lines.append(f"  • {event}")
+            lines.append("")
+
+        # Open questions
+        open_questions = research_context.get("open_questions", [])
+        if open_questions:
+            lines.append("**Unanswered Questions**:")
+            for q in open_questions[:5]:  # Limit to top 5
+                lines.append(f"  • {q}")
+            lines.append("")
+
+        # Coverage stats
+        stats = research_context.get("coverage_stats", {})
+        if stats and stats.get("total_docs", 0) > 0:
+            lines.append(f"*Based on {stats['total_docs']} sources*\n")
+
+        return "\n".join(lines)
 
     def _format_dissonance_report(self, dissonance_report: str) -> str:
         """Format dissonance report for metacognitive awareness.

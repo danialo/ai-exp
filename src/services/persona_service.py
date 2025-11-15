@@ -271,19 +271,19 @@ class PersonaService:
 
         return False
 
-    def _forced_research_answer(self, question: str) -> str:
+    def _get_research_context(self, question: str) -> Optional[Dict[str, Any]]:
         """
-        Hard-route a query through the HTN research pipeline:
+        Run HTN research pipeline and return synthesis for use as context.
 
         1) Check for recent research session (anchors)
         2) If none or stale, run research_and_summarize
-        3) Format result into final answer text
+        3) Return synthesis object for injection into Astra's context
 
         Args:
-            question: Research question to answer
+            question: Research question to investigate
 
         Returns:
-            Formatted research answer string
+            Synthesis dict with narrative_summary, key_events, etc., or None if failed
         """
         from src.services.research_anchor_store import ResearchAnchorStore
         from src.tools.research_tools import research_and_summarize
@@ -306,13 +306,9 @@ class PersonaService:
                 session = session_store.get_session(session_id)
 
                 if session and session.session_summary:
-                    formatted = format_research_answer(
-                        summary_obj=session.session_summary,
-                    )
-
                     # Log trace
                     self.last_tool_trace.append({
-                        "tool": "forced_research_pipeline",
+                        "tool": "research_context_retrieval",
                         "args": {"question": question},
                         "started_at": started_at,
                         "ended_at": time.time(),
@@ -320,18 +316,17 @@ class PersonaService:
                         "result_meta": {
                             "session_id": session_id,
                             "reused": True,
-                            "forced": True,
                         },
                     })
 
-                    return formatted
+                    return session.session_summary
 
             # 2. No recent session → run fresh research
             logger.info(f"Research gating: No recent session, starting HTN research for '{question}'")
 
             if not self.llm or not self.web_search_service or not self.url_fetcher_service:
                 logger.error("Research gating failed: missing required services")
-                return "I tried to research this, but my research subsystem is not fully configured."
+                return None
 
             synthesis = research_and_summarize(
                 question=question,
@@ -341,17 +336,12 @@ class PersonaService:
                 llm_service=self.llm,
                 web_search_service=self.web_search_service,
                 url_fetcher_service=self.url_fetcher_service,
-                metadata={"trigger": "forced_research_gating"}
-            )
-
-            # 3. Format answer
-            formatted = format_research_answer(
-                summary_obj=synthesis,
+                metadata={"trigger": "research_context_gating"}
             )
 
             # Log trace
             self.last_tool_trace.append({
-                "tool": "forced_research_pipeline",
+                "tool": "research_context_generation",
                 "args": {"question": question},
                 "started_at": started_at,
                 "ended_at": time.time(),
@@ -361,16 +351,14 @@ class PersonaService:
                     "risk_level": synthesis.get("risk_level"),
                     "docs": synthesis.get("coverage_stats", {}).get("total_docs"),
                     "reused": False,
-                    "forced": True,
                 },
             })
 
-            return formatted
+            return synthesis
 
         except Exception as e:
-            logger.exception(f"Forced research failed: {e}")
-            # Failsafe: return error message, don't crash the whole response
-            return f"I tried to research '{question}', but encountered an error: {str(e)[:200]}. Please try rephrasing your question or use a different approach."
+            logger.exception(f"Research context generation failed: {e}")
+            return None
 
     def generate_response(self, user_message: str, retrieve_memories: bool = True, top_k: int = 5, conversation_history: list = None) -> Tuple[str, Dict]:
         """
@@ -397,13 +385,12 @@ class PersonaService:
             conversation_history = []
 
         # Research gating: detect if this should go through HTN research pipeline
+        research_context = None
         if self._is_research_query(user_message):
             logger.info(f"Research gating triggered for message: {user_message[:100]}...")
-            answer = self._forced_research_answer(user_message)
-            # Return with metadata matching normal flow
-            # reconciliation_data is None since we bypass emotional processing
-            reconciliation_data = None
-            return answer, reconciliation_data
+            # Run research and get the synthesis, but don't return immediately
+            # Instead, inject research as context so Astra can answer the original question
+            research_context = self._get_research_context(user_message)
 
         # Load persona's LLM configuration
         config = self.config_loader.load_config()
@@ -623,7 +610,8 @@ class PersonaService:
             conversation_history=conversation_history,
             memories=memories,
             belief_results=belief_results if belief_results else None,
-            dissonance_report=dissonance_report
+            dissonance_report=dissonance_report,
+            research_context=research_context
         )
 
         # Log prompt stats for visibility (not full content to avoid clutter)
