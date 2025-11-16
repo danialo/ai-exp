@@ -147,6 +147,10 @@ class AwarenessLoop:
         self.introspection_tokens_used = 0
         self.last_budget_reset = time.time()
 
+        # Cumulative metrics
+        self.total_percepts_processed = 0
+        self.percepts_by_kind_total: Dict[str, int] = {}
+
         # Introspection telemetry
         self.last_ctx_source: str = "empty"  # "buffer", "memory", "empty"
         self.last_ctx_tokens: int = 0
@@ -273,11 +277,17 @@ class AwarenessLoop:
         """
         percept = Percept(time.time(), kind, payload)
 
+        # Debug logging for text percepts
+        if kind in ("user", "token"):
+            text = payload.get("text", "")
+            logger.info(f"[OBSERVE] kind={kind}, has_text={bool(text)}, text_len={len(text)}, text_preview={text[:50] if text else 'NONE'}")
+
         try:
             self.percept_queue.put_nowait(percept)
         except asyncio.QueueFull:
             # Drop event, increment metric
             awareness_metrics.increment_events_dropped()
+            logger.warning(f"[OBSERVE] Queue full, dropped {kind} percept")
 
     async def _time_pacer(self) -> None:
         """Feed time percepts to keep awareness active in silence."""
@@ -325,16 +335,24 @@ class AwarenessLoop:
         except asyncio.QueueEmpty:
             pass
 
-        # Deduplicate batch (keep unique by kind + text prefix)
+        # Deduplicate batch against existing buffer (keep unique by kind + text prefix)
         if batch:
-            seen = set()
+            # Build signature set from existing percepts to avoid duplicates
+            existing_sigs = set()
+            for p in self.percepts:
+                text = p.payload.get("text", "")[:256]
+                existing_sigs.add((p.kind, text))
+
+            # Add new percepts only if not already in buffer
             for p in batch:
-                # Create signature for deduplication
                 text = p.payload.get("text", "")[:256]  # First 256 chars
                 sig = (p.kind, text)
-                if sig not in seen:
-                    seen.add(sig)
+                if sig not in existing_sigs:
+                    existing_sigs.add(sig)
                     self.percepts.append(p)
+                    # Track cumulative totals
+                    self.total_percepts_processed += 1
+                    self.percepts_by_kind_total[p.kind] = self.percepts_by_kind_total.get(p.kind, 0) + 1
 
         # Compute cheap stats
         entropy = self._compute_entropy()
@@ -492,18 +510,22 @@ class AwarenessLoop:
 
             try:
                 await self._introspection_tick()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Introspection tick failed: {e}", exc_info=True)
 
     async def _introspection_tick(self) -> None:
         """Execute introspection tick."""
         # Check budget
         if not self._check_introspection_budget():
+            logger.warning(f"[INTROSPECT] Skipped - budget exceeded (used: {self.introspection_tokens_used}, limit: {self.config.introspection_budget_per_min})")
             awareness_metrics.increment_counter("introspection_skipped")
             return
 
         if self.llm_service is None:
+            logger.warning("[INTROSPECT] Skipped - no LLM service available")
             return
+
+        logger.info("[INTROSPECT] Starting introspection cycle...")
 
         # Choose prompt
         prompts = [
@@ -551,6 +573,7 @@ class AwarenessLoop:
 
         dt = time.perf_counter() - t0
         awareness_metrics.record_introspection_time(dt * 1000)
+        logger.info(f"[INTROSPECT] Completed in {dt*1000:.1f}ms (tokens used: {self.introspection_tokens_used}/{self.config.introspection_budget_per_min})")
 
     async def _snapshot_loop(self) -> None:
         """Snapshot loop (60s): atomic persistence."""
@@ -656,12 +679,24 @@ class AwarenessLoop:
         Returns:
             Concatenated text from recent user/token percepts
         """
+        # Count current buffer percepts by kind
+        kind_counts = {}
+        for p in self.percepts:
+            kind_counts[p.kind] = kind_counts.get(p.kind, 0) + 1
+
         # Filter ALL percepts for user/token kinds, then take last N
         text_percepts = [
             p.payload.get("text", "")
             for p in self.percepts
             if p.kind in ("token", "user") and p.payload.get("text")
         ]
+
+        # Only log if there's actually text to extract (avoid spam)
+        if text_percepts:
+            logger.info(
+                f"[EXTRACT] Buffer: {len(text_percepts)} text/{len(self.percepts)} total | "
+                f"Cumulative: {self.total_percepts_processed} total ({self.percepts_by_kind_total})"
+            )
 
         # Take last N text percepts (not last N of all percepts)
         recent_texts = text_percepts[-window:]

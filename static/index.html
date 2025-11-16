@@ -949,8 +949,8 @@
                 <button class="memory-browser-btn" onclick="openConversationBrowser()">
                     💬 Conversations
                 </button>
-                <button class="memory-browser-btn" onclick="openFileBrowser()">
-                    📁 Browse Files
+                <button class="memory-browser-btn" onclick="window.location.href='/taskgraphs.html'">
+                    📊 TaskGraphs
                 </button>
             </div>
         </div>
@@ -1391,6 +1391,7 @@
                         top_k: 5,
                         conversation_history: conversationHistory,
                         model: selectedModel,  // Include selected model
+                        use_agent_router: true,  // Enable multi-agent routing
                     }),
                 });
 
@@ -1458,6 +1459,7 @@
                         top_k: 5,
                         conversation_history: conversationHistory,
                         model: selectedModel,
+                        use_agent_router: true,  // Enable multi-agent routing
                     }),
                 });
 

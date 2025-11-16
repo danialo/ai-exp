@@ -2,9 +2,11 @@
 
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 import time
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,12 +16,18 @@ from pathlib import Path
 import uvicorn
 import numpy as np
 
-# Configure logging to show affect/mood tracking
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Import multi-file logging system
+from src.utils.logging_config import get_multi_logger, configure_root_logger
+
+# Initialize multi-file logging system
+multi_logger = get_multi_logger()
+
+# Configure root logger to actually write to files
+configure_root_logger()
+
+# Get logger for this module
 logger = logging.getLogger(__name__)
+logger.info("Logging system initialized - writing to logs/app/astra.log")
 
 from config.settings import settings
 from src.memory.raw_store import create_raw_store
@@ -46,6 +54,10 @@ from src.pipeline.self_consolidate import create_self_consolidation_pipeline
 from src.services.emotional_extractor import create_emotional_extractor
 from src.services.persona_service import PersonaService
 from src.services.task_scheduler import create_task_scheduler, TaskDefinition, TaskType, TaskSchedule
+
+# Multi-agent imports
+from src.agents.coder_agent import CoderAgent
+from src.agents.router import AgentRouter
 from src.services.belief_system import create_belief_system
 from src.services.belief_store import create_belief_store, DeltaOp
 from src.services.belief_migration import run_migration
@@ -63,6 +75,14 @@ from src.services.feedback_aggregator_enhanced import EnhancedFeedbackAggregator
 from src.services.web_search_service import create_web_search_service
 from src.services.url_fetcher_service import create_url_fetcher_service
 from src.services.web_interpretation_service import create_web_interpretation_service
+
+# Adaptive Decision Framework imports
+from src.services.decision_framework import get_decision_registry
+from src.services.success_signal_evaluator import SuccessSignalEvaluator
+from src.services.abort_condition_monitor import AbortConditionMonitor
+from src.services.parameter_adapter import ParameterAdapter
+from src.services.outcome_evaluation_task import OutcomeEvaluationTask
+from src.services.belief_gardener_integration import create_adaptive_belief_lifecycle_manager
 
 # Awareness loop imports
 import contextlib
@@ -88,6 +108,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include decision framework API router
+from src.api.decision_endpoints import router as decision_router
+from src.api.goal_endpoints import router as goal_router
+app.include_router(decision_router)
+app.include_router(goal_router)
+
 # Initialize components
 raw_store = create_raw_store(settings.RAW_STORE_DB_PATH)
 vector_store = create_vector_store(
@@ -98,6 +124,13 @@ embedding_provider = create_embedding_provider(
     model_name=settings.EMBEDDING_MODEL,
     use_mock=False,
 )
+
+# Initialize GoalStore and attach to app state
+from src.services.goal_store import create_goal_store
+from src.services.goal_generator import GoalGenerator
+from src.services.detectors.task_failure_detector import TaskFailureDetector
+goal_store = create_goal_store(settings.RAW_STORE_DB_PATH)
+app.state.goal_store = goal_store
 
 # Initialize self-knowledge index early (needed by ingestion pipeline)
 self_knowledge_index = create_self_knowledge_index(
@@ -146,6 +179,10 @@ llm_service = None
 mini_llm_service = None  # For cost-effective introspection
 experience_lens = None
 
+# Multi-agent system
+agent_router = None
+coder_agent = None
+
 # Determine which LLM provider to use
 api_key = None
 base_url = None
@@ -161,6 +198,17 @@ elif settings.VENICEAI_API_KEY:  # Fallback to Venice if available
 elif settings.OPENAI_API_KEY:  # Fallback to OpenAI if available
     api_key = settings.OPENAI_API_KEY
     base_url = None
+
+# LOCK PROVIDER: No silent fallbacks allowed
+assert settings.LLM_PROVIDER in ["openai", "venice"], f"Invalid LLM_PROVIDER: {settings.LLM_PROVIDER}"
+if settings.LLM_PROVIDER == "openai":
+    assert settings.OPENAI_API_KEY, "OpenAI provider configured but OPENAI_API_KEY not set"
+    assert api_key == settings.OPENAI_API_KEY, f"Provider routing failed: expected OpenAI, got different key"
+elif settings.LLM_PROVIDER == "venice":
+    assert settings.VENICEAI_API_KEY, "Venice provider configured but VENICEAI_API_KEY not set"
+    assert api_key == settings.VENICEAI_API_KEY, f"Provider routing failed: expected Venice, got different key"
+
+logger.info(f"🔒 LLM PROVIDER LOCKED: {settings.LLM_PROVIDER} | Model: {settings.LLM_MODEL}")
 
 if api_key:
     # Initialize self-aware prompt builder (before LLM service)
@@ -308,11 +356,28 @@ if settings.CONSOLIDATION_ENABLED and narrative_transformer:
 # Global session tracking
 current_session_id: Optional[str] = None
 
+# Initialize code access service
+from src.services.code_access import create_code_access_service
+from pathlib import Path as PathLib
+
+code_access_service = None
+if settings.PERSONA_MODE_ENABLED:
+    code_access_service = create_code_access_service(
+        project_root=PathLib(settings.PROJECT_ROOT),
+        max_file_size_kb=100,
+        auto_branch=True,
+    )
+    logger.info("Code access service initialized")
+
+# Code generator will be initialized after persona_llm is created (see below)
+code_generator = None
+
 # Initialize task scheduler
 task_scheduler = None
 if settings.PERSONA_MODE_ENABLED:
     task_scheduler = create_task_scheduler(
-        persona_space_path=settings.PERSONA_SPACE_PATH
+        persona_space_path=settings.PERSONA_SPACE_PATH,
+        raw_store=raw_store  # Enable task execution tracking (Phase 1)
     )
 
 # Initialize belief system (legacy)
@@ -337,6 +402,8 @@ contrarian_sampler = None
 if settings.PERSONA_MODE_ENABLED:
     belief_store = create_belief_store(Path("data"))
     logger.info("Versioned belief store initialized")
+    # Expose to API endpoints
+    app.state.belief_store = belief_store
 
     # Run migration from legacy belief system if needed
     try:
@@ -423,6 +490,7 @@ if settings.PERSONA_MODE_ENABLED and belief_system and embedding_provider:
                 raw_store=raw_store,
             )
             logger.info("Belief consistency checker initialized with dissonance event storage")
+            app.state.belief_consistency_checker = belief_consistency_checker
 
     except Exception as e:
         logger.error(f"Failed to initialize belief vector services: {e}")
@@ -568,6 +636,24 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         frequency_penalty=settings.PERSONA_FREQUENCY_PENALTY,
     )
 
+    # Initialize code generator using the same LLM service
+    from src.services.code_generator import CodeGenerator, LLMServiceWrapper
+    llm_wrapper = LLMServiceWrapper(persona_llm)
+    code_generator = CodeGenerator(llm=llm_wrapper)
+    logger.info("Code generator initialized with persona LLM")
+
+    # Initialize CoderAgent BEFORE PersonaService so it can be passed as a tool
+    coder_llm = create_llm_service(
+        api_key=api_key,
+        model=settings.LLM_MODEL,
+        temperature=0.2,  # Lower temp for deterministic code
+        max_tokens=8000,  # Smaller than Astra's 16k
+        base_url=base_url,
+        self_aware_prompt_builder=None,  # No self-awareness for coder
+    )
+    coder_agent = CoderAgent(llm_service=coder_llm)
+    logger.info("CoderAgent initialized as a tool (no beliefs, 8k tokens)")
+
     persona_service = PersonaService(
         llm_service=persona_llm,
         persona_space_path=settings.PERSONA_SPACE_PATH,
@@ -584,6 +670,10 @@ if settings.PERSONA_MODE_ENABLED and llm_service:
         web_search_service=web_search_service,  # Enable web search
         url_fetcher_service=url_fetcher_service,  # Enable URL browsing
         web_interpretation_service=web_interpretation_service,  # Enable content interpretation
+        code_access_service=code_access_service,  # Enable code reading and modification scheduling
+        coder_agent=coder_agent,  # Enable code generation via generate_code tool
+        task_scheduler=task_scheduler,  # Enable task scheduling
+        code_generator=code_generator,  # Enable LLM-based code generation for execute_goal
     )
 
 # Initialize awareness loop (Redis-backed continuous presence)
@@ -594,9 +684,96 @@ redis_client: Optional[Redis] = None
 if settings.AWARENESS_ENABLED:
     logger.info("Awareness loop enabled - initializing Redis and components")
 
+# Adaptive Decision Framework globals
+decision_registry = None
+success_evaluator = None
+abort_monitor = None
+parameter_adapter = None
+outcome_task = None
+
 # Background gardener tick
 gardener_task: Optional[asyncio.Task] = None
 gardener_last_scan: float = 0.0
+
+# Goal generator globals
+goal_generator: Optional[GoalGenerator] = None
+goal_generator_task: Optional[asyncio.Task] = None
+
+# TaskGraph query globals
+TASKGRAPHS: Dict[str, "TaskGraph"] = {}
+
+def load_persisted_taskgraphs():
+    """Load TaskGraphs from persona_space/taskgraphs/ on startup."""
+    from src.services.task_graph import TaskGraph, TaskState, DependencyPolicy
+    from pathlib import Path
+    from datetime import datetime
+
+    global TASKGRAPHS
+
+    graph_dir = Path("persona_space/taskgraphs")
+    if not graph_dir.exists():
+        logger.info("No persisted TaskGraphs directory")
+        return
+
+    for graph_file in graph_dir.glob("*.json"):
+        try:
+            with open(graph_file) as f:
+                data = json.load(f)
+
+            graph_id = data["graph_id"]
+            g = TaskGraph(
+                graph_id=graph_id,
+                graph_timeout_ms=data.get("graph_timeout_ms", 3600000),
+                max_retry_tokens=data.get("max_retry_tokens", 100),
+                max_parallel=data.get("max_parallel", 4)
+            )
+
+            # Restore timestamps
+            if data.get("created_at"):
+                g.created_at = datetime.fromisoformat(data["created_at"])
+            if data.get("started_at"):
+                g.started_at = datetime.fromisoformat(data["started_at"])
+            if data.get("completed_at"):
+                g.completed_at = datetime.fromisoformat(data["completed_at"])
+
+            # Add all nodes
+            for task_id, node_data in data.get("nodes", {}).items():
+                deps = node_data.get("dependencies", [])
+
+                g.add_task(
+                    task_id=task_id,
+                    action_name=node_data["action_name"],
+                    normalized_args=node_data.get("normalized_args", {}),
+                    resource_ids=node_data.get("resource_ids", []),
+                    version=node_data.get("version", "1.0"),
+                    dependencies=deps,
+                    on_dep_fail=DependencyPolicy(node_data.get("on_dep_fail", "abort")),
+                    priority=node_data.get("priority", 0.5),
+                    deadline=datetime.fromisoformat(node_data["deadline"]) if node_data.get("deadline") else None,
+                    cost=node_data.get("cost", 1.0),
+                    task_timeout_ms=node_data.get("task_timeout_ms", 300000),
+                    max_retries=node_data.get("max_retries", 3)
+                )
+
+                # Restore state
+                node = g.nodes[task_id]
+                node.state = TaskState(node_data["state"])
+                node.retry_count = node_data.get("retry_count", 0)
+                if node_data.get("started_at"):
+                    node.started_at = datetime.fromisoformat(node_data["started_at"])
+                if node_data.get("completed_at"):
+                    node.completed_at = datetime.fromisoformat(node_data["completed_at"])
+                node.last_error = node_data.get("last_error")
+                node.error_class = node_data.get("error_class")
+                node.attempts = node_data.get("attempts", [])
+
+            g.retry_tokens_used = data.get("retry_tokens_used", 0)
+
+            TASKGRAPHS[graph_id] = g
+            logger.info(f"Loaded TaskGraph: {graph_id} ({len(g.nodes)} tasks)")
+
+        except Exception as e:
+            logger.error(f"Failed to load TaskGraph from {graph_file}: {e}")
 
 async def gardener_tick_loop():
     """Background task for periodic belief gardener scans."""
@@ -622,13 +799,14 @@ async def gardener_tick_loop():
             logger.info("Gardener tick loop cancelled")
             break
         except Exception as e:
-            logger.error(f"Gardener tick failed: {e}")
+            logger.error(f"Gardener tick failed: {e}", exc_info=True)
 
 
 @app.on_event("startup")
 async def startup_awareness():
-    """Start awareness loop on application startup."""
-    global awareness_loop, awareness_task, redis_client, gardener_task
+    """Start awareness loop and decision framework on application startup."""
+    global awareness_loop, awareness_task, redis_client, gardener_task, belief_gardener
+    global decision_registry, success_evaluator, abort_monitor, parameter_adapter, outcome_task
 
     if not settings.AWARENESS_ENABLED:
         logger.info("Awareness loop disabled")
@@ -718,10 +896,175 @@ async def startup_awareness():
             outcome_eval_task = asyncio.create_task(outcome_evaluation_loop())
             logger.info("Outcome evaluation background task started")
 
+        # Initialize Adaptive Decision Framework
+        if settings.DECISION_FRAMEWORK_ENABLED:
+            logger.info("Initializing Adaptive Decision Framework...")
+
+            try:
+                # 1. Initialize decision registry (singleton)
+                decision_registry = get_decision_registry()
+                logger.info("Decision registry initialized")
+
+                # 2. Initialize success signal evaluator
+                success_evaluator = SuccessSignalEvaluator(
+                    awareness_loop=awareness_loop,
+                    belief_consistency_checker=None,  # Wire when available
+                    feedback_aggregator=enhanced_feedback_aggregator
+                )
+
+                # Set baselines from config or defaults
+                import os
+                success_evaluator.set_baselines(
+                    coherence=float(os.getenv("BASELINE_COHERENCE", "0.70")),
+                    dissonance=float(os.getenv("BASELINE_DISSONANCE", "0.20")),
+                    satisfaction=float(os.getenv("BASELINE_SATISFACTION", "0.60"))
+                )
+
+                success_evaluator.set_targets(
+                    coherence=float(os.getenv("TARGET_COHERENCE", "0.85")),
+                    dissonance=float(os.getenv("TARGET_DISSONANCE", "0.10")),
+                    satisfaction=float(os.getenv("TARGET_SATISFACTION", "0.80"))
+                )
+
+                logger.info("Success signal evaluator initialized")
+
+                # 3. Initialize abort condition monitor
+                abort_monitor = AbortConditionMonitor(
+                    awareness_loop=awareness_loop,
+                    belief_consistency_checker=None,  # Wire when available
+                    feedback_aggregator=enhanced_feedback_aggregator,
+                    belief_store=belief_store,
+                    success_evaluator=success_evaluator
+                )
+                logger.info("Abort condition monitor initialized")
+
+                # 4. Initialize parameter adapter
+                parameter_adapter = ParameterAdapter(
+                    decision_registry=decision_registry,
+                    success_evaluator=success_evaluator,
+                    min_samples=int(os.getenv("ADAPTATION_MIN_SAMPLES", "20")),
+                    exploration_rate=float(os.getenv("EXPLORATION_RATE", "0.10")),
+                    adaptation_rate=float(os.getenv("ADAPTATION_RATE", "0.15"))
+                )
+                logger.info("Parameter adapter initialized")
+
+                # Register goal_selected decision point for adaptive learning
+                from src.services.goal_store import register_goal_selection_decision
+                register_goal_selection_decision(decision_registry)
+
+                # 5. Start outcome evaluation task
+                outcome_task = OutcomeEvaluationTask(
+                    parameter_adapter=parameter_adapter,
+                    interval_minutes=int(os.getenv("OUTCOME_CHECK_INTERVAL_MINUTES", "30")),
+                    adaptation_interval_hours=int(os.getenv("ADAPTATION_INTERVAL_HOURS", "168")),
+                    enabled=True
+                )
+                await outcome_task.start()
+                logger.info("Outcome evaluation task started")
+
+                # 6. Create adaptive belief lifecycle manager (replaces regular gardener)
+                if belief_gardener and belief_store and raw_store:
+                    logger.info("Creating adaptive belief lifecycle manager...")
+                    gardener_config = GardenerConfig(
+                        enabled=settings.BELIEF_GARDENER_ENABLED,
+                        pattern_scan_interval_minutes=settings.BELIEF_GARDENER_SCAN_INTERVAL,
+                        min_evidence_for_tentative=settings.BELIEF_GARDENER_MIN_EVIDENCE_TENTATIVE,
+                        min_evidence_for_asserted=settings.BELIEF_GARDENER_MIN_EVIDENCE_ASSERTED,
+                        daily_budget_formations=settings.BELIEF_GARDENER_DAILY_BUDGET_FORMATIONS,
+                        daily_budget_promotions=settings.BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS,
+                        daily_budget_deprecations=settings.BELIEF_GARDENER_DAILY_BUDGET_DEPRECATIONS,
+                        lookback_days=settings.BELIEF_GARDENER_LOOKBACK_DAYS,
+                    )
+
+                    adaptive_gardener = create_adaptive_belief_lifecycle_manager(
+                        belief_store=belief_store,
+                        raw_store=raw_store,
+                        config=gardener_config,
+                        feedback_aggregator=enhanced_feedback_aggregator,
+                        awareness_loop=awareness_loop,
+                        belief_consistency_checker=None
+                    )
+
+                    # Replace the regular gardener with adaptive one
+                    belief_gardener = adaptive_gardener
+                    logger.info("✅ Adaptive belief lifecycle manager created and activated")
+
+                # Store in app state for endpoint access
+                app.state.decision_registry = decision_registry
+                app.state.success_evaluator = success_evaluator
+                app.state.abort_monitor = abort_monitor
+                app.state.parameter_adapter = parameter_adapter
+                app.state.outcome_task = outcome_task
+
+                logger.info("✅ Adaptive Decision Framework fully initialized")
+
+            except Exception as e:
+                logger.error(f"Failed to initialize decision framework: {e}", exc_info=True)
+
         # Start belief gardener background task
         if belief_gardener and settings.BELIEF_GARDENER_ENABLED:
             gardener_task = asyncio.create_task(gardener_tick_loop())
             logger.info("Belief gardener background task started")
+
+        # Initialize and start goal generator
+        if settings.PERSONA_MODE_ENABLED and goal_store:
+            global goal_generator, goal_generator_task
+
+            try:
+                # Create detectors
+                detectors = []
+                if task_scheduler:
+                    task_failure_detector = TaskFailureDetector(
+                        task_scheduler=task_scheduler,
+                        failure_threshold=3,
+                        lookback_hours=24,
+                        min_confidence=0.75,
+                        scan_interval=60,  # Every hour
+                        detector_enabled=True,
+                    )
+                    detectors.append(task_failure_detector)
+
+                # Initialize goal generator
+                goal_generator = GoalGenerator(
+                    goal_store=goal_store,
+                    belief_store=belief_store,
+                    detectors=detectors,
+                    min_confidence=0.7,
+                    max_system_goals_per_day=10,
+                    max_goals_per_detector_per_day=3,
+                    belief_alignment_threshold=0.5,
+                    auto_approve_threshold=0.9,
+                )
+
+                # Start background task
+                async def goal_generator_loop():
+                    """Background task for autonomous goal generation."""
+                    logger.info("Goal generator loop started (interval=1h)")
+                    while True:
+                        try:
+                            await asyncio.sleep(3600)  # Every hour
+                            created, rejected = await goal_generator.generate_and_create_goals()
+                            if created > 0 or rejected > 0:
+                                logger.info(f"Goal generator: {created} created, {rejected} rejected")
+                                telemetry = goal_generator.get_telemetry()
+                                logger.info(f"Goal generator telemetry: {telemetry}")
+                        except asyncio.CancelledError:
+                            logger.info("Goal generator loop cancelled")
+                            break
+                        except Exception as e:
+                            logger.error(f"Goal generation failed: {e}")
+
+                goal_generator_task = asyncio.create_task(goal_generator_loop())
+                logger.info("Goal generator background task started")
+
+            except Exception as e:
+                logger.error(f"Failed to initialize goal generator: {e}", exc_info=True)
+
+        # Load persisted TaskGraphs
+        try:
+            load_persisted_taskgraphs()
+        except Exception as e:
+            logger.error(f"Failed to load persisted TaskGraphs: {e}", exc_info=True)
 
     except Exception as e:
         logger.error(f"Failed to start awareness loop: {e}")
@@ -735,8 +1078,24 @@ async def startup_awareness():
 
 @app.on_event("shutdown")
 async def shutdown_awareness():
-    """Stop awareness loop and gardener on application shutdown."""
-    global awareness_loop, awareness_task, redis_client, gardener_task
+    """Stop awareness loop, gardener, and decision framework on application shutdown."""
+    global awareness_loop, awareness_task, redis_client, gardener_task, outcome_task, goal_generator_task
+
+    # Stop outcome evaluation task
+    if outcome_task:
+        logger.info("Stopping outcome evaluation task...")
+        await outcome_task.stop()
+        logger.info("Outcome evaluation task stopped")
+
+    # Stop goal generator task
+    if goal_generator_task and not goal_generator_task.done():
+        logger.info("Stopping goal generator...")
+        goal_generator_task.cancel()
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await goal_generator_task
+
+        logger.info("Goal generator stopped")
 
     if gardener_task and not gardener_task.done():
         logger.info("Stopping gardener tick loop...")
@@ -771,6 +1130,8 @@ class ChatRequest(BaseModel):
     top_k: int = 3
     conversation_history: List[Dict[str, str]] = []  # List of {"role": "user"|"assistant", "content": "..."}
     model: Optional[str] = None  # Optional model override (format: "provider:model" e.g., "openai:gpt-4o")
+    use_agent_router: bool = False  # Phase 1: Opt-in multi-agent routing (default: direct to Astra)
+    agent_type_override: Optional[str] = None  # Optional explicit agent selection ("coder", "astra_chat")
 
 
 class Memory(BaseModel):
@@ -870,9 +1231,23 @@ async def root():
     return {"message": "AI Experience Memory API", "docs": "/docs"}
 
 
+@app.get("/taskgraphs.html")
+async def taskgraphs_page():
+    """Serve the TaskGraph viewer page."""
+    html_path = Path(__file__).parent / "static" / "taskgraphs.html"
+    if html_path.exists():
+        return FileResponse(html_path)
+    raise HTTPException(404, "TaskGraph viewer page not found")
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Handle chat interactions with emergent personality via affect tracking."""
+    """Handle chat interactions with emergent personality via affect tracking.
+
+    ⚠️  WARNING: This endpoint does NOT support tool calling (no execute_goal, no file operations).
+    ⚠️  For tool support including execute_goal, use /api/persona/chat instead.
+    ⚠️  This endpoint uses ExperienceLens which only does simple LLM generation.
+    """
     global previous_user_valence, current_session_id
 
     if not request.message.strip():
@@ -1855,7 +2230,16 @@ async def get_detected_patterns():
 
 @app.post("/api/persona/chat")
 async def persona_chat(request: ChatRequest):
-    """Chat with the persona directly - includes memory storage for continuity."""
+    """Chat with the persona directly - includes memory storage for continuity.
+
+    Supports multi-agent routing via use_agent_router=True (Phase 1: opt-in).
+    """
+    # Start timing
+    start_time = time.time()
+
+    # DEBUG: Log incoming request details
+    logger.info(f"🔍 PERSONA_CHAT REQUEST: message='{request.message[:50]}...', retrieve_memories={request.retrieve_memories}, conversation_history_length={len(request.conversation_history) if request.conversation_history else 0}")
+
     if not persona_service:
         raise HTTPException(status_code=503, detail="Persona mode not enabled")
 
@@ -1863,10 +2247,31 @@ async def persona_chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:
-        # Use the main persona service (model selection disabled to preserve belief system)
+        # Log user message
+        multi_logger.log_conversation("user", request.message, metadata={
+            "retrieve_memories": request.retrieve_memories,
+            "top_k": request.top_k,
+            "use_agent_router": request.use_agent_router
+        })
+
+        # Set active persona service (used for resolution parsing regardless of routing path)
         active_persona_service = persona_service
 
+        # Initialize metrics tracking
+        metrics = {
+            "model": None,
+            "tokens_input": None,
+            "tokens_output": None,
+            "tokens_total": None,
+            "memories_retrieved": 0,
+            "tool_calls": 0,
+            "agent_type": None,
+            "retrieve_memories": request.retrieve_memories,
+            "top_k": request.top_k,
+        }
+
         # Generate persona response with emotional co-analysis and memory retrieval
+        # CoderAgent is now available as a tool via generate_code()
         result = active_persona_service.generate_response(
             user_message=request.message,
             retrieve_memories=request.retrieve_memories,
@@ -1984,7 +2389,17 @@ async def persona_chat(request: ChatRequest):
 
         logger.info(f"Stored persona interaction: {result.experience_id}")
 
+        # Log assistant response
+        multi_logger.log_conversation("assistant", response_text, metadata={
+            "experience_id": result.experience_id,
+            "user_valence": user_valence,
+            "user_arousal": user_arousal,
+            "user_dominance": user_dominance
+        })
+
         # Return response with reconciliation data and detected user emotion
+        elapsed_time = time.time() - start_time
+        logger.info(f"✅ PERSONA_CHAT SUCCESS: About to return response, response_length={len(response_text)}, has_reconciliation={reconciliation is not None}, elapsed_time={elapsed_time:.2f}s")
         return {
             "response": response_text,
             "reconciliation": reconciliation,
@@ -1997,6 +2412,10 @@ async def persona_chat(request: ChatRequest):
             "user_dominance": user_dominance,  # Detected user control level
         }
     except Exception as e:
+        elapsed_time = time.time() - start_time
+        logger.error(f"❌ PERSONA_CHAT EXCEPTION: {type(e).__name__}: {str(e)}, elapsed_time={elapsed_time:.2f}s")
+        logger.exception("Full traceback:")
+        multi_logger.log_error(f"Persona generation error: {str(e)}", exception=e)
         raise HTTPException(status_code=500, detail=f"Persona generation error: {str(e)}")
 
 
@@ -2648,6 +3067,462 @@ async def delete_task(task_id: str):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete task: {str(e)}")
+
+
+# =====================================================================
+# TaskGraph Query Endpoints (R1-R6 Rubric Coverage)
+# =====================================================================
+
+@app.get("/api/v1/taskgraphs")
+def list_taskgraphs():
+    """List all TaskGraph IDs."""
+    return {"ids": list(TASKGRAPHS.keys())}
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}")
+def get_taskgraph(graph_id: str):
+    """Get full TaskGraph snapshot."""
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+    return g.to_dict()
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}/stats")
+def get_taskgraph_stats(graph_id: str):
+    """Get TaskGraph statistics."""
+    from src.services.task_graph import TaskGraph
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+    return g.get_stats()
+
+
+# R1: Lifecycle Coverage
+@app.get("/api/v1/taskgraphs/{graph_id}/tasks")
+def list_taskgraph_tasks(graph_id: str, states: str = None, limit: int = 100, cursor: str = None):
+    """List tasks with optional state filtering and pagination."""
+    from src.services.task_graph import TaskState
+
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    if limit > 500:
+        raise HTTPException(400, "limit must be <= 500")
+
+    # Parse states filter
+    state_filter = None
+    if states:
+        try:
+            state_filter = [TaskState(s.strip()) for s in states.split(",")]
+        except ValueError as e:
+            raise HTTPException(400, f"invalid state: {e}")
+
+    # Filter tasks
+    tasks = []
+    for task_id, node in g.nodes.items():
+        if state_filter and node.state not in state_filter:
+            continue
+        tasks.append({
+            "task_id": task_id,
+            "state": node.state.value,
+            "action_name": node.action_name,
+            "started_at": node.started_at.isoformat() if node.started_at else None,
+            "completed_at": node.completed_at.isoformat() if node.completed_at else None,
+            "retry_count": node.retry_count,
+            "last_error": node.last_error,
+            "error_class": node.error_class,
+        })
+
+    # Simple pagination (cursor = offset)
+    offset = int(cursor) if cursor else 0
+    page = tasks[offset:offset + limit]
+    next_cursor = offset + limit if offset + limit < len(tasks) else None
+
+    return {
+        "tasks": page,
+        "total": len(tasks),
+        "limit": limit,
+        "next_cursor": str(next_cursor) if next_cursor else None
+    }
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}/tasks/{task_id}")
+def get_taskgraph_task(graph_id: str, task_id: str):
+    """Get detailed task information."""
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    node = g.nodes.get(task_id)
+    if not node:
+        raise HTTPException(404, f"task {task_id} not found")
+
+    return {
+        "task_id": task_id,
+        "state": node.state.value,
+        "action_name": node.action_name,
+        "normalized_args": node.normalized_args,
+        "resource_ids": node.resource_ids,
+        "version": node.version,
+        "dependencies": node.dependencies,
+        "dependents": node.dependents,
+        "on_dep_fail": node.on_dep_fail.value,
+        "priority": node.priority,
+        "deadline": node.deadline.isoformat() if node.deadline else None,
+        "cost": node.cost,
+        "task_timeout_ms": node.task_timeout_ms,
+        "started_at": node.started_at.isoformat() if node.started_at else None,
+        "completed_at": node.completed_at.isoformat() if node.completed_at else None,
+        "retry_count": node.retry_count,
+        "max_retries": node.max_retries,
+        "last_error": node.last_error,
+        "error_class": node.error_class,
+        "idempotency_key": node.idempotency_key,
+        "attempts": node.attempts,
+    }
+
+
+# R2: Dependencies & Policies
+@app.get("/api/v1/taskgraphs/{graph_id}/tasks/{task_id}/dependencies")
+def get_taskgraph_dependencies(graph_id: str, task_id: str):
+    """Get task dependency information and policy preview."""
+    from src.services.task_graph import DependencyPolicy
+
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    node = g.nodes.get(task_id)
+    if not node:
+        raise HTTPException(404, f"task {task_id} not found")
+
+    # Find unresolved dependencies
+    unresolved = [dep for dep in node.dependencies
+                  if dep not in g.completed and dep not in g.failed and dep not in g.aborted]
+
+    # Policy preview
+    policy_preview = {}
+    if node.on_dep_fail == DependencyPolicy.ABORT:
+        policy_preview = {
+            "if_all_deps_succeed": "READY",
+            "if_any_dep_fails": "ABORTED"
+        }
+    elif node.on_dep_fail == DependencyPolicy.SKIP:
+        policy_preview = {
+            "if_all_deps_succeed": "READY",
+            "if_any_dep_fails": "SKIPPED"
+        }
+    elif node.on_dep_fail == DependencyPolicy.CONTINUE_IF_ANY:
+        policy_preview = {
+            "if_all_deps_succeed": "READY",
+            "if_any_dep_fails": "READY (if any succeeded)",
+            "if_all_deps_fail": "ABORTED"
+        }
+
+    return {
+        "task_id": task_id,
+        "dependencies": node.dependencies,
+        "dependents": node.dependents,
+        "on_dep_fail": node.on_dep_fail.value,
+        "is_ready": node.is_ready(g.completed, g.failed | g.aborted),
+        "blocking_on": unresolved,
+        "policy_preview": policy_preview
+    }
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}/blocking")
+def get_taskgraph_blocking(graph_id: str):
+    """Get tasks that are blocked and what they're blocked on."""
+    from src.services.task_graph import TaskState
+
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    blocking = []
+    for task_id, node in g.nodes.items():
+        if node.state == TaskState.PENDING:
+            unresolved = [dep for dep in node.dependencies
+                         if dep not in g.completed and dep not in g.failed and dep not in g.aborted]
+            if unresolved:
+                blocking.append({
+                    "task_id": task_id,
+                    "blocking_on": unresolved,
+                    "on_dep_fail": node.on_dep_fail.value
+                })
+
+    return {"blocking_tasks": blocking}
+
+
+# R3: Scheduling & Ready Queue
+@app.get("/api/v1/taskgraphs/{graph_id}/ready")
+def get_taskgraph_ready_queue(graph_id: str, limit: int = 50):
+    """Get ready queue with ordering explanation."""
+    from src.services.task_graph import TaskState
+
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    # Update ready queue
+    g._update_ready_queue()
+
+    # Get ready tasks (sorted by priority)
+    ready_tasks = []
+    for task_id, node in g.nodes.items():
+        if node.state == TaskState.READY:
+            ready_tasks.append({
+                "task_id": task_id,
+                "priority": node.priority,
+                "deadline": node.deadline.timestamp() if node.deadline else None,
+                "cost": node.cost,
+                "action_name": node.action_name,
+            })
+
+    # Sort by priority (desc), deadline (asc), cost (asc), task_id (asc)
+    ready_tasks.sort(key=lambda t: (
+        -t["priority"],
+        t["deadline"] if t["deadline"] else float('inf'),
+        -t["cost"],
+        t["task_id"]
+    ))
+
+    return {
+        "ordering": "priority DESC, deadline ASC, cost ASC, task_id ASC",
+        "queue": ready_tasks[:limit],
+        "total_ready": len(ready_tasks)
+    }
+
+
+# R4: Concurrency
+@app.get("/api/v1/taskgraphs/{graph_id}/concurrency")
+def get_taskgraph_concurrency(graph_id: str):
+    """Get concurrency snapshot."""
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    per_action = {}
+    for action, count in g.action_concurrency.items():
+        cap = g.action_concurrency_caps.get(action, float('inf'))
+        per_action[action] = {
+            "cap": cap if cap != float('inf') else None,
+            "running": count,
+            "available": (cap - count) if cap != float('inf') else None
+        }
+
+    return {
+        "global": {
+            "max_parallel": g.max_parallel,
+            "running": len(g.running_tasks),
+            "available": g.max_parallel - len(g.running_tasks)
+        },
+        "per_action": per_action,
+        "running_tasks": list(g.running_tasks)
+    }
+
+
+# R5: Reliability & Safety
+@app.get("/api/v1/taskgraphs/{graph_id}/tasks/{task_id}/reliability")
+def get_taskgraph_reliability(graph_id: str, task_id: str):
+    """Get task reliability details."""
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    node = g.nodes.get(task_id)
+    if not node:
+        raise HTTPException(404, f"task {task_id} not found")
+
+    return {
+        "task_id": task_id,
+        "idempotency_key": node.idempotency_key,
+        "retry_count": node.retry_count,
+        "max_retries": node.max_retries,
+        "retry_tokens_used": node.retry_tokens_used,
+        "can_retry": node.can_retry(),
+        "attempts": node.attempts
+    }
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}/breakers")
+def get_taskgraph_breakers(graph_id: str):
+    """Get circuit breaker states."""
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    breakers = []
+    for action_name, breaker in g.breakers.items():
+        breakers.append({
+            "action_name": action_name,
+            "state": breaker.get_state(),
+            "failure_count": len(breaker.failures),
+            "threshold": breaker.failure_threshold,
+            "window_seconds": breaker.window_seconds,
+            "recovery_timeout_s": breaker.recovery_timeout_seconds,
+            "opened_at": breaker.opened_at.isoformat() if breaker.opened_at else None
+        })
+
+    return {"breakers": breakers}
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}/budget")
+def get_taskgraph_budget(graph_id: str):
+    """Get retry token budget."""
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    return {
+        "retry_tokens_used": g.retry_tokens_used,
+        "max_retry_tokens": g.max_retry_tokens,
+        "available": g.max_retry_tokens - g.retry_tokens_used
+    }
+
+
+# Visualization
+@app.get("/api/v1/taskgraphs/{graph_id}/ascii", response_class=PlainTextResponse)
+def get_taskgraph_ascii(graph_id: str):
+    """Get ASCII visualization of TaskGraph."""
+    from src.services.task_graph import TaskState, DependencyPolicy
+    from collections import deque
+
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    # Build dependency graph
+    indeg = {k: 0 for k in g.nodes}
+    kids: Dict[str, List[str]] = {k: [] for k in g.nodes}
+    for nid, node in g.nodes.items():
+        for dep in node.dependencies:
+            indeg[nid] += 1
+            kids[dep].append(nid)
+
+    # Layer by BFS
+    roots = [k for k, v in indeg.items() if v == 0]
+    levels: Dict[str, int] = {}
+    q = deque([(r, 0) for r in roots])
+    while q:
+        nid, lvl = q.popleft()
+        if nid in levels and levels[nid] <= lvl:
+            continue
+        levels[nid] = lvl
+        for c in kids.get(nid, []):
+            q.append((c, lvl + 1))
+
+    by_lvl: Dict[int, List[str]] = {}
+    for nid, lvl in levels.items():
+        by_lvl.setdefault(lvl, []).append(nid)
+
+    stats = g.get_stats()
+    lines = [
+        f"TaskGraph: {g.graph_id}",
+        f"Tasks: {stats['total_tasks']}  Running: {stats['running_tasks']}  Parallel: {g.max_parallel}",
+        f"States: {stats['states']}",
+        ""
+    ]
+
+    for lvl in sorted(by_lvl):
+        lines.append(f"Layer {lvl}:")
+        for nid in sorted(by_lvl[lvl]):
+            n = g.nodes[nid]
+            icon = {
+                TaskState.PENDING: "⏸",
+                TaskState.READY: "▶",
+                TaskState.RUNNING: "⚙",
+                TaskState.SUCCEEDED: "✓",
+                TaskState.FAILED: "✗",
+                TaskState.ABORTED: "⊗",
+                TaskState.SKIPPED: "⊘",
+                TaskState.CANCELLED: "⊖",
+            }.get(n.state, "?")
+            deps_str = f"deps={len(n.dependencies)}" if n.dependencies else "root"
+            policy = "" if n.on_dep_fail == DependencyPolicy.ABORT else f" [{n.on_dep_fail.value}]"
+            lines.append(f"  {icon} {nid:<15} {n.action_name:<20} {n.state.value:<10} {deps_str} prio={n.priority:.1f}{policy}")
+
+    missing = [k for k in g.nodes if k not in levels]
+    if missing:
+        lines.append("\nOrphans:")
+        for nid in sorted(missing):
+            n = g.nodes[nid]
+            lines.append(f"  • {nid} [{n.action_name}] {n.state.value}")
+
+    return "\n".join(lines)
+
+
+@app.get("/api/v1/taskgraphs/{graph_id}/dot", response_class=PlainTextResponse)
+def get_taskgraph_dot(graph_id: str):
+    """Get GraphViz DOT format visualization of TaskGraph."""
+    from src.services.task_graph import TaskState, DependencyPolicy
+
+    g = TASKGRAPHS.get(graph_id)
+    if not g:
+        raise HTTPException(404, f"graph {graph_id} not found")
+
+    colors = {
+        TaskState.PENDING: ("gray80", "black"),
+        TaskState.READY: ("gold", "black"),
+        TaskState.RUNNING: ("deepskyblue", "white"),
+        TaskState.SUCCEEDED: ("seagreen", "white"),
+        TaskState.FAILED: ("firebrick", "white"),
+        TaskState.ABORTED: ("orangered", "white"),
+        TaskState.SKIPPED: ("slategray", "white"),
+        TaskState.CANCELLED: ("darkorange", "white"),
+    }
+
+    out = [
+        f'digraph "{g.graph_id}" {{',
+        '  rankdir=TB;',
+        '  node [shape=box, style=filled, fontsize=11, fontname="monospace"];',
+        ''
+    ]
+
+    for nid, n in g.nodes.items():
+        fill, font = colors[n.state]
+        label = f"{nid}\\n{n.action_name}\\n{n.state.value}"
+        if n.retry_count > 0:
+            label += f"\\nretries:{n.retry_count}"
+        out.append(f'  "{nid}" [label="{label}", fillcolor="{fill}", fontcolor="{font}"];')
+
+    out.append('')
+    for nid, n in g.nodes.items():
+        for dep in n.dependencies:
+            style = ""
+            if n.on_dep_fail == DependencyPolicy.SKIP:
+                style = ' [style=dashed, label="skip"]'
+            elif n.on_dep_fail == DependencyPolicy.CONTINUE_IF_ANY:
+                style = ' [style=dotted, label="any"]'
+            out.append(f'  "{dep}" -> "{nid}"{style};')
+
+    out.append("}")
+    return "\n".join(out)
+
+
+@app.post("/api/v1/taskgraphs/test")
+def create_test_taskgraph():
+    """Create a test TaskGraph for demo purposes."""
+    from src.services.task_graph import TaskGraph
+    from uuid import uuid4
+
+    graph_id = f"test-{uuid4().hex[:8]}"
+
+    g = TaskGraph(graph_id=graph_id, max_parallel=4)
+    g.add_task("build_fe", "npm_build", {}, [], "1.0", priority=0.7)
+    g.add_task("build_be", "go_build", {}, [], "1.0", priority=0.7)
+    g.add_task("test", "pytest", {}, [], "1.0", dependencies=["build_fe", "build_be"], priority=0.5)
+    g.add_task("deploy", "deploy_prod", {}, [], "1.0", dependencies=["test"], priority=0.9)
+
+    TASKGRAPHS[graph_id] = g
+
+    return {
+        "graph_id": graph_id,
+        "message": "Test TaskGraph created successfully",
+        "tasks": len(g.nodes)
+    }
 
 
 # =====================================================================

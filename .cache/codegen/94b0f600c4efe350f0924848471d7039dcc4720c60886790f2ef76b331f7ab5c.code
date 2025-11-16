@@ -1,0 +1,37 @@
+import json
+
+class FeatureError(Exception):
+    """Custom exception class for feature errors."""
+    pass
+
+def implement_feature(data: list[int]) -> dict[str, list[int]]:
+    """Process a list of integers and perform a specific transformation.
+
+    This function sorts the input list, removes duplicates, and returns non-negative integers.
+
+    Args:
+        data (list[int]): A list of integers to process.
+
+    Returns:
+        dict[str, list[int]]: A dictionary with the key 'processed_data' containing processed integers.
+
+    Raises:
+        FeatureError: If the input list is not valid.
+    """
+    if not isinstance(data, list):
+        raise FeatureError("Input must be a list of integers.")
+    
+    try:
+        unique_sorted_data = sorted(set(x for x in data if x >= 0))
+        return {'processed_data': unique_sorted_data}
+    except TypeError as e:
+        raise FeatureError("All items in the list must be integers.") from e
+
+# Example usage
+if __name__ == "__main__":
+    try:
+        example_data = [4, -1, 2, 5, 2, -3, 9, 5]
+        result = implement_feature(example_data)
+        print(json.dumps(result))
+    except FeatureError as e:
+        print(f"Error: {e}")

@@ -308,6 +308,8 @@ If no self-claims found, return empty array: []
 
             # Strip markdown code blocks if present
             response_clean = response.strip()
+
+            # Try to extract JSON array from response
             if response_clean.startswith("```"):
                 # Extract content between ```json and ```
                 match = re.search(r'```(?:json)?\s*(\[[\s\S]*?\])\s*```', response_clean)
@@ -318,6 +320,18 @@ If no self-claims found, return empty array: []
                     match = re.search(r'(\[[\s\S]*?\])', response_clean)
                     if match:
                         response_clean = match.group(1)
+            elif not response_clean.startswith('['):
+                # Response might be plain text explanation - try to extract JSON array
+                match = re.search(r'(\[[\s\S]*?\])', response_clean)
+                if match:
+                    response_clean = match.group(1)
+                else:
+                    # No JSON found - check if it's a "no claims" explanation
+                    if any(phrase in response_clean.lower() for phrase in ['no self-claim', 'no claims', 'does not contain', 'therefore, the analysis yields no']):
+                        logger.debug(f"LLM returned text explanation of no claims (not JSON): {experience_id}")
+                        return
+                    # Otherwise it's an unexpected format
+                    raise ValueError(f"Response is not JSON and doesn't explain no claims: {response_clean[:100]}")
 
             claims = json.loads(response_clean)
 
@@ -337,7 +351,7 @@ If no self-claims found, return empty array: []
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse self-claim detection response: {e}")
-            logger.debug(f"Raw response: {response}")
+            logger.error(f"Raw response (len={len(response)}): '{response[:500]}'")
         except Exception as e:
             logger.error(f"Error detecting self-claims: {e}")
 

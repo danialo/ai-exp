@@ -8,6 +8,19 @@ Architecture:
 - Pattern Monitor: Detects repeated self-statements
 - Lifecycle Manager: Seeds, grows, prunes beliefs
 - Integration: Hooks into awareness loop, contrarian sampler, dissonance checker
+
+TODO: Review belief gardener and decide if it's working correctly
+Current observations:
+- Scans only last 500 experiences (recency-biased, may miss stable long-term patterns)
+- Currently rejecting patterns due to coherence drops (0.076 drop from baseline 0.700)
+- Detecting template noise ("[Internal Emotional Assessment: I feel...]") as patterns
+- Zero beliefs formed in recent runs - is threshold too conservative?
+- Need to verify:
+  1. Is template noise filtering working correctly?
+  2. Should coherence threshold be adjusted? (current: baseline - σ)
+  3. Are we detecting real patterns or just response boilerplate?
+  4. Should we add stratified sampling beyond just recent 500?
+  5. Are the patterns we're detecting actually belief-worthy?
 """
 
 import logging
@@ -120,16 +133,25 @@ class PatternDetector:
         Returns:
             List of detected patterns meeting evidence threshold
         """
+        # TODO: Add a second belief gardener loop that goes deeper
+        # Current loop: Last 500 experiences (chronological, recency-biased)
+        # Deeper loop ideas:
+        # - Stratified temporal sampling (100 from last week, 100 from last month, etc.)
+        # - Vector similarity clustering across all experiences (find thematic patterns)
+        # - Weight by experience type (LEARNING_PATTERN > OCCURRENCE)
+        # - Look for long-term stable patterns vs recent spikes
+        # - Cross-reference with existing beliefs to find supporting/contradicting evidence
+
         lookback = lookback_days or self.config.lookback_days
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=lookback)
 
         # Get recent experiences
         # For now, simplified: scan all OCCURRENCE experiences
-        # TODO: Add date filtering to raw_store.list_recent()
-        experiences = self.raw_store.list_recent(limit=500, experience_type=ExperienceType.OCCURRENCE)
-
-        # Filter by date
-        recent_exps = [e for e in experiences if e.created_at >= cutoff_date]
+        recent_exps = self.raw_store.list_recent(
+            limit=500,
+            experience_type=ExperienceType.OCCURRENCE,
+            since=cutoff_date,
+        )
 
         # Extract self-statements (first-person claims)
         self_statements = self._extract_self_statements(recent_exps)
@@ -180,8 +202,11 @@ class PatternDetector:
 
         # Scan for patterns matching this belief's statement
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=self.config.lookback_days)
-        experiences = self.raw_store.list_recent(limit=500, experience_type=ExperienceType.OCCURRENCE)
-        recent_exps = [e for e in experiences if e.created_at >= cutoff_date]
+        recent_exps = self.raw_store.list_recent(
+            limit=500,
+            experience_type=ExperienceType.OCCURRENCE,
+            since=cutoff_date,
+        )
 
         # Extract statements and count matches
         normalized_belief = _normalize_statement(belief.statement)
@@ -520,7 +545,7 @@ class BeliefLifecycleManager:
 
         # Get negative feedback score from aggregator
         if self.feedback_aggregator:
-            _, neg_feedback = self.feedback_aggregator.score(belief_id)
+            _, neg_feedback, _ = self.feedback_aggregator.score(belief_id)
         else:
             # No aggregator available - use neutral score
             logger.warning(f"No feedback aggregator for {belief_id}, using neutral score")
@@ -542,13 +567,24 @@ class BeliefLifecycleManager:
             return False
 
         try:
-            self.belief_store.update_belief(
+            # Calculate new confidence (capped at 0.85)
+            # Note: BeliefStore has MAX_CONFIDENCE_STEP=0.15, so use 0.1 which is within limit
+            target_confidence = min(0.85, belief.confidence + 0.1)
+            confidence_delta = round(target_confidence - belief.confidence, 6)  # Round to avoid float precision issues
+
+            success = self.belief_store.apply_delta(
                 belief_id=belief.belief_id,
-                state="asserted",
-                confidence=min(0.85, belief.confidence + 0.1),
-                rationale="Auto-promotion: evidence threshold met and positive feedback",
+                from_ver=belief.ver,
+                op=DeltaOp.UPDATE,
+                confidence_delta=confidence_delta,
+                state_change="tentative->asserted",
                 updated_by="gardener",
+                reason="Auto-promotion: evidence threshold met and positive feedback"
             )
+
+            if not success:
+                logger.warning(f"Failed to promote {belief.belief_id}: version mismatch")
+                return False
 
             append_event(LedgerEvent(
                 ts=datetime.now(timezone.utc).timestamp(),
@@ -563,7 +599,7 @@ class BeliefLifecycleManager:
             # Get feedback score for logging
             score = 0.0
             if self.feedback_aggregator:
-                score, _ = self.feedback_aggregator.score(belief.belief_id)
+                score, _, _ = self.feedback_aggregator.score(belief.belief_id)
 
             logger.info(f"PROMOTE belief_id={belief.belief_id[:40]} score={score:.2f} "
                        f"statement=\"{belief.statement[:60]}...\" reason=\"thresholds_met\"")
@@ -582,13 +618,27 @@ class BeliefLifecycleManager:
             return False
 
         try:
-            self.belief_store.update_belief(
+            # Calculate new confidence (floored at 0.2)
+            # Note: BeliefStore has MAX_CONFIDENCE_STEP=0.15, so cap the delta
+            target_confidence = max(0.2, belief.confidence - 0.15)
+            confidence_delta = round(target_confidence - belief.confidence, 6)  # Round to avoid float precision issues
+
+            # Determine state transition
+            state_change = f"{belief.state}->tentative"
+
+            success = self.belief_store.apply_delta(
                 belief_id=belief.belief_id,
-                state="tentative",
-                confidence=max(0.2, belief.confidence - 0.2),
-                rationale="Auto-deprecation: evidence decay or negative feedback",
+                from_ver=belief.ver,
+                op=DeltaOp.UPDATE,
+                confidence_delta=confidence_delta,
+                state_change=state_change,
                 updated_by="gardener",
+                reason="Auto-deprecation: evidence decay or negative feedback"
             )
+
+            if not success:
+                logger.warning(f"Failed to deprecate {belief.belief_id}: version mismatch")
+                return False
 
             append_event(LedgerEvent(
                 ts=datetime.now(timezone.utc).timestamp(),

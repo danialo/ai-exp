@@ -1,0 +1,22 @@
+from typing import List
+
+class FeatureError(Exception):
+    \"\"\"Custom exception for feature errors.\"\"\"
+    pass
+
+def process_data(data: List[int]) -> List[int]:
+    \"\"\"
+    Process a list of integers, returning a new list where each element is squared.
+
+    Args:
+        data (List[int]): A list of integers.
+
+    Returns:
+        List[int]: A list where each element is the square of the input list's elements.
+
+    Raises:
+        FeatureError: If any item in the list is not an integer.
+    \"\"\"
+    if not all(isinstance(item, int) for item in data):
+        raise FeatureError(\"All items in the data list must be integers.\")
+    return [item ** 2 for item in data]

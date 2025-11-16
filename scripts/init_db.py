@@ -14,6 +14,7 @@ from config.settings import settings
 from src.memory.raw_store import create_raw_store
 from src.memory.vector_store import create_vector_store
 from src.memory.embedding import create_embedding_provider
+import sqlite3
 
 
 def init_databases(reset: bool = False) -> None:
@@ -41,6 +42,21 @@ def init_databases(reset: bool = False) -> None:
     raw_store = create_raw_store(db_path=settings.RAW_STORE_DB_PATH)
     exp_count = raw_store.count_experiences()
     print(f"  ✓ Raw store initialized with {exp_count} experiences")
+
+    # Run GoalStore migration (forward-only)
+    try:
+        print("  → Applying GoalStore migration (if needed)...")
+        with open(Path(__file__).parent / "migrate_001_goal_store.sql", "r") as f:
+            sql = f.read()
+        conn = sqlite3.connect(settings.RAW_STORE_DB_PATH)
+        try:
+            conn.executescript(sql)
+            conn.commit()
+        finally:
+            conn.close()
+        print("    ✓ GoalStore schema ready")
+    except Exception as e:
+        print(f"    ⚠️  GoalStore migration skipped/failed: {e}")
 
     # Initialize vector store (ChromaDB)
     print("\n[2/3] Initializing vector store (ChromaDB)...")

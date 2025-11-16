@@ -1,0 +1,4 @@
+#!/bin/bash
+# Simple wrapper to start MCP server
+cd "$(dirname "$0")/.."
+exec venv/bin/python -m bin.mcp_server "$@"
