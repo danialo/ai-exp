@@ -126,9 +126,6 @@
         }
 
         .copy-button {
-            position: absolute;
-            top: 10px;
-            right: 10px;
             background: #f8f9fa;
             border: 1px solid #dee2e6;
             border-radius: 6px;
@@ -140,6 +137,9 @@
             display: flex;
             align-items: center;
             gap: 5px;
+            margin-top: 8px;
+            margin-left: 42px;
+            width: fit-content;
         }
 
         .message:hover .copy-button {
@@ -428,6 +428,172 @@
 
         .mood-status-icon {
             font-size: 20px;
+        }
+
+        /* Mobile Responsive Styles */
+        @media (max-width: 768px) {
+            body {
+                padding: 0;
+            }
+
+            .container {
+                max-width: 100%;
+                height: 100vh;
+                border-radius: 0;
+            }
+
+            .header {
+                padding: 15px 20px;
+                flex-direction: column;
+                gap: 10px;
+                align-items: flex-start;
+            }
+
+            .header h1 {
+                font-size: 20px;
+            }
+
+            .stats {
+                flex-wrap: wrap;
+                gap: 10px;
+                width: 100%;
+                justify-content: space-between;
+            }
+
+            .memory-browser-btn {
+                font-size: 11px;
+                padding: 6px 10px;
+            }
+
+            .mood-display {
+                padding: 12px 20px;
+                flex-direction: column;
+                gap: 12px;
+                align-items: stretch;
+            }
+
+            .mood-bar-container {
+                max-width: 100%;
+            }
+
+            .mood-info {
+                justify-content: center;
+            }
+
+            .user-valence-indicator {
+                justify-content: center;
+            }
+
+            .model-selector {
+                margin: 10px 15px;
+                padding: 10px;
+            }
+
+            .chat-area {
+                padding: 15px 20px;
+            }
+
+            .message-content {
+                margin-left: 0;
+                font-size: 15px;
+            }
+
+            .message-header {
+                margin-bottom: 10px;
+            }
+
+            .copy-button {
+                margin-left: 0;
+                font-size: 13px;
+                padding: 8px 12px;
+            }
+
+            .memories {
+                margin-left: 0;
+            }
+
+            .edit-hint {
+                margin-left: 0;
+            }
+
+            .input-area {
+                padding: 15px 20px;
+            }
+
+            .input-area input {
+                font-size: 16px; /* Prevents zoom on iOS */
+            }
+
+            .input-area button {
+                padding: 12px 20px;
+                font-size: 14px;
+            }
+
+            .modal-content {
+                width: 95%;
+                max-height: 90vh;
+            }
+
+            .modal-header {
+                padding: 15px 20px;
+            }
+
+            .modal-header h2 {
+                font-size: 18px;
+            }
+
+            .modal-body {
+                padding: 15px 20px;
+            }
+
+            .welcome {
+                padding: 30px 20px;
+            }
+
+            .welcome h2 {
+                font-size: 22px;
+            }
+        }
+
+        /* Small mobile devices */
+        @media (max-width: 480px) {
+            .header h1 {
+                font-size: 18px;
+            }
+
+            .stats {
+                font-size: 12px;
+            }
+
+            .memory-browser-btn {
+                font-size: 10px;
+                padding: 5px 8px;
+            }
+
+            .message-content {
+                font-size: 14px;
+                padding: 12px 15px;
+            }
+
+            .copy-button {
+                font-size: 12px;
+                padding: 6px 10px;
+            }
+
+            .input-area input {
+                padding: 12px 15px;
+            }
+
+            .input-area button {
+                padding: 12px 15px;
+                font-size: 13px;
+            }
+
+            .modal-content {
+                width: 100%;
+                max-height: 100vh;
+                border-radius: 0;
+            }
         }
 
         /* Memory Browser Styles */
@@ -1083,7 +1249,8 @@
                     <div class="${iconClass}">${icon}</div>
                     <span>${label}</span>
                 </div>
-                <div class="message-content" ${isUser ? 'contenteditable="true"' : ''}>${escapeHtml(content)}<button class="copy-button" data-content="${escapeHtml(content).replace(/"/g, '&quot;')}">📋 Copy</button></div>
+                <div class="message-content" ${isUser ? 'contenteditable="true"' : ''}>${escapeHtml(content)}</div>
+                <button class="copy-button">📋 Copy</button>
             `;
 
             // Add edit hint for user messages
@@ -1099,7 +1266,8 @@
             if (copyBtn) {
                 copyBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    const textToCopy = copyBtn.getAttribute('data-content').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+                    // Copy the original plain text content, not the HTML
+                    const textToCopy = content;
 
                     // Use fallback method for HTTP (navigator.clipboard requires HTTPS)
                     const textarea = document.createElement('textarea');
