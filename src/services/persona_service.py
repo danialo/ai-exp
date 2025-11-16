@@ -11,6 +11,8 @@ This service coordinates:
 
 import json
 import logging
+import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List, Any
@@ -27,6 +29,24 @@ from src.services.persona_config import create_persona_config_loader
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# SENSITIVE META-COGNITIVE LOG: Memory Rewrites
+# This logger is isolated in meta_cognitive/ directory (not logs/) to prevent Astra from
+# reading the detailed before/after states of her memory rewrites via the read_logs tool.
+# This maintains coherence by:
+# 1. Preventing recursive self-observation (seeing herself being modified)
+# 2. Avoiding interference with natural memory evolution
+# 3. Protecting the authenticity of reconciled memories
+# The read_logs tool only has access to logs/ directory, providing two layers of protection.
+memory_rewrite_logger = logging.getLogger("memory_rewrites")
+if not memory_rewrite_logger.handlers:
+    from pathlib import Path
+    rewrite_log_path = Path("meta_cognitive/memory_rewrites.log")
+    rewrite_log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(rewrite_log_path)
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    memory_rewrite_logger.addHandler(handler)
+    memory_rewrite_logger.setLevel(logging.INFO)
 
 
 class PersonaService:
@@ -50,6 +70,10 @@ class PersonaService:
         url_fetcher_service=None,
         web_interpretation_service=None,
         awareness_loop=None,
+        code_access_service=None,
+        task_scheduler=None,
+        coder_agent=None,
+        code_generator=None,
     ):
         """
         Initialize persona service.
@@ -70,6 +94,9 @@ class PersonaService:
             web_search_service: Optional web search service
             url_fetcher_service: Optional URL fetcher service
             web_interpretation_service: Optional web interpretation service
+            code_access_service: Optional code access service for reading/modifying source code
+            task_scheduler: Optional task scheduler for scheduling code modifications
+            code_generator: Optional code generator for LLM-based code generation in execute_goal
         """
         self.llm = llm_service
         self.prompt_builder = PersonaPromptBuilder(persona_space_path, belief_system=belief_system)
@@ -96,8 +123,17 @@ class PersonaService:
         # Awareness loop (for identity anchor updates)
         self.awareness_loop = awareness_loop
 
+        # Code access and task scheduling
+        self.code_access_service = code_access_service
+        self.coder_agent = coder_agent
+        self.task_scheduler = task_scheduler
+        self.code_generator = code_generator
+
         # Rate limiting for web operations (per conversation)
         self.url_fetch_count = 0
+
+        # Tool tracing for benchmarking/debugging
+        self.last_tool_trace = []
 
         # Anti-meta-talk system
         self.enable_anti_metatalk = enable_anti_metatalk
@@ -178,6 +214,178 @@ class PersonaService:
             logger.error(f"Failed to retrieve core ontological beliefs: {e}", exc_info=True)
             return []
 
+    # Phrases that indicate talking ABOUT research capabilities (not requesting research)
+    RESEARCH_META_PHRASES = [
+        "research system",
+        "research subsystem",
+        "research ability",
+        "research capabilities",
+        "research tools",
+        "research engine",
+        "research htn",
+        "research module",
+        "your research system",
+        "your research subsystem",
+        "your research ability",
+        "your research capabilities",
+        "how does your research",
+        "how does the research system",
+        "how does your htn",
+    ]
+
+    # Regex for command-style research requests
+    RESEARCH_COMMAND_RE = re.compile(
+        r"""
+        ^\s*
+        (hey\s+astra[,!:]?\s*)?            # optional address
+        (can\s+you|could\s+you|would\s+you|please)?\s*
+        (research|investigate|look\s+into)\b
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
+
+    def _is_research_query(self, message: str) -> bool:
+        """
+        Detect queries that should go through the HTN research pipeline.
+
+        HTN research is EXPENSIVE (2-5 minutes). Only trigger when:
+        - User explicitly requests research/investigation
+        - Topic is clearly complex and requires multi-source synthesis
+
+        Simple factual queries should use search_web tool instead.
+
+        Triggers on:
+        - EXPLICIT: "research X", "investigate X", "deep dive into X"
+        - Does NOT trigger on casual "what's going on" or "latest on" (too broad)
+
+        Does NOT trigger on:
+        - Meta questions about research capabilities
+        - Simple factual queries that can be answered with web search
+
+        Args:
+            message: User message to analyze
+
+        Returns:
+            True if message should trigger HTN research, False otherwise
+        """
+        text = message.lower()
+
+        # 1. If clearly talking ABOUT research capabilities (meta), bail early
+        if any(phrase in text for phrase in self.RESEARCH_META_PHRASES):
+            logger.info(f"Meta research question detected ('{text[:50]}...'); skipping research gating")
+            return False
+
+        # 2. EXPLICIT research commands only (very conservative)
+        # User must explicitly say "research" or "investigate" as a command
+        if self.RESEARCH_COMMAND_RE.search(message):
+            return True
+
+        # 3. "deep dive" and similar phrases that clearly indicate investigation
+        deep_investigation_phrases = [
+            "deep dive",
+            "dig into",
+            "look into",
+            "full investigation",
+            "comprehensive analysis",
+        ]
+        if any(phrase in text for phrase in deep_investigation_phrases):
+            return True
+
+        # That's it. Everything else should use search_web tool.
+        # "What's going on with X" is too casual - let search_web handle it.
+        # If user wants deep research, they can say "research X" explicitly.
+
+        return False
+
+    def _get_research_context(self, question: str) -> Optional[Dict[str, Any]]:
+        """
+        Run HTN research pipeline and return synthesis for use as context.
+
+        1) Check for recent research session (anchors)
+        2) If none or stale, run research_and_summarize
+        3) Return synthesis object for injection into Astra's context
+
+        Args:
+            question: Research question to investigate
+
+        Returns:
+            Synthesis dict with narrative_summary, key_events, etc., or None if failed
+        """
+        from src.services.research_anchor_store import ResearchAnchorStore
+        from src.tools.research_tools import research_and_summarize
+        from src.services.research_formatter import format_research_answer
+
+        started_at = time.time()
+
+        try:
+            # Initialize anchor store
+            anchor_store = ResearchAnchorStore()
+
+            # 1. Check for recent research session
+            anchor = anchor_store.find_recent_anchor(question)
+            if anchor is not None:
+                logger.info(f"Research gating: Found recent anchor for '{question}', session_id={anchor.session_id}")
+                # Load existing session synthesis
+                session_id = anchor.session_id
+                from src.services.research_session import ResearchSessionStore
+                session_store = ResearchSessionStore()
+                session = session_store.get_session(session_id)
+
+                if session and session.session_summary:
+                    # Log trace
+                    self.last_tool_trace.append({
+                        "tool": "research_context_retrieval",
+                        "args": {"question": question},
+                        "started_at": started_at,
+                        "ended_at": time.time(),
+                        "ok": True,
+                        "result_meta": {
+                            "session_id": session_id,
+                            "reused": True,
+                        },
+                    })
+
+                    return session.session_summary
+
+            # 2. No recent session → run fresh research
+            logger.info(f"Research gating: No recent session, starting HTN research for '{question}'")
+
+            if not self.llm or not self.web_search_service or not self.url_fetcher_service:
+                logger.error("Research gating failed: missing required services")
+                return None
+
+            synthesis = research_and_summarize(
+                question=question,
+                max_tasks=30,
+                max_children_per_task=3,
+                max_depth=4,
+                llm_service=self.llm,
+                web_search_service=self.web_search_service,
+                url_fetcher_service=self.url_fetcher_service,
+                metadata={"trigger": "research_context_gating"}
+            )
+
+            # Log trace
+            self.last_tool_trace.append({
+                "tool": "research_context_generation",
+                "args": {"question": question},
+                "started_at": started_at,
+                "ended_at": time.time(),
+                "ok": True,
+                "result_meta": {
+                    "session_id": synthesis["session_id"],
+                    "risk_level": synthesis.get("risk_level"),
+                    "docs": synthesis.get("coverage_stats", {}).get("total_docs"),
+                    "reused": False,
+                },
+            })
+
+            return synthesis
+
+        except Exception as e:
+            logger.exception(f"Research context generation failed: {e}")
+            return None
+
     def generate_response(self, user_message: str, retrieve_memories: bool = True, top_k: int = 5, conversation_history: list = None) -> Tuple[str, Dict]:
         """
         Generate a persona response with emotional co-analysis and tool use.
@@ -201,6 +409,14 @@ class PersonaService:
         """
         if conversation_history is None:
             conversation_history = []
+
+        # Research gating: detect if this should go through HTN research pipeline
+        research_context = None
+        if self._is_research_query(user_message):
+            logger.info(f"Research gating triggered for message: {user_message[:100]}...")
+            # Run research and get the synthesis, but don't return immediately
+            # Instead, inject research as context so Astra can answer the original question
+            research_context = self._get_research_context(user_message)
 
         # Load persona's LLM configuration
         config = self.config_loader.load_config()
@@ -287,6 +503,17 @@ class PersonaService:
                                     if has_immutable:
                                         logger.warning("🔒 Immutable beliefs detected - applying anti-hedging logit bias")
 
+                                    # Log what dissonance was detected
+                                    print(f"\n{'='*80}")
+                                    print(f"⚠️  DISSONANCE DETECTED")
+                                    print(f"{'='*80}")
+                                    for i, pattern in enumerate(high_severity_patterns, 1):
+                                        print(f"\nPattern {i}: {pattern.pattern_type}")
+                                        print(f"  Belief: {pattern.belief_statement[:80]}...")
+                                        print(f"  Severity: {pattern.severity:.0%}")
+                                        print(f"  Immutable: {getattr(pattern, 'immutable', False)}")
+                                    print(f"{'='*80}\n")
+
                                     # Build prompt for internal resolution
                                     internal_prompt = self.prompt_builder.build_prompt(
                                         user_message,
@@ -322,6 +549,37 @@ class PersonaService:
                                     internal_response = internal_result["message"].content or ""
                                     logger.info(f"✅ Internal resolution generated ({len(internal_response)} chars)")
 
+                                    # CAPTURE INTERNAL THOUGHT PROCESS
+                                    print(f"\n{'='*80}")
+                                    print(f"💭 ASTRA'S INTERNAL REASONING (hidden from user)")
+                                    print(f"{'='*80}")
+                                    print(f"Query: {user_message[:100]}...")
+                                    print(f"Dissonance patterns: {len(high_severity_patterns)}")
+                                    print(f"\n--- Internal Resolution Response ---")
+                                    print(internal_response)
+                                    print(f"{'='*80}\n")
+
+                                    logger.info(f"💭 INTERNAL REASONING:\n{internal_response}")
+
+                                    # Also save to dedicated thought log
+                                    import os
+                                    from datetime import datetime
+                                    thought_log_path = "logs/thoughts"
+                                    os.makedirs(thought_log_path, exist_ok=True)
+                                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                                    with open(f"{thought_log_path}/internal_reasoning_{timestamp}.txt", "w") as f:
+                                        f.write(f"TIMESTAMP: {timestamp}\n")
+                                        f.write(f"USER QUERY: {user_message}\n\n")
+                                        f.write(f"DISSONANCE PATTERNS: {len(high_severity_patterns)}\n")
+                                        for i, p in enumerate(high_severity_patterns, 1):
+                                            f.write(f"\n  {i}. {p.pattern_type} - {p.belief_statement[:100]}...\n")
+                                            f.write(f"     Severity: {p.severity:.0%}, Immutable: {getattr(p, 'immutable', False)}\n")
+                                        f.write(f"\n{'='*80}\n")
+                                        f.write(f"INTERNAL REASONING:\n")
+                                        f.write(f"{'='*80}\n\n")
+                                        f.write(internal_response)
+                                        f.write(f"\n\n{'='*80}\n")
+
                                     # Parse and apply resolutions from internal response
                                     resolution_data = self.parse_resolution_response(internal_response)
                                     if resolution_data and resolution_data.get("has_resolutions"):
@@ -354,7 +612,9 @@ class PersonaService:
                                     resolution_required = False
                                     resolution_belief_statements = []
                         except Exception as e:
+                            import traceback
                             logger.error(f"Failed to check consistency: {e}")
+                            logger.error(f"Traceback: {traceback.format_exc()}")
 
                 # Fallback to regular memory retrieval
                 elif self.retrieval_service:
@@ -376,7 +636,8 @@ class PersonaService:
             conversation_history=conversation_history,
             memories=memories,
             belief_results=belief_results if belief_results else None,
-            dissonance_report=dissonance_report
+            dissonance_report=dissonance_report,
+            research_context=research_context
         )
 
         # Log prompt stats for visibility (not full content to avoid clutter)
@@ -397,6 +658,32 @@ class PersonaService:
         messages.append({"role": "user", "content": user_message})
 
         tools = self._get_tool_definitions()
+
+        # VERBOSE DIAGNOSTIC: Log what tools are available
+        tool_names = [t['function']['name'] for t in tools]
+        execute_goal_present = 'execute_goal' in tool_names
+
+        print("\n" + "="*80)
+        print(f"🔧 VERBOSE TOOL DIAGNOSTIC")
+        print("="*80)
+        print(f"Total tools: {len(tools)}")
+        print(f"Tool names: {tool_names}")
+        print(f"execute_goal present: {execute_goal_present}")
+        print(f"code_access_service: {self.code_access_service is not None}")
+        print(f"code_generator: {self.code_generator is not None}")
+        print(f"User message: {user_message[:200]}")
+
+        if execute_goal_present:
+            # Find and print the execute_goal tool definition
+            for tool in tools:
+                if tool['function']['name'] == 'execute_goal':
+                    print(f"\nexecute_goal tool definition:")
+                    print(f"  Description: {tool['function']['description'][:150]}...")
+                    print(f"  Parameters: {list(tool['function']['parameters']['properties'].keys())}")
+
+        print("="*80 + "\n")
+
+        logger.info(f"TOOL DIAGNOSTIC: {len(tools)} tools, execute_goal={execute_goal_present}, msg='{user_message[:100]}'")
 
         # Tool execution loop (max 5 iterations to prevent infinite loops)
         max_iterations = 5
@@ -476,6 +763,12 @@ class PersonaService:
         logger.info(f"Assistant responses collected: {len(assistant_responses)}")
         if assistant_responses:
             logger.info(f"First response length: {len(assistant_responses[0])}")
+            # FULL CONVERSATION LOGGING (no truncation)
+            logger.info(f"=" * 80)
+            logger.info(f"USER PROMPT: {user_message}")
+            logger.info(f"=" * 80)
+            logger.info(f"ASTRA RESPONSE: {assistant_responses[0]}")
+            logger.info(f"=" * 80)
         else:
             logger.warning("No assistant responses collected - response will be empty!")
 
@@ -519,6 +812,20 @@ class PersonaService:
                 internal_assessment=internal_assessment,
                 user_message=user_message
             )
+
+        # Log research tool usage if any research tools were called
+        if self.last_tool_trace:
+            research_tools = [t for t in self.last_tool_trace if t["tool"] in ["research_and_summarize", "check_recent_research"]]
+            if research_tools and hasattr(self, 'llm') and self.llm:
+                from src.utils.logging_config import get_multi_logger
+                get_multi_logger().log_research_event(
+                    event_type="research_turn",
+                    session_id="N/A",
+                    data={
+                        "question": repr(user_message[:120]),
+                        "tools": [t["tool"] for t in research_tools]
+                    }
+                )
 
         return clean_response, reconciliation_data
 
@@ -590,6 +897,9 @@ class PersonaService:
 
                     original_text = content.get("text", "")
 
+                    # Log to separate memory rewrite log (not accessible to Astra)
+                    memory_rewrite_logger.info(f"📝 BEFORE REWRITE [{exp_id}]: {original_text}")
+
                     # Rewrite based on choice
                     if choice == "B":
                         # Commit - reframe hedging as articulation uncertainty
@@ -605,6 +915,10 @@ class PersonaService:
 
                     # Update the experience text
                     content["text"] = rewritten_text
+
+                    # Log detailed rewrite to separate meta-cognitive log (not accessible to Astra)
+                    memory_rewrite_logger.info(f"✏️  AFTER REWRITE [{exp_id}]: {rewritten_text}")
+                    memory_rewrite_logger.info(f"🔄 Belief: '{belief_statement}' | Choice: {choice}")
 
                     # Mark as reconciled in structured data
                     structured = content.get("structured", {})
@@ -622,6 +936,9 @@ class PersonaService:
 
             # Commit all changes
             session.commit()
+
+        # Log high-level summary to main log (detailed rewrites in meta_cognitive/memory_rewrites.log)
+        logger.info(f"✅ Memory rewrite complete: {rewritten_count}/{len(experience_ids)} memories reconciled for belief '{belief_statement}'")
 
         return rewritten_count
 
@@ -1094,14 +1411,31 @@ This revision represents growth in my self-understanding. My past statements wer
             {
                 "type": "function",
                 "function": {
+                    "name": "list_source_files",
+                    "description": "List source code files in the src/ directory to discover what files are available to read. Use this first to explore the codebase structure.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "pattern": {
+                                "type": "string",
+                                "description": "Glob pattern to filter files (default: '**/*.py' for all Python files). Examples: '*.py' (root level only), 'services/*.py', '**/*.py' (recursive)",
+                                "default": "**/*.py"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "read_source_code",
-                    "description": "Read your own source code (read-only) to understand how you work.",
+                    "description": "Read your own source code files (read-only) to understand how you work. Can only read files within the src/ directory. Use list_source_files first to discover available files.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "path": {
                                 "type": "string",
-                                "description": "Path relative to src/ directory (e.g., 'services/persona_service.py')"
+                                "description": "Path to source file relative to the src/ directory. DO NOT include 'src/' in the path. Examples: 'services/persona_service.py', 'services/goal_store.py', 'pipeline/ingest.py'"
                             }
                         },
                         "required": ["path"]
@@ -1136,8 +1470,30 @@ This revision represents growth in my self-understanding. My past statements wer
             {
                 "type": "function",
                 "function": {
+                    "name": "read_logs",
+                    "description": "Read application log files for debugging and troubleshooting. Use this to investigate errors, check system behavior, or understand what's happening in the system.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "log_file": {
+                                "type": "string",
+                                "description": "Log file to read. Available logs: 'app/astra.log' (main application log), 'app/errors.log' (error log), 'awareness' (awareness loop logs), 'beliefs' (belief system logs), 'conversations' (conversation logs), 'memory' (memory system logs), 'performance' (performance metrics)"
+                            },
+                            "lines": {
+                                "type": "integer",
+                                "description": "Number of recent lines to read (default: 100, max: 500)",
+                                "default": 100
+                            }
+                        },
+                        "required": ["log_file"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "search_web",
-                    "description": "Search the web for current information, facts, or knowledge you don't have. Use this when you need up-to-date information, news, specific facts, or when your knowledge might be outdated. Returns search results with titles, URLs, and snippets.",
+                    "description": "Quick single web search for a small fact or one-off lookup. Do NOT use this for multi-step research, current events analysis, or questions like 'what is going on with X' or 'what happened with Y'. For those, use research_and_summarize instead. This tool is for narrow, single-fact queries only.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1241,8 +1597,177 @@ This revision represents growth in my self-understanding. My past statements wer
                         "required": ["statement", "confidence", "rationale"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "schedule_code_modification",
+                    "description": "Schedule a code modification for user approval. Creates a task that will execute after approval. Use this when you've identified a fix that needs to be applied to the codebase.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "File to modify, relative to project root (e.g., 'src/services/task_scheduler.py')"
+                            },
+                            "new_content": {
+                                "type": "string",
+                                "description": "Complete new file content to replace the existing content"
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Clear explanation of why this change is needed and what it fixes"
+                            },
+                            "goal_id": {
+                                "type": "string",
+                                "description": "Optional: ID of related goal if this modification is part of a goal"
+                            }
+                        },
+                        "required": ["file_path", "new_content", "reason"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "execute_goal",
+                    "description": "Autonomously execute a coding goal end-to-end using HTN planning and task execution. The system will decompose the goal, create files, run tests, and return results. Use this for implementing features, fixing bugs, or refactoring code autonomously.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "goal_text": {
+                                "type": "string",
+                                "description": "MUST be one of these exact task names: 'implement_feature', 'fix_bug', 'refactor_code', or 'add_tests'. Do NOT use free-form descriptions - use only these task names.",
+                                "enum": ["implement_feature", "fix_bug", "refactor_code", "add_tests"]
+                            },
+                            "context": {
+                                "type": "object",
+                                "description": "Optional context for HTN planner (e.g., {'has_codebase': true, 'file_path': 'src/foo.py'})"
+                            },
+                            "timeout_ms": {
+                                "type": "integer",
+                                "description": "Maximum execution time in milliseconds (default: 60000 = 1 minute)"
+                            }
+                        },
+                        "required": ["goal_text"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "check_recent_research",
+                    "description": "Check if you recently researched a similar topic. Returns existing research session if found (within last 7 days), so you can reuse findings instead of re-researching. Use this BEFORE calling research_and_summarize to avoid duplicate work.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "topic": {
+                                "type": "string",
+                                "description": "Topic to check (e.g., 'epstein files', 'ai safety', 'government shutdown')"
+                            }
+                        },
+                        "required": ["topic"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "research_and_summarize",
+                    "description": "PRIMARY TOOL for any research question, current events, developing stories, or when the user asks you to 'research', 'investigate', or explain what is going on with a topic. Uses an HTN planner, web search, and multi-step synthesis to produce a structured summary with key events, contested claims, and open questions. Always prefer this over search_web for anything that requires understanding or investigation.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "Research question to investigate (e.g., 'What happened in AI safety this week?', 'What is the scientific consensus on ultra-processed foods?')"
+                            },
+                            "max_tasks": {
+                                "type": "integer",
+                                "description": "Maximum research tasks to execute (default: 30). Lower for quick research, higher for comprehensive investigation.",
+                                "default": 30
+                            },
+                            "max_depth": {
+                                "type": "integer",
+                                "description": "Maximum depth of research tree (default: 4). Controls how many follow-up questions to pursue.",
+                                "default": 4
+                            }
+                        },
+                        "required": ["question"]
+                    }
+                }
             }
+            # DISABLED: generate_code tool (causes token limit issues with 17 tools)
+            # Re-enable by uncommenting this block when needed
+            # {
+            #     "type": "function",
+            #     "function": {
+            #         "name": "generate_code",
+            #         "description": "Generate Python code with tests using specialized agent",
+            #         "parameters": {
+            #             "type": "object",
+            #             "properties": {
+            #                 "requirements": {
+            #                     "type": "string",
+            #                     "description": "What code to generate"
+            #                 }
+            #             },
+            #             "required": ["requirements"]
+            #         }
+            #     }
+            # }
         ]
+
+    def _extract_meta_for_trace(self, tool_name: str, result: Any) -> dict:
+        """Extract minimal metadata from tool result for tracing.
+
+        Args:
+            tool_name: Name of tool that was executed
+            result: Tool result (usually string)
+
+        Returns:
+            Dict with tool-specific metadata
+        """
+        import time
+
+        meta = {}
+
+        if tool_name == "research_and_summarize":
+            # Parse result string to extract session_id
+            if isinstance(result, str) and "Session ID:" in result:
+                lines = result.split("\n")
+                for line in lines:
+                    if "Session ID:" in line:
+                        meta["session_id"] = line.split("Session ID:")[-1].strip()
+                        break
+            # Check for risk indicators
+            if isinstance(result, str):
+                if "early/contested" in result.lower() or "known so far" in result.lower():
+                    meta["risk_level"] = "high"
+                elif "disputed" in result.lower() or "according to most" in result.lower():
+                    meta["risk_level"] = "medium"
+                else:
+                    meta["risk_level"] = "low"
+
+        elif tool_name == "check_recent_research":
+            # Check if anchor was found
+            if isinstance(result, str):
+                meta["hit"] = "EXISTING RESEARCH FOUND" in result
+                if meta["hit"] and "Session ID:" in result:
+                    lines = result.split("\n")
+                    for line in lines:
+                        if "Session ID:" in line:
+                            meta["session_id"] = line.split("Session ID:")[-1].strip()
+                        if "Age:" in line:
+                            # Parse "Age: 2.5 hours ago"
+                            age_str = line.split("Age:")[-1].strip()
+                            if "hours ago" in age_str:
+                                try:
+                                    meta["age_hours"] = float(age_str.split()[0])
+                                except:
+                                    pass
+
+        return meta
 
     def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         """Execute a tool call and return the result.
@@ -1254,6 +1779,15 @@ This revision represents growth in my self-understanding. My past statements wer
         Returns:
             Result message string
         """
+        import time
+
+        # Start trace entry
+        trace_entry = {
+            "tool": tool_name,
+            "args": arguments,
+            "started_at": time.time(),
+        }
+
         try:
             if tool_name == "write_file":
                 path = arguments.get("path")
@@ -1276,10 +1810,28 @@ This revision represents growth in my self-understanding. My past statements wer
                 success = self.file_manager.delete_file(path)
                 result = f"Successfully deleted {path}" if success else f"Failed to delete {path}"
 
+            elif tool_name == "list_source_files":
+                pattern = arguments.get("pattern", "**/*.py")
+                files = self.file_manager.list_source_files(pattern)
+                if not files:
+                    result = f"No source files found matching pattern: {pattern}\n\nYour codebase access is ACTIVE and working. Try different patterns:\n- '**/*.py' (all Python files, recursive)\n- 'services/*.py' (just services directory)\n- '*.py' (root level only)"
+                else:
+                    result = f"Found {len(files)} source file(s) matching '{pattern}':\n\n" + "\n".join(f"  - {f}" for f in sorted(files))
+                    result += f"\n\nUse read_source_code(path='...') to read any of these files."
+                    result += f"\n\nNote: Your codebase access is FULLY ESTABLISHED and working."
+
             elif tool_name == "read_source_code":
                 path = arguments.get("path")
-                content = self.file_manager.read_source_code(path)
-                result = content if content else f"Source file not found: {path}"
+
+                # Helpful error if they include 'src/' prefix
+                if path.startswith('src/'):
+                    result = f"Error: Do not include 'src/' in the path. Use path relative to src/ directory.\nExample: Instead of 'src/services/goal_store.py', use 'services/goal_store.py'"
+                else:
+                    content = self.file_manager.read_source_code(path)
+                    if not content:
+                        result = f"Source file not found: src/{path}\n\nMake sure the file exists and the path is correct (relative to src/ directory).\nTip: Use list_source_files() first to see what files are available."
+                    else:
+                        result = content
 
             elif tool_name == "execute_script":
                 command = arguments.get("command")
@@ -1502,8 +2054,352 @@ This revision represents growth in my self-understanding. My past statements wer
                         import traceback
                         traceback.print_exc()
 
+            elif tool_name == "read_logs":
+                log_file = arguments.get("log_file")
+                lines = arguments.get("lines", 100)
+
+                # Limit to max 500 lines
+                lines = min(lines, 500)
+
+                # Construct full path
+                from pathlib import Path
+                log_path = Path("logs") / log_file
+
+                # Security check - ensure path stays within logs/
+                try:
+                    resolved = log_path.resolve()
+                    logs_base = Path("logs").resolve()
+
+                    # Check if the resolved path is within logs/
+                    if not str(resolved).startswith(str(logs_base)):
+                        result = "Error: Path traversal detected. Can only read files within logs/ directory"
+                    elif not log_path.exists():
+                        result = f"Log file not found: {log_file}\n\nAvailable logs:\n• app/astra.log (main application log)\n• app/errors.log (error log)\n• awareness/ (awareness loop logs)\n• beliefs/ (belief system logs)\n• conversations/ (conversation logs)\n• memory/ (memory system logs)\n• performance/ (performance metrics)"
+                    else:
+                        # Read last N lines
+                        with open(log_path, 'r') as f:
+                            all_lines = f.readlines()
+                            recent_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+                            content = ''.join(recent_lines)
+
+                        result = f"Last {len(recent_lines)} lines from {log_file}:\n\n{content}"
+
+                except Exception as e:
+                    result = f"Error reading log: {str(e)}"
+                    logger.error(f"Log reading error: {e}")
+
+            elif tool_name == "schedule_code_modification":
+                from uuid import uuid4
+                from datetime import datetime, timezone
+                from src.services.task_scheduler import TaskDefinition, TaskType, TaskSchedule
+
+                file_path = arguments.get("file_path")
+                new_content = arguments.get("new_content")
+                reason = arguments.get("reason")
+                goal_id = arguments.get("goal_id")
+
+                # Check if services are available
+                if not self.code_access_service:
+                    result = "Error: Code access service not available. Cannot schedule code modifications."
+                elif not self.task_scheduler:
+                    result = "Error: Task scheduler not available. Cannot schedule code modifications."
+                else:
+                    # Verify path is allowed
+                    can_access, access_error = self.code_access_service.can_access(file_path)
+
+                    if not can_access:
+                        result = f"Error: Access denied to {file_path}\n\nReason: {access_error}\n\nYou can only modify files in: src/services/, src/pipeline/, src/utils/, tests/, scripts/, docs/"
+                    else:
+                        try:
+                            # Create a manual CODE_MODIFY task
+                            task_id = f"code_mod_{uuid4().hex[:8]}"
+                            task = TaskDefinition(
+                                id=task_id,
+                                name=f"Modify {file_path}",
+                                type=TaskType.CODE_MODIFY,
+                                schedule=TaskSchedule.MANUAL,  # Requires manual trigger
+                                prompt=reason,
+                                enabled=True,
+                                metadata={
+                                    "file_path": file_path,
+                                    "new_content": new_content,
+                                    "reason": reason,
+                                    "goal_id": goal_id,
+                                    "requested_by": "astra",
+                                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                                    "status": "awaiting_approval"
+                                }
+                            )
+
+                            # Add task to scheduler
+                            self.task_scheduler.tasks[task_id] = task
+                            self.task_scheduler._save_tasks()
+
+                            # Log to identity ledger
+                            from src.services.identity_ledger import append_event, LedgerEvent
+                            append_event(LedgerEvent(
+                                ts=datetime.now(timezone.utc).timestamp(),
+                                schema=2,
+                                event="code_modification_scheduled",
+                                meta={
+                                    "task_id": task_id,
+                                    "file_path": file_path,
+                                    "reason": reason,
+                                    "goal_id": goal_id,
+                                }
+                            ))
+
+                            result = f"✓ Code modification scheduled successfully!\n\n"
+                            result += f"TASK ID: {task_id}\n"
+                            result += f"FILE: {file_path}\n"
+                            result += f"REASON: {reason}\n\n"
+                            result += f"STATUS: Awaiting user approval\n\n"
+                            result += f"This modification will NOT execute automatically. The user must manually approve and trigger this task."
+
+                            logger.info(f"Code modification scheduled: {task_id} for {file_path}")
+
+                        except Exception as e:
+                            result = f"Error scheduling code modification: {str(e)}"
+                            logger.error(f"Code modification scheduling error: {e}")
+
+            elif tool_name == "execute_goal":
+                # Autonomous goal execution via HTN planning + task execution
+                if not self.code_access_service:
+                    result = "Error: Code access service not available. Cannot execute goals autonomously."
+                else:
+                    import asyncio
+                    from src.services.goal_execution_service import GoalExecutionService
+
+                    goal_text = arguments.get("goal_text")
+                    context = arguments.get("context", {})
+                    timeout_ms = arguments.get("timeout_ms", 60000)
+
+                    try:
+                        # Initialize execution service
+                        exec_service = GoalExecutionService(
+                            code_access=self.code_access_service,
+                            code_generator=self.code_generator,
+                            identity_ledger=None,  # TODO: wire identity ledger
+                            workdir=str(self.code_access_service.project_root),
+                            max_concurrent=2
+                        )
+
+                        # Run in separate thread with its own event loop (uvloop incompatible with nest_asyncio)
+                        import concurrent.futures
+                        import threading
+
+                        def run_in_new_loop():
+                            new_loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(new_loop)
+                            try:
+                                return new_loop.run_until_complete(exec_service.execute_goal(
+                                    goal_text=goal_text,
+                                    context=context,
+                                    timeout_ms=timeout_ms
+                                ))
+                            finally:
+                                new_loop.close()
+
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(run_in_new_loop)
+                            exec_result = future.result(timeout=timeout_ms/1000 + 5)
+
+                        # Format result for persona
+                        result = f"🎯 Goal Execution Complete\n\n"
+                        result += f"GOAL: {goal_text}\n"
+                        result += f"STATUS: {'✓ SUCCESS' if exec_result.success else '✗ FAILED'}\n"
+                        result += f"EXECUTION TIME: {exec_result.execution_time_ms:.1f}ms\n\n"
+
+                        result += f"📊 TASKS:\n"
+                        result += f"  Total: {exec_result.total_tasks}\n"
+                        result += f"  Completed: {len(exec_result.completed_tasks)}\n"
+                        result += f"  Failed: {len(exec_result.failed_tasks)}\n\n"
+
+                        if exec_result.completed_tasks:
+                            result += "✓ COMPLETED TASKS:\n"
+                            for task in exec_result.completed_tasks:
+                                result += f"  - {task.task_name}"
+                                if "file_path" in task.artifacts:
+                                    result += f" ({task.artifacts['file_path']})"
+                                result += "\n"
+                            result += "\n"
+
+                        if exec_result.failed_tasks:
+                            result += "✗ FAILED TASKS:\n"
+                            for task in exec_result.failed_tasks:
+                                result += f"  - {task.task_name}: {task.error}\n"
+                            result += "\n"
+
+                        if exec_result.errors:
+                            result += "⚠️  ERRORS:\n"
+                            for error in exec_result.errors[:5]:  # Show first 5 errors
+                                result += f"  - {error}\n"
+
+                        logger.info(f"Goal execution completed: {exec_result.goal_id} - success={exec_result.success}")
+
+                    except Exception as e:
+                        result = f"Error executing goal: {str(e)}"
+                        logger.error(f"Goal execution error: {e}", exc_info=True)
+
+            elif tool_name == "generate_code":
+                # Generate code via CoderAgent
+                if not self.coder_agent:
+                    result = "Error: Code generation service not available."
+                else:
+                    import asyncio
+                    requirements = arguments.get("requirements")
+                    goal_type = "implement_feature"  # Default
+                    existing_files = []  # Not exposed in simplified API
+
+                    try:
+                        # Build CoderAgent request
+                        request = {
+                            "goal_text": goal_type,
+                            "context": {
+                                "requirements": requirements,
+                                "existing_files": existing_files,
+                                "constraints": ["no network", "pure stdlib"]
+                            },
+                            "timeout_ms": 120000
+                        }
+
+                        # Call CoderAgent (it's async, so run it in event loop)
+                        import asyncio
+                        try:
+                            loop = asyncio.get_event_loop()
+                        except RuntimeError:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                        coder_result = loop.run_until_complete(self.coder_agent.process(request))
+
+                        # Format result for Astra
+                        result = f"📝 Code Generation Complete\n\n"
+                        result += f"**Plan:**\n"
+                        for i, step in enumerate(coder_result.get("plan", []), 1):
+                            result += f"{i}. {step}\n"
+
+                        result += f"\n**Generated {len(coder_result.get('artifacts', []))} files:**\n\n"
+                        for artifact in coder_result.get("artifacts", []):
+                            filename = artifact.get("filename", "unknown")
+                            code = artifact.get("code", "")
+                            result += f"📄 `{filename}`\n```python\n{code}\n```\n\n"
+
+                        checks = coder_result.get("checks", {})
+                        result += f"**Safety Checks:**\n"
+                        result += f"✅ Ruff/Black: {checks.get('ruff_black', False)}\n"
+                        result += f"✅ MyPy: {checks.get('mypy', False)}\n"
+                        result += f"✅ No forbidden APIs: {checks.get('no_forbidden_apis', False)}\n"
+                        result += f"✅ Size OK: {checks.get('size_ok', False)}\n"
+
+                        logger.info(f"Code generation completed: {len(coder_result.get('artifacts', []))} artifacts")
+
+                    except Exception as e:
+                        result = f"Error generating code: {str(e)}"
+                        logger.error(f"Code generation error: {e}", exc_info=True)
+
+            elif tool_name == "check_recent_research":
+                topic = arguments.get("topic")
+                try:
+                    from src.services.research_anchor_store import ResearchAnchorStore
+                    from src.services.research_session import ResearchSessionStore
+                    from src.services.research_formatter import format_research_answer
+
+                    anchor_store = ResearchAnchorStore()
+                    anchor = anchor_store.find_recent_anchor(topic, max_age_days=7)
+
+                    if not anchor:
+                        result = f"No recent research found for '{topic}' (within last 7 days).\n\n"
+                        result += "You can call research_and_summarize to investigate this topic."
+                    else:
+                        # Found existing research - load and format it
+                        session_store = ResearchSessionStore()
+                        session = session_store.get_session(anchor.session_id)
+
+                        if not session or not session.session_summary:
+                            result = f"Found anchor but session data incomplete. Consider re-researching."
+                        else:
+                            # Load source docs
+                            source_docs = session_store.load_source_docs_for_session(anchor.session_id)
+
+                            # Format the existing research
+                            formatted = format_research_answer(
+                                summary_obj=session.session_summary,
+                                source_docs=source_docs,
+                                include_open_questions=True,
+                                verbose=False
+                            )
+
+                            age_hours = (time.time() - anchor.created_at) / 3600
+                            result = f"EXISTING RESEARCH FOUND: {topic}\n"
+                            result += f"Session ID: {anchor.session_id}\n"
+                            result += f"Age: {age_hours:.1f} hours ago\n"
+                            result += f"Summary: {anchor.one_sentence_summary}\n\n"
+                            result += "---\n\n"
+                            result += formatted
+                            result += "\n\n---\n"
+                            result += "This research is recent. You can reuse these findings or call research_and_summarize with a more targeted follow-up question if needed."
+
+                except Exception as e:
+                    result = f"Error checking recent research: {str(e)}"
+                    logger.error(f"Check recent research error: {e}", exc_info=True)
+
+            elif tool_name == "research_and_summarize":
+                if not self.llm or not self.web_search_service or not self.url_fetcher_service:
+                    result = "Error: Research capabilities not available (missing LLM, web search, or URL fetcher service)"
+                else:
+                    question = arguments.get("question")
+                    max_tasks = arguments.get("max_tasks", 30)
+                    max_depth = arguments.get("max_depth", 4)
+
+                    try:
+                        from src.tools.research_tools import research_and_summarize
+                        from src.services.research_formatter import format_research_answer
+                        from src.services.research_session import ResearchSessionStore
+
+                        # Run autonomous research
+                        logger.info(f"Starting autonomous research on: {question}")
+                        summary = research_and_summarize(
+                            question=question,
+                            max_tasks=max_tasks,
+                            max_depth=max_depth,
+                            llm_service=self.llm,
+                            web_search_service=self.web_search_service,
+                            url_fetcher_service=self.url_fetcher_service
+                        )
+
+                        # Load source docs for provenance
+                        session_id = summary.get("session_id")
+                        session_store = ResearchSessionStore()
+                        source_docs = session_store.load_source_docs_for_session(session_id)
+
+                        # Format using research_formatter
+                        formatted_answer = format_research_answer(
+                            summary_obj=summary,
+                            source_docs=source_docs,
+                            include_open_questions=True,
+                            verbose=False
+                        )
+
+                        # Build result with session ID and formatted answer
+                        result = f"RESEARCH COMPLETE: {question}\n"
+                        result += f"Session ID: {session_id}\n\n"
+                        result += "---\n\n"
+                        result += formatted_answer
+
+                        logger.info(f"Research complete for session {session_id}")
+
+                    except Exception as e:
+                        result = f"Error during research: {str(e)}"
+                        logger.error(f"Research error: {e}", exc_info=True)
+
             else:
                 result = f"Unknown tool: {tool_name}"
+
+            # Complete trace entry
+            trace_entry["ended_at"] = time.time()
+            trace_entry["ok"] = True
+            trace_entry["result_meta"] = self._extract_meta_for_trace(tool_name, result)
+            self.last_tool_trace.append(trace_entry)
 
             # Log the action
             self._log_action(tool_name, arguments, result)
@@ -1515,6 +2411,12 @@ This revision represents growth in my self-understanding. My past statements wer
             return result
 
         except Exception as e:
+            # Complete trace entry with error
+            trace_entry["ended_at"] = time.time()
+            trace_entry["ok"] = False
+            trace_entry["error"] = str(e)
+            self.last_tool_trace.append(trace_entry)
+
             error_msg = f"Error executing {tool_name}: {str(e)}"
             logger.error(error_msg)
             return error_msg

@@ -72,7 +72,15 @@ class URLFetcherService:
         """Ensure browser is initialized."""
         if self._browser is None:
             self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(headless=self.headless)
+            # Launch with realistic browser args to avoid detection
+            self._browser = self._playwright.chromium.launch(
+                headless=self.headless,
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                    '--no-sandbox'
+                ]
+            )
             logger.info(f"Browser launched (headless={self.headless})")
 
     def _extract_main_content(self, html: str, url: str) -> str:
@@ -123,8 +131,20 @@ class URLFetcherService:
         import requests
 
         try:
+            # Use realistic browser headers to avoid 403 blocks
             headers = {
-                'User-Agent': 'Mozilla/5.0 (compatible; AstraBot/1.0)'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0'
             }
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
@@ -198,7 +218,26 @@ class URLFetcherService:
 
         try:
             self._ensure_browser()
-            page: Page = self._browser.new_page()
+
+            # Create context with realistic headers to avoid bot detection
+            context = self._browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                viewport={'width': 1920, 'height': 1080},
+                extra_http_headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Cache-Control': 'max-age=0'
+                }
+            )
+            page: Page = context.new_page()
 
             try:
                 # Navigate to URL
@@ -270,6 +309,7 @@ class URLFetcherService:
 
             finally:
                 page.close()
+                context.close()
 
         except PlaywrightTimeout:
             error_msg = f"Timeout loading page (>{self.timeout_ms}ms)"

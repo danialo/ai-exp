@@ -318,7 +318,8 @@ class PersonaFileManager:
         self,
         command: str,
         timeout: int = 600,
-        save_output: bool = True
+        save_output: bool = True,
+        _retry_attempt: int = 0
     ) -> Dict[str, Union[str, int, bool]]:
         """
         Execute a script or command within the persona_space.
@@ -327,10 +328,13 @@ class PersonaFileManager:
         to the agent's own directory. The agent can run any interpreter available
         on the system (python, bash, node, etc.) and can create venvs for packages.
 
+        Automatically retries common failures (python→python3, pip→python -m pip, etc.)
+
         Args:
             command: Shell command to execute (e.g., "python script.py", "bash setup.sh")
             timeout: Maximum execution time in seconds (default: 600 = 10min)
             save_output: Whether to save output to logs/script_outputs/ (default: True)
+            _retry_attempt: Internal retry counter (don't set manually)
 
         Returns:
             Dict with keys:
@@ -340,6 +344,7 @@ class PersonaFileManager:
                 - return_code: int
                 - output_file: str (path to saved output, if save_output=True)
                 - error: str (if execution failed)
+                - auto_retry_used: str (if automatic retry was applied)
         """
         try:
             logger.info(f"Executing script in persona_space: {command}")
@@ -358,6 +363,42 @@ class PersonaFileManager:
             stderr = result.stderr
             return_code = result.returncode
             success = return_code == 0
+
+            # AUTO-RETRY: Detect common errors and retry with fix
+            if not success and _retry_attempt == 0:
+                retry_command = None
+                retry_reason = None
+
+                # Pattern 1: python not found → try python3
+                if "python: command not found" in stderr or "python: not found" in stderr:
+                    if command.startswith("python "):
+                        retry_command = command.replace("python ", "python3 ", 1)
+                        retry_reason = "python not found, retrying with python3"
+
+                # Pattern 2: pip not found → try python3 -m pip
+                elif "pip: command not found" in stderr or "pip: not found" in stderr:
+                    if command.startswith("pip "):
+                        retry_command = command.replace("pip ", "python3 -m pip ", 1)
+                        retry_reason = "pip not found, retrying with python3 -m pip"
+
+                # Pattern 3: python3 not found → try python
+                elif "python3: command not found" in stderr or "python3: not found" in stderr:
+                    if command.startswith("python3 "):
+                        retry_command = command.replace("python3 ", "python ", 1)
+                        retry_reason = "python3 not found, retrying with python"
+
+                # If we have a retry, execute it
+                if retry_command:
+                    logger.info(f"🔄 Auto-retry: {retry_reason}")
+                    retry_result = self.execute_script(
+                        command=retry_command,
+                        timeout=timeout,
+                        save_output=save_output,
+                        _retry_attempt=_retry_attempt + 1
+                    )
+                    # Add auto-retry metadata
+                    retry_result["auto_retry_used"] = f"{retry_reason} (original: '{command}', retried: '{retry_command}')"
+                    return retry_result
 
             # Prepare response
             response = {

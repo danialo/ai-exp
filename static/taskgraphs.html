@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TaskGraph Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0a0e1a;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+            color: #fff;
+        }
+        .subtitle {
+            color: #888;
+            margin-bottom: 30px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        button:hover { background: #1d4ed8; }
+        button.secondary {
+            background: #374151;
+        }
+        button.secondary:hover { background: #4b5563; }
+        button.danger {
+            background: #dc2626;
+        }
+        button.danger:hover { background: #b91c1c; }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+        .empty-state h2 {
+            font-size: 1.5em;
+            margin-bottom: 10px;
+            color: #888;
+        }
+        .graph-list {
+            display: grid;
+            gap: 15px;
+        }
+        .graph-card {
+            background: #1a1f2e;
+            border: 1px solid #2d3748;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .graph-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .graph-id {
+            font-size: 1.2em;
+            font-weight: 600;
+            color: #60a5fa;
+        }
+        .graph-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .graph-actions button {
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+        .graph-content {
+            margin-top: 15px;
+        }
+        .ascii-view {
+            background: #0f1419;
+            border: 1px solid #2d3748;
+            border-radius: 4px;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            overflow-x: auto;
+            white-space: pre;
+            line-height: 1.4;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        .stat-card {
+            background: #0f1419;
+            border: 1px solid #2d3748;
+            border-radius: 4px;
+            padding: 12px;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 5px;
+        }
+        .stat-value {
+            font-size: 20px;
+            font-weight: 600;
+            color: #60a5fa;
+        }
+        .task-list {
+            margin-top: 15px;
+        }
+        .task-item {
+            background: #0f1419;
+            border: 1px solid #2d3748;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .task-id {
+            font-weight: 600;
+            color: #60a5fa;
+        }
+        .task-state {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .state-pending { background: #374151; color: #d1d5db; }
+        .state-ready { background: #ca8a04; color: #fef3c7; }
+        .state-running { background: #0284c7; color: #e0f2fe; }
+        .state-succeeded { background: #16a34a; color: #dcfce7; }
+        .state-failed { background: #dc2626; color: #fee2e2; }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #888;
+        }
+        .error {
+            background: #7f1d1d;
+            border: 1px solid #991b1b;
+            color: #fecaca;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        .nav {
+            margin-bottom: 30px;
+        }
+        .nav a {
+            color: #60a5fa;
+            text-decoration: none;
+            margin-right: 20px;
+        }
+        .nav a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav">
+            <a href="/">← Back to Home</a>
+        </div>
+
+        <h1>TaskGraph Viewer</h1>
+        <p class="subtitle">View and inspect HTN planner task execution graphs</p>
+
+        <div class="controls">
+            <button onclick="loadGraphs()">🔄 Refresh</button>
+            <button class="secondary" onclick="createTestGraph()">➕ Create Test Graph</button>
+        </div>
+
+        <div id="error-container"></div>
+        <div id="content-container">
+            <div class="loading">Loading...</div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+
+        async function loadGraphs() {
+            const container = document.getElementById('content-container');
+            container.innerHTML = '<div class="loading">Loading graphs...</div>';
+            document.getElementById('error-container').innerHTML = '';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/taskgraphs`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                const data = await response.json();
+
+                if (!data.ids || data.ids.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <h2>No TaskGraphs Found</h2>
+                            <p>TaskGraphs are created when the HTN planner decomposes goals into tasks.</p>
+                            <p style="margin-top: 10px;">Click "Create Test Graph" to generate a sample TaskGraph.</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Load details for each graph
+                container.innerHTML = '<div class="graph-list"></div>';
+                const listContainer = container.querySelector('.graph-list');
+
+                for (const graphId of data.ids) {
+                    const card = document.createElement('div');
+                    card.className = 'graph-card';
+                    card.id = `graph-${graphId}`;
+                    card.innerHTML = `
+                        <div class="graph-header">
+                            <div class="graph-id">${graphId}</div>
+                            <div class="graph-actions">
+                                <button onclick="viewASCII('${graphId}')">📊 ASCII View</button>
+                                <button onclick="viewStats('${graphId}')">📈 Stats</button>
+                                <button onclick="viewReady('${graphId}')">▶️ Ready Queue</button>
+                                <button onclick="viewTasks('${graphId}')">📝 All Tasks</button>
+                            </div>
+                        </div>
+                        <div class="graph-content" id="content-${graphId}"></div>
+                    `;
+                    listContainer.appendChild(card);
+
+                    // Auto-load stats for each graph
+                    viewStats(graphId);
+                }
+
+            } catch (error) {
+                showError(`Failed to load graphs: ${error.message}`);
+            }
+        }
+
+        async function viewASCII(graphId) {
+            const contentDiv = document.getElementById(`content-${graphId}`);
+            contentDiv.innerHTML = '<div class="loading">Loading ASCII view...</div>';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/taskgraphs/${graphId}/ascii`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                const text = await response.text();
+                contentDiv.innerHTML = `<div class="ascii-view">${escapeHtml(text)}</div>`;
+            } catch (error) {
+                contentDiv.innerHTML = `<div class="error">Failed to load ASCII view: ${error.message}</div>`;
+            }
+        }
+
+        async function viewStats(graphId) {
+            const contentDiv = document.getElementById(`content-${graphId}`);
+            contentDiv.innerHTML = '<div class="loading">Loading stats...</div>';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/taskgraphs/${graphId}/stats`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                const stats = await response.json();
+
+                contentDiv.innerHTML = `
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Total Tasks</div>
+                            <div class="stat-value">${stats.total_tasks}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Running</div>
+                            <div class="stat-value">${stats.running_tasks}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Max Parallel</div>
+                            <div class="stat-value">${stats.max_parallel}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Retry Budget</div>
+                            <div class="stat-value">${stats.retry_tokens_used}/${stats.max_retry_tokens}</div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 15px; padding: 10px; background: #0f1419; border-radius: 4px;">
+                        <strong>States:</strong> ${JSON.stringify(stats.states)}
+                    </div>
+                `;
+            } catch (error) {
+                contentDiv.innerHTML = `<div class="error">Failed to load stats: ${error.message}</div>`;
+            }
+        }
+
+        async function viewReady(graphId) {
+            const contentDiv = document.getElementById(`content-${graphId}`);
+            contentDiv.innerHTML = '<div class="loading">Loading ready queue...</div>';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/taskgraphs/${graphId}/ready`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                const data = await response.json();
+
+                if (data.queue.length === 0) {
+                    contentDiv.innerHTML = '<div class="empty-state"><p>No tasks ready to execute</p></div>';
+                    return;
+                }
+
+                let html = `
+                    <div style="margin-bottom: 10px; color: #888;">
+                        Ordering: ${data.ordering}
+                    </div>
+                    <div class="task-list">
+                `;
+
+                for (const task of data.queue) {
+                    html += `
+                        <div class="task-item">
+                            <span class="task-id">${task.task_id}</span>
+                            <span>${task.action_name}</span>
+                            <span>Priority: ${task.priority.toFixed(2)}</span>
+                        </div>
+                    `;
+                }
+
+                html += '</div>';
+                contentDiv.innerHTML = html;
+            } catch (error) {
+                contentDiv.innerHTML = `<div class="error">Failed to load ready queue: ${error.message}</div>`;
+            }
+        }
+
+        async function viewTasks(graphId) {
+            const contentDiv = document.getElementById(`content-${graphId}`);
+            contentDiv.innerHTML = '<div class="loading">Loading tasks...</div>';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/taskgraphs/${graphId}/tasks`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                const data = await response.json();
+
+                if (data.tasks.length === 0) {
+                    contentDiv.innerHTML = '<div class="empty-state"><p>No tasks found</p></div>';
+                    return;
+                }
+
+                let html = '<div class="task-list">';
+
+                for (const task of data.tasks) {
+                    html += `
+                        <div class="task-item">
+                            <span class="task-id">${task.task_id}</span>
+                            <span>${task.action_name}</span>
+                            <span class="task-state state-${task.state}">${task.state}</span>
+                        </div>
+                    `;
+                }
+
+                html += '</div>';
+                contentDiv.innerHTML = html;
+            } catch (error) {
+                contentDiv.innerHTML = `<div class="error">Failed to load tasks: ${error.message}</div>`;
+            }
+        }
+
+        async function createTestGraph() {
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/taskgraphs/test`, {
+                    method: 'POST'
+                });
+
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                const result = await response.json();
+                showError(`✅ Created test graph: ${result.graph_id}`, false);
+
+                // Reload graphs
+                setTimeout(() => loadGraphs(), 500);
+            } catch (error) {
+                showError(`Failed to create test graph: ${error.message}`);
+            }
+        }
+
+        function showError(message, isError = true) {
+            const container = document.getElementById('error-container');
+            container.innerHTML = `
+                <div class="${isError ? 'error' : 'success'}" style="background: ${isError ? '#7f1d1d' : '#065f46'}; border-color: ${isError ? '#991b1b' : '#047857'}; color: ${isError ? '#fecaca' : '#d1fae5'};">
+                    ${message}
+                </div>
+            `;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Load graphs on page load
+        loadGraphs();
+    </script>
+</body>
+</html>

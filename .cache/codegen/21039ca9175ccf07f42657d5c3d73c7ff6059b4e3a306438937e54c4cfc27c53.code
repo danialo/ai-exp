@@ -1,0 +1,43 @@
+import pytest
+
+from some_module import some_function
+
+
+def test_some_function_valid_inputs():
+    assert some_function(1, 2) == 3
+    assert some_function(0, 0) == 0
+    assert some_function(-1, -1) == -2
+
+
+def test_some_function_edge_cases():
+    assert some_function(0, 1) == 1
+    assert some_function(1, 0) == 1
+    assert some_function(-1, 1) == 0
+    assert some_function(1, -1) == 0
+    assert some_function(1000, 1000) == 2000
+
+
+def test_some_function_large_numbers():
+    assert some_function(10**6, 10**6) == 2 * 10**6
+    assert some_function(-10**6, 10**6) == 0
+    assert some_function(10**6, -10**6) == 0
+
+
+def test_some_function_invalid_inputs():
+    with pytest.raises(TypeError):
+        some_function('a', 'b')
+    with pytest.raises(TypeError):
+        some_function(None, None)
+    with pytest.raises(TypeError):
+        some_function(1.5, 2.5)
+    with pytest.raises(TypeError):
+        some_function([1], [2])
+
+
+def test_some_function_overflow():
+    # Assuming that some_function uses integers internally that might overflow
+    try:
+        some_function(10**18, 10**18)
+    except OverflowError:
+        pass
+

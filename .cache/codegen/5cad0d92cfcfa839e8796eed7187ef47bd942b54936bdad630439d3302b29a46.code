@@ -1,0 +1,28 @@
+class FeatureError(Exception):
+    \"\"\"Custom exception class for feature errors.\"\"\"
+    pass
+
+def compute_square(value: int) -> int:
+    \"\"\"
+    Compute the square of a given integer.
+
+    Args:
+        value: An integer whose square is to be computed.
+
+    Returns:
+        The square of the input integer.
+
+    Raises:
+        FeatureError: If the input value is negative.
+    \"\"\"
+    if value < 0:
+        raise FeatureError(\"Negative values are not allowed.\")
+    return value * value
+
+
+if __name__ == \"__main__\":
+    try:
+        num = 5
+        print(f\"The square of {num} is {compute_square(num)}.\")
+    except FeatureError as e:
+        print(f\"Error: {e}\")

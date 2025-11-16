@@ -258,6 +258,48 @@ User Input
 
 See `docs/mvp_build_plan.md` for detailed build plan.
 
+## MCP Server - Autonomous Operation
+
+**NEW**: Astra exposes 9 tools via Model Context Protocol for autonomous scheduling and introspection.
+
+### Quick Start
+
+```bash
+# Start MCP server (stdio transport)
+bin/mcp
+
+# Configure in Claude Desktop
+# Add to ~/.config/Claude/claude_desktop_config.json:
+{
+  "mcpServers": {
+    "astra": {
+      "command": "/home/d/git/ai-exp/bin/mcp"
+    }
+  }
+}
+```
+
+### Available Tools
+
+**Introspection** (Tier 0 - Read-only):
+- `tasks_list`, `tasks_by_trace`, `tasks_last_failed`, `astra.health`
+
+**Scheduling** (Tier 1 - Local writes, budgeted):
+- `astra.schedule.create/modify/pause/resume/list`
+
+**Desires** (Tier 1 - Local writes):
+- `astra.desires.record/list/reinforce`
+
+**67 tests passing** - Production-ready for Tier 0 and Tier 1 operations
+
+📖 **Documentation**:
+- [Quick Start](docs/MCP_QUICKSTART.md) - Get started in 5 minutes
+- [Tools Reference](docs/MCP_TOOLS_REFERENCE.md) - Complete tool documentation
+- [Architecture](docs/MCP_ARCHITECTURE.md) - Design and implementation details
+- [Safety Tiers](docs/SCHEDULE_SAFETY_TIERS.md) - Budget and approval system
+
+---
+
 ## Awareness Loop & Latent Consciousness
 
 Astra maintains continuous presence through a four-tier awareness loop that runs independently of user interactions. This enables genuine continuity, self-reflection, and behavioral influence.

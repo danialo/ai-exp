@@ -1,0 +1,1 @@
+import pytest\n\ndef test_pass():\n    assert True\n\ndef test_fail():\n    assert False\n\ndef test_error():\n    raise Exception('Test error')\n\ndef test_edge_case():\n    assert 1 == 1\n

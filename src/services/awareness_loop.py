@@ -147,6 +147,10 @@ class AwarenessLoop:
         self.introspection_tokens_used = 0
         self.last_budget_reset = time.time()
 
+        # Cumulative metrics
+        self.total_percepts_processed = 0
+        self.percepts_by_kind_total: Dict[str, int] = {}
+
         # Introspection telemetry
         self.last_ctx_source: str = "empty"  # "buffer", "memory", "empty"
         self.last_ctx_tokens: int = 0
@@ -346,6 +350,9 @@ class AwarenessLoop:
                 if sig not in existing_sigs:
                     existing_sigs.add(sig)
                     self.percepts.append(p)
+                    # Track cumulative totals
+                    self.total_percepts_processed += 1
+                    self.percepts_by_kind_total[p.kind] = self.percepts_by_kind_total.get(p.kind, 0) + 1
 
         # Compute cheap stats
         entropy = self._compute_entropy()
@@ -672,11 +679,10 @@ class AwarenessLoop:
         Returns:
             Concatenated text from recent user/token percepts
         """
-        # Debug: count percepts by kind
+        # Count current buffer percepts by kind
         kind_counts = {}
         for p in self.percepts:
             kind_counts[p.kind] = kind_counts.get(p.kind, 0) + 1
-        logger.info(f"[EXTRACT] Percept buffer: total={len(self.percepts)}, by_kind={kind_counts}")
 
         # Filter ALL percepts for user/token kinds, then take last N
         text_percepts = [
@@ -685,7 +691,12 @@ class AwarenessLoop:
             if p.kind in ("token", "user") and p.payload.get("text")
         ]
 
-        logger.info(f"[EXTRACT] Found {len(text_percepts)} text percepts from {len(self.percepts)} total")
+        # Only log if there's actually text to extract (avoid spam)
+        if text_percepts:
+            logger.info(
+                f"[EXTRACT] Buffer: {len(text_percepts)} text/{len(self.percepts)} total | "
+                f"Cumulative: {self.total_percepts_processed} total ({self.percepts_by_kind_total})"
+            )
 
         # Take last N text percepts (not last N of all percepts)
         recent_texts = text_percepts[-window:]

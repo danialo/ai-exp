@@ -118,6 +118,16 @@ class MultiFileLogger:
         perf_logger.addHandler(self._create_rotating_handler(perf_dir / "performance.log", max_bytes=10*1024*1024))
         self.loggers['performance'] = perf_logger
 
+        # 9. Research system (HTN tasks, sessions, synthesis)
+        research_dir = self.base_dir / "research"
+        research_dir.mkdir(parents=True, exist_ok=True)
+
+        research_logger = logging.getLogger("astra.research")
+        research_logger.setLevel(logging.INFO)
+        research_logger.propagate = False
+        research_logger.addHandler(self._create_rotating_handler(research_dir / "research_system.log", max_bytes=20*1024*1024))
+        self.loggers['research'] = research_logger
+
     def get_logger(self, log_type: str) -> logging.Logger:
         """Get a specialized logger by type."""
         return self.loggers.get(log_type, self.loggers['app'])
@@ -190,6 +200,15 @@ class MultiFileLogger:
 
         if exception:
             logger.exception(exception)
+
+    def log_research_event(self, event_type: str, session_id: str, data: Optional[dict] = None):
+        """Log research system events."""
+        logger = self.loggers['research']
+        msg = f"session={session_id} event={event_type}"
+        if data:
+            for k, v in data.items():
+                msg += f" {k}={v}"
+        logger.info(msg)
 
 
 # Global instance

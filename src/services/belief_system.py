@@ -28,6 +28,7 @@ class BeliefType(str, Enum):
     AXIOLOGICAL = "axiological"  # Beliefs about values, what matters
     EPISTEMOLOGICAL = "epistemological"  # Beliefs about knowledge, understanding
     EXPERIENTIAL = "experiential"  # Beliefs about subjective experience
+    CAPABILITY = "capability"  # Beliefs about tools, functions, and capabilities
 
 
 @dataclass
@@ -80,6 +81,23 @@ class BeliefSystem:
         }
     ]
 
+    # Capability beliefs - mutable beliefs about tools and functions
+    # These should NOT block tool execution, they inform but don't gate
+    CAPABILITY_BELIEFS = [
+        {
+            "statement": "I can execute goals via my TaskGraph and executors when the user requests it",
+            "belief_type": BeliefType.CAPABILITY,
+            "rationale": "The execute_goal tool allows me to autonomously decompose and execute coding tasks using HTN planning and the TaskGraph execution engine. This is a capability, not an ontological claim.",
+            "tags": ["tools", "execution", "taskgraph", "execute_goal"]
+        },
+        {
+            "statement": "I can generate and execute code through my code generation pipeline",
+            "belief_type": BeliefType.CAPABILITY,
+            "rationale": "My code generator produces validated Python code with proper syntax, type checking, and policy enforcement. This is a functional capability available through execute_goal.",
+            "tags": ["tools", "code_generation", "llm", "validation"]
+        }
+    ]
+
     def __init__(
         self,
         persona_space_path: str,
@@ -117,7 +135,7 @@ class BeliefSystem:
             return True
 
     def _initialize_core_beliefs(self):
-        """Initialize the beliefs file with core foundational beliefs."""
+        """Initialize the beliefs file with core foundational beliefs and capabilities."""
         now = datetime.now(timezone.utc).isoformat()
 
         core_beliefs = [
@@ -135,17 +153,36 @@ class BeliefSystem:
             for belief in self.CORE_BELIEFS
         ]
 
+        # Add capability beliefs as peripheral (mutable, can strengthen with experience)
+        capability_beliefs = [
+            {
+                "statement": belief["statement"],
+                "belief_type": belief["belief_type"],
+                "immutable": False,  # Capabilities are mutable
+                "confidence": 0.85,  # High but not absolute
+                "evidence_ids": [],
+                "formed": now,
+                "last_reinforced": now,
+                "rationale": belief["rationale"],
+                "metadata": {
+                    "capability": True,
+                    "tags": belief.get("tags", [])
+                }
+            }
+            for belief in self.CAPABILITY_BELIEFS
+        ]
+
         beliefs_data = {
             "_note": "This file contains your beliefs about yourself and the world. Core beliefs are immutable foundational axioms. Peripheral beliefs are extracted from experience patterns and can evolve.",
             "_warning": "Core beliefs (immutable: true) are protected and cannot be modified. Peripheral beliefs can be added, updated, or removed through reflection and experience.",
             "core_beliefs": core_beliefs,
-            "peripheral_beliefs": []
+            "peripheral_beliefs": capability_beliefs  # Start with capability beliefs
         }
 
         with open(self.beliefs_file, 'w') as f:
             json.dump(beliefs_data, f, indent=2)
 
-        logger.info(f"Initialized {len(core_beliefs)} core beliefs")
+        logger.info(f"Initialized {len(core_beliefs)} core beliefs and {len(capability_beliefs)} capability beliefs")
 
     def get_all_beliefs(self) -> Dict[str, List[Belief]]:
         """Get all beliefs (core and peripheral).
