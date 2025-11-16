@@ -317,8 +317,8 @@ class BeliefConsistencyChecker:
         # Only report novel dissonances (not seen within cooldown period)
         novel_patterns = []
         for pattern in dissonance_patterns:
-            # Create a summary for hashing (belief + pattern type + affected claims count)
-            contradiction_summary = f"{pattern.pattern_type}|{len(pattern.affected_claims)}claims"
+            # Create a summary for hashing (belief + pattern type + memory claims count)
+            contradiction_summary = f"{pattern.pattern_type}|{len(pattern.memory_claims)}claims"
             if self._is_dissonance_novel(pattern.belief_statement, contradiction_summary):
                 novel_patterns.append(pattern)
             else:

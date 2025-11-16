@@ -8,6 +8,19 @@ Architecture:
 - Pattern Monitor: Detects repeated self-statements
 - Lifecycle Manager: Seeds, grows, prunes beliefs
 - Integration: Hooks into awareness loop, contrarian sampler, dissonance checker
+
+TODO: Review belief gardener and decide if it's working correctly
+Current observations:
+- Scans only last 500 experiences (recency-biased, may miss stable long-term patterns)
+- Currently rejecting patterns due to coherence drops (0.076 drop from baseline 0.700)
+- Detecting template noise ("[Internal Emotional Assessment: I feel...]") as patterns
+- Zero beliefs formed in recent runs - is threshold too conservative?
+- Need to verify:
+  1. Is template noise filtering working correctly?
+  2. Should coherence threshold be adjusted? (current: baseline - σ)
+  3. Are we detecting real patterns or just response boilerplate?
+  4. Should we add stratified sampling beyond just recent 500?
+  5. Are the patterns we're detecting actually belief-worthy?
 """
 
 import logging
@@ -120,6 +133,15 @@ class PatternDetector:
         Returns:
             List of detected patterns meeting evidence threshold
         """
+        # TODO: Add a second belief gardener loop that goes deeper
+        # Current loop: Last 500 experiences (chronological, recency-biased)
+        # Deeper loop ideas:
+        # - Stratified temporal sampling (100 from last week, 100 from last month, etc.)
+        # - Vector similarity clustering across all experiences (find thematic patterns)
+        # - Weight by experience type (LEARNING_PATTERN > OCCURRENCE)
+        # - Look for long-term stable patterns vs recent spikes
+        # - Cross-reference with existing beliefs to find supporting/contradicting evidence
+
         lookback = lookback_days or self.config.lookback_days
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=lookback)
 

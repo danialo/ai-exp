@@ -406,15 +406,99 @@ class LLMService:
             "You are Astra's research synthesis module. "
             "You receive multiple source documents, each with claims and summaries, "
             "plus a list of research tasks that were executed. "
-            "Your job is to synthesize a structured view of what was found."
+            "Your job is to extract concrete, structured facts that can be used to generate "
+            "a research-grade answer with specific numbers, dates, and source attribution."
         )
 
         instructions = (
             f"Root research question:\n{root_question}\n\n"
             "You will be given a batch of source docs from this research session.\n"
-            "For this batch, produce a structured summary with the following keys:\n"
-            "narrative_summary, key_events, contested_claims, open_questions, coverage_stats.\n"
-            "Do NOT speculate beyond what the docs support.\n"
+            "For this batch, produce a structured summary with the following keys:\n\n"
+
+            "## Required Output Structure\n\n"
+
+            "1. **quantitative_facts**: Array of concrete numerical facts\n"
+            "   Each fact MUST include:\n"
+            "   - metric: What is being measured (e.g., 'median real wage', 'UFP particle count', 'VOC concentration')\n"
+            "   - value: The number/percentage/amount (or 'not specified' if only qualitative comparison)\n"
+            "   - time_period: When this applies (year, date range, experimental conditions, etc.)\n"
+            "   - source_title: Which document this came from\n"
+            "   - context: Brief explanation of what this number means\n"
+            "   Example: {metric: 'median household income for middle 60%', value: '$76,443 (actual) vs $94,310 (without inequality)', time_period: '2007', source_title: 'Wage Stagnation in Nine Charts', context: 'Shows $17,867 income loss due to inequality'}\n\n"
+            "   IMPORTANT: If sources provide QUALITATIVE comparisons without exact numbers, still extract them:\n"
+            "   Example: {metric: 'PETG vs PLA emission levels', value: 'qualitative: PETG produces higher UFP than PLA', time_period: 'enclosed printer conditions', source_title: '...', context: 'Based on user observations, not controlled study'}\n\n"
+
+            "2. **causal_mechanisms**: Array of specific causes/correlations with evidence\n"
+            "   Each mechanism MUST include:\n"
+            "   - cause: Specific named factor (e.g., 'decline in union density', 'globalization via NAFTA')\n"
+            "   - effect: What it causes\n"
+            "   - evidence: Concrete supporting facts from sources\n"
+            "   - sources: Which documents support this\n"
+            "   - strength: 'strong' | 'moderate' | 'weak' based on evidence quality\n\n"
+
+            "3. **temporal_structure**: Array of time periods showing evolution\n"
+            "   Each period MUST include:\n"
+            "   - period: Date range (e.g., '1973-2000')\n"
+            "   - label: Short descriptor (e.g., 'productivity-wage decoupling')\n"
+            "   - key_characteristics: What defined this period\n"
+            "   - inflection_points: Specific events/policy changes that mark transitions\n\n"
+
+            "4. **contested_claims**: Array of specific disagreements between sources\n"
+            "   Each contested claim MUST include:\n"
+            "   - topic: What is being debated\n"
+            "   - position_a: One side's interpretation\n"
+            "   - position_b: Opposing interpretation\n"
+            "   - sources_a: Which documents support position A\n"
+            "   - sources_b: Which documents support position B\n"
+            "   - evidence_quality: Assessment of evidence on each side\n"
+            "   ONLY include if sources ACTUALLY disagree. Do not invent generic academic debates.\n\n"
+
+            "5. **narrative_summary**: 2-4 sentence overview\n"
+            "   - Must mention at least 3 quantitative facts from the data\n"
+            "   - Must be concrete and specific, not generic\n\n"
+
+            "6. **key_events**: Array of major events/policy changes\n"
+            "   - Focus on structural inflection points, not trivia\n"
+            "   - Each event must have date, description, and significance\n\n"
+
+            "7. **open_questions**: Questions that sources explicitly say are unresolved\n"
+            "   - Must be grounded in what sources actually identify as gaps\n"
+            "   - Not just generic research questions\n\n"
+
+            "8. **coverage_stats**: Counts and metadata\n"
+            "   - total_docs: Exact count of source documents in this batch\n"
+            "   - docs_with_quantitative_data: How many have numbers\n"
+            "   - time_span_covered: Earliest to latest year mentioned\n"
+            "   - source_types: Breakdown by type (government, academic, think tank, etc.)\n"
+            "   - literature_density: 'sparse' | 'moderate' | 'rich' (based on availability of concrete data)\n\n"
+
+            "9. **best_available_comparisons** (REQUIRED for comparison questions like 'X vs Y'):\n"
+            "   Array of the strongest comparative statements from sources, even if incomplete.\n"
+            "   Each comparison MUST include:\n"
+            "   - entities: What is being compared (e.g., ['PETG', 'PLA'])\n"
+            "   - dimension: What aspect (e.g., 'UFP emissions', 'VOC toxicity', 'cost')\n"
+            "   - comparison: The actual comparison (e.g., 'PETG > PLA in UFP count', 'PLA releases less styrene')\n"
+            "   - evidence_type: 'quantitative' | 'qualitative' | 'anecdotal'\n"
+            "   - source_title: Which document\n"
+            "   - caveats: What is unknown or uncertain about this comparison\n\n"
+
+            "10. **mitigation_recommendations** (for safety/risk/health topics):\n"
+            "   Array of concrete mitigation strategies mentioned in sources.\n"
+            "   Each recommendation MUST include:\n"
+            "   - action: Specific action to take (e.g., 'use HEPA filter', 'increase ventilation')\n"
+            "   - effectiveness: What sources say about effectiveness\n"
+            "   - applicability: Who this applies to or what conditions\n"
+            "   - sources: Which documents recommend this\n"
+            "   If topic is not safety-related, return empty array.\n\n"
+
+            "## Critical Requirements\n\n"
+            "- Extract ALL quantitative facts (numbers, percentages, dollar amounts, years)\n"
+            "- Preserve source attribution for every major claim\n"
+            "- Be maximally specific - prefer '$76,443' over 'household income declined'\n"
+            "- Do NOT generalize or smooth over data - extract what's there\n"
+            "- If a source provides a time series, extract key data points\n"
+            "- If sources disagree, document the disagreement explicitly\n"
+            "- Do NOT speculate beyond what the docs support\n"
         )
 
         # Build text payloads for each doc
@@ -459,7 +543,7 @@ class LLMService:
         instructions: str,
         doc_payloads: List[str],
         root_question: str,
-        desired_response_tokens: int = 512,
+        desired_response_tokens: int = 2000,  # Increased for rich structured output
     ) -> List[Dict[str, Any]]:
         """Map phase: Use CallBudgeter to split docs into chunks if needed."""
 
@@ -501,8 +585,10 @@ class LLMService:
                 instructions +
                 "\n\nHere is a batch of source documents from the research session:\n\n" +
                 docs_block +
-                "\n\nReturn JSON with the following keys only: "
-                "narrative_summary, key_events, contested_claims, open_questions, coverage_stats."
+                "\n\nReturn JSON with the following keys: "
+                "quantitative_facts, causal_mechanisms, temporal_structure, contested_claims, "
+                "narrative_summary, key_events, open_questions, coverage_stats, "
+                "best_available_comparisons, mitigation_recommendations."
             )
 
             raw = self._completion(
@@ -525,15 +611,15 @@ class LLMService:
         self,
         root_question: str,
         partial_summaries: List[Dict[str, Any]],
-        max_tokens: int = 1024,
+        max_tokens: int = 3000,  # Increased for richer output
     ) -> Dict[str, Any]:
         """Reduce phase: Merge multiple partial summaries into final synthesis."""
         import json
 
         system_prompt = (
             "You are Astra's global research synthesis module. "
-            "You receive multiple partial summaries, each already structured, "
-            "and must merge them into a single coherent global summary."
+            "You receive multiple partial summaries, each already structured with concrete facts, "
+            "and must merge them into a single comprehensive global summary preserving all specificity."
         )
 
         # Turn partials into text block
@@ -541,9 +627,14 @@ class LLMService:
         for i, s in enumerate(partial_summaries):
             parts.append(
                 f"PART {i+1}:\n"
+                f"quantitative_facts:\n{json.dumps(s.get('quantitative_facts', []), indent=2)}\n\n"
+                f"causal_mechanisms:\n{json.dumps(s.get('causal_mechanisms', []), indent=2)}\n\n"
+                f"temporal_structure:\n{json.dumps(s.get('temporal_structure', []), indent=2)}\n\n"
+                f"contested_claims:\n{json.dumps(s.get('contested_claims', []), indent=2)}\n\n"
+                f"best_available_comparisons:\n{json.dumps(s.get('best_available_comparisons', []), indent=2)}\n\n"
+                f"mitigation_recommendations:\n{json.dumps(s.get('mitigation_recommendations', []), indent=2)}\n\n"
                 f"narrative_summary:\n{s.get('narrative_summary', '')}\n\n"
                 f"key_events:\n{json.dumps(s.get('key_events', []), indent=2)}\n\n"
-                f"contested_claims:\n{json.dumps(s.get('contested_claims', []), indent=2)}\n\n"
                 f"open_questions:\n{json.dumps(s.get('open_questions', []), indent=2)}\n\n"
                 f"coverage_stats:\n{json.dumps(s.get('coverage_stats', {}), indent=2)}\n"
             )
@@ -552,13 +643,22 @@ class LLMService:
         user_prompt = (
             f"Root research question:\n{root_question}\n\n"
             "You are given several partial summaries from different batches of source documents.\n"
-            "Your job is to merge them into a single structured summary with the same schema:\n"
-            "narrative_summary, key_events, contested_claims, open_questions, coverage_stats.\n\n"
-            "Unify overlapping events, consolidate contested claims, remove duplicates, and compute global coverage "
-            "stats (total docs, total claims, count of contested claims, etc).\n\n"
+            "Your job is to merge them into a single structured summary with the same schema.\n\n"
+            "Requirements:\n"
+            "- Preserve ALL quantitative_facts - do not drop any numbers\n"
+            "- Merge overlapping causal_mechanisms, keeping the most evidence-rich version\n"
+            "- Unify temporal_structure into coherent time periods\n"
+            "- Consolidate contested_claims, removing duplicates but keeping all genuine disagreements\n"
+            "- Merge best_available_comparisons, keeping the strongest comparative statements\n"
+            "- Merge mitigation_recommendations, deduplicating but preserving all distinct actions\n"
+            "- Merge narrative_summary into 2-4 sentences mentioning key quantitative facts\n"
+            "- Deduplicate key_events, keeping only structural inflection points\n"
+            "- Merge open_questions, removing duplicates\n"
+            "- Compute global coverage_stats: total_docs (sum across parts), time_span_covered, literature_density, etc.\n\n"
             f"Partial summaries:\n\n{partials_block}\n\n"
-            "Return only JSON with the keys: narrative_summary, key_events, contested_claims, open_questions, "
-            "coverage_stats."
+            "Return JSON with keys: quantitative_facts, causal_mechanisms, temporal_structure, "
+            "contested_claims, best_available_comparisons, mitigation_recommendations, "
+            "narrative_summary, key_events, open_questions, coverage_stats."
         )
 
         raw = self._completion(
@@ -570,6 +670,49 @@ class LLMService:
 
         merged = self._parse_json_or_die(raw)
         return merged
+
+    def tool_call(
+        self,
+        system: str,
+        user: str,
+        temperature: float = 0.0,
+        max_tokens: int = 1000,
+    ) -> str:
+        """Cold tool-mode LLM call with NO persona bleed.
+
+        Use this for HTN research microsteps that need deterministic JSON output
+        without any persona context, beliefs, or affect.
+
+        Args:
+            system: Minimal system prompt (task-specific instructions)
+            user: User prompt
+            temperature: Temperature (default 0.0 for deterministic)
+            max_tokens: Max tokens (default 1000)
+
+        Returns:
+            Raw LLM response text
+        """
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
+        ]
+
+        # Detect reasoning models
+        is_reasoning_model = any(x in self.model.lower() for x in ["gpt-5", "o1", "o3"])
+        max_tokens_param = "max_completion_tokens" if is_reasoning_model else "max_tokens"
+
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            max_tokens_param: max_tokens,
+        }
+
+        # Only add temperature for non-reasoning models
+        if not is_reasoning_model:
+            kwargs["temperature"] = temperature
+
+        response = self.client.chat.completions.create(**kwargs)
+        return response.choices[0].message.content or ""
 
 
 def create_llm_service(

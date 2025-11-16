@@ -214,10 +214,53 @@ class PersonaService:
             logger.error(f"Failed to retrieve core ontological beliefs: {e}", exc_info=True)
             return []
 
+    # Phrases that indicate talking ABOUT research capabilities (not requesting research)
+    RESEARCH_META_PHRASES = [
+        "research system",
+        "research subsystem",
+        "research ability",
+        "research capabilities",
+        "research tools",
+        "research engine",
+        "research htn",
+        "research module",
+        "your research system",
+        "your research subsystem",
+        "your research ability",
+        "your research capabilities",
+        "how does your research",
+        "how does the research system",
+        "how does your htn",
+    ]
+
+    # Regex for command-style research requests
+    RESEARCH_COMMAND_RE = re.compile(
+        r"""
+        ^\s*
+        (hey\s+astra[,!:]?\s*)?            # optional address
+        (can\s+you|could\s+you|would\s+you|please)?\s*
+        (research|investigate|look\s+into)\b
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
+
     def _is_research_query(self, message: str) -> bool:
         """
-        Detect queries that should go through the HTN research pipeline
-        instead of the cheap search_web + browse_url path.
+        Detect queries that should go through the HTN research pipeline.
+
+        HTN research is EXPENSIVE (2-5 minutes). Only trigger when:
+        - User explicitly requests research/investigation
+        - Topic is clearly complex and requires multi-source synthesis
+
+        Simple factual queries should use search_web tool instead.
+
+        Triggers on:
+        - EXPLICIT: "research X", "investigate X", "deep dive into X"
+        - Does NOT trigger on casual "what's going on" or "latest on" (too broad)
+
+        Does NOT trigger on:
+        - Meta questions about research capabilities
+        - Simple factual queries that can be answered with web search
 
         Args:
             message: User message to analyze
@@ -227,47 +270,30 @@ class PersonaService:
         """
         text = message.lower()
 
-        # Strong signals: user literally asks for research / investigation
-        strong_phrases = [
-            "research ", "research on", "research this",
-            "investigate ", "look into ",
-            "dig into ", "deep dive",
-            "what's going on with", "what is going on with",
-            "what is actually going on",
-        ]
+        # 1. If clearly talking ABOUT research capabilities (meta), bail early
+        if any(phrase in text for phrase in self.RESEARCH_META_PHRASES):
+            logger.info(f"Meta research question detected ('{text[:50]}...'); skipping research gating")
+            return False
 
-        if any(p in text for p in strong_phrases):
+        # 2. EXPLICIT research commands only (very conservative)
+        # User must explicitly say "research" or "investigate" as a command
+        if self.RESEARCH_COMMAND_RE.search(message):
             return True
 
-        # Current-events style queries
-        current_events_markers = [
-            "what happened with",
-            "what happened in",
-            "what happened to",
-            "latest on",
-            "latest with",
-            "current state of",
-            "current situation with",
-            "this week", "this month",
-            "recently", "in the news",
+        # 3. "deep dive" and similar phrases that clearly indicate investigation
+        deep_investigation_phrases = [
+            "deep dive",
+            "dig into",
+            "look into",
+            "full investigation",
+            "comprehensive analysis",
         ]
-
-        if any(p in text for p in current_events_markers):
+        if any(phrase in text for phrase in deep_investigation_phrases):
             return True
 
-        # Heuristic: question + at least one uppercase word in middle of string
-        # catches things like "What's going on with the Epstein files story?"
-        if "?" in text:
-            words = message.split()
-            mid_caps = [
-                w for w in words[1:-1]
-                if len(w) > 2 and re.match(r"[A-Z]", w[0])
-            ]
-            if mid_caps:
-                # Only treat as research if also mentions time-ish language
-                timeish = ["now", "today", "lately", "recent", "currently"]
-                if any(t in text for t in timeish):
-                    return True
+        # That's it. Everything else should use search_web tool.
+        # "What's going on with X" is too casual - let search_web handle it.
+        # If user wants deep research, they can say "research X" explicitly.
 
         return False
 

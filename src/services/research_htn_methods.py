@@ -12,6 +12,15 @@ logger = logging.getLogger(__name__)
 JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
+# Cold system prompt for research tool LLM (NO persona bleed)
+RESEARCH_TOOL_SYSTEM = """You are a strict research microservice.
+
+Rules:
+- Output ONLY valid JSON matching the requested schema.
+- No preamble, no explanations, no markdown.
+- Do not mention being an AI or having feelings.
+- Be deterministic and factual."""
+
 
 def coerce_json_object(raw: str) -> Dict[str, Any]:
     """Extract and parse JSON object from potentially messy LLM output.
@@ -123,7 +132,7 @@ def research_current_events(task, ctx) -> List[Dict[str, Any]]:
     """
     root_question = task.args.get("root_question", "What are the most important current events today?")
 
-    # Generate seed topics using LLM
+    # Generate seed topics using cold tool LLM (no persona bleed)
     prompt = f"""Generate 3 to 5 short web search queries that would help investigate this question:
 
 "{root_question}"
@@ -135,12 +144,12 @@ Output:
 """.strip()
 
     try:
-        response = ctx.llm_service.generate_with_tools(
-            messages=[{"role": "user", "content": prompt}],
-            tools=None,
-            temperature=0.1
+        raw = ctx.llm_service.tool_call(
+            system=RESEARCH_TOOL_SYSTEM,
+            user=prompt,
+            temperature=0.1,
+            max_tokens=500
         )
-        raw = response["message"].content
         try:
             seed_topics = coerce_json_array(raw)
         except Exception as parse_err:
@@ -183,7 +192,7 @@ def investigate_topic(task, ctx) -> List[Dict[str, Any]]:
         return []
 
     try:
-        # 1. Generate search query
+        # 1. Generate search query using cold tool LLM
         query_prompt = f"""Generate a web search query for: {topic}
 
 Rules:
@@ -193,18 +202,21 @@ Rules:
 - NO extra explanation
 - Just keywords, separated by spaces
 
-Example good queries:
-- Elon Musk DOGE government efficiency 2024
-- climate change latest IPCC report
-- cryptocurrency regulation SEC
+Query patterns:
+- For scientific/technical topics: Add "study", "research", "paper", "measurement", "data"
+  Example: "PETG PLA emissions study VOC measurement"
+- For policy/economics: Add official sources like "EPI", "BLS", "CBO", "IPCC"
+  Example: "wage stagnation productivity EPI data"
+- For current events: Add year and official sources
+  Example: "Elon Musk DOGE government efficiency 2024"
 
 Query:"""
-        query_response = ctx.llm_service.generate_with_tools(
-            messages=[{"role": "user", "content": query_prompt}],
-            tools=None,
-            temperature=0.3
-        )
-        raw_query = query_response["message"].content.strip()
+        raw_query = ctx.llm_service.tool_call(
+            system=RESEARCH_TOOL_SYSTEM,
+            user=query_prompt,
+            temperature=0.3,
+            max_tokens=100
+        ).strip()
 
         # Sanitize query: strip wrapping quotes, collapse whitespace, limit tokens
         search_query = raw_query.strip('"').strip("'")
@@ -234,14 +246,29 @@ Query:"""
             logger.warning(f"Failed to fetch URL: {first_result.url}")
             return []
 
-        # 4. Extract claims and follow-up questions
+        # 4. Extract claims and follow-up questions using cold tool LLM
         content = fetched.main_content
-        analysis_prompt = f"""You are an information extraction engine.
-
-Task:
+        analysis_prompt = f"""Task:
 - Read the following article excerpt about "{topic}".
 - Extract:
   - "claims": a list of concise factual claims made in the text.
+    CRITICAL: For each claim, preserve ALL concrete details:
+    * Numerical values (measurements, percentages, counts, amounts)
+    * Specific names (chemicals, products, institutions, studies, authors)
+    * Dates and time periods
+    * Experimental conditions (temperature, materials, setups)
+    * Comparisons between entities (X vs Y showed A vs B)
+
+    Examples of GOOD claims:
+    - "PLA emits lactide at 210°C, measured at 50 μg/m³ (Smith et al 2020)"
+    - "PETG showed 2x higher UFP count than PLA in enclosed printer tests"
+    - "ABS releases styrene (suspected carcinogen) at typical print temps"
+
+    Examples of BAD claims (too vague):
+    - "PLA releases VOCs" (missing: WHICH VOCs, at what levels?)
+    - "PETG is safer than ABS" (missing: quantitative comparison)
+    - "Studies show health risks" (missing: WHICH studies, what risks?)
+
   - "summary": a 2-4 sentence neutral summary.
   - "follow_up_questions": 2-4 concrete questions that would advance understanding.
 
@@ -254,17 +281,18 @@ Text:
 {content[:4000]}
 """.strip()
 
-        analysis_response = ctx.llm_service.generate_with_tools(
-            messages=[{"role": "user", "content": analysis_prompt}],
-            tools=None,
-            temperature=0.0
+        raw_analysis = ctx.llm_service.tool_call(
+            system=RESEARCH_TOOL_SYSTEM,
+            user=analysis_prompt,
+            temperature=0.0,
+            max_tokens=1500
         )
 
         try:
-            analysis = coerce_json_object(analysis_response["message"].content)
+            analysis = coerce_json_object(raw_analysis)
         except Exception as e:
             logger.error(f"InvestigateTopic JSON parse failed for '{topic}': {e}")
-            logger.debug(f"Raw LLM response: {analysis_response['message'].content[:500]}")
+            logger.debug(f"Raw LLM response: {raw_analysis[:500]}")
             return []
 
         # 5. Create SourceDoc
@@ -278,8 +306,45 @@ Text:
         )
         ctx.session_store.create_source_doc(source_doc)
 
-        # 6. Return follow-up question proposals
+        # 6. Filter follow-up questions for topic relevance
+        # Prevent topic drift by only accepting questions related to root question
+        from src.services.research_session import ResearchSessionStore
+        sess_store = ResearchSessionStore()
+        session = sess_store.get_session(task.session_id)
+        root_question = session.root_question if session else ""
+
         follow_ups = analysis.get("follow_up_questions", [])
+
+        # Filter follow-ups for relevance to root question
+        if root_question and follow_ups:
+            relevance_prompt = f"""Root question: "{root_question}"
+
+Candidate follow-up questions:
+{chr(10).join(f"{i+1}. {q}" for i, q in enumerate(follow_ups))}
+
+Task: Filter out questions that drift too far from the root question topic.
+- Keep questions that directly investigate aspects of the root question
+- Reject questions about tangential concerns, risks, or side topics
+
+Return JSON array of question numbers to KEEP (e.g., [1, 3, 5]).
+If all questions are relevant, return all numbers.
+If all drift off-topic, return empty array []."""
+
+            try:
+                raw_filter = ctx.llm_service.tool_call(
+                    system=RESEARCH_TOOL_SYSTEM,
+                    user=relevance_prompt,
+                    temperature=0.0,
+                    max_tokens=100
+                )
+                keep_indices = coerce_json_array(raw_filter)
+                filtered_questions = [follow_ups[i-1] for i in keep_indices if 0 < i <= len(follow_ups)]
+                logger.info(f"InvestigateTopic: Filtered {len(follow_ups)} → {len(filtered_questions)} questions (topic relevance)")
+                follow_ups = filtered_questions
+            except Exception as e:
+                logger.warning(f"InvestigateTopic: Follow-up filtering failed, using all: {e}")
+
+        # 7. Return follow-up question proposals
         proposals = []
         for question in follow_ups[:5]:
             proposals.append({
@@ -431,6 +496,24 @@ def synthesize_findings(task, ctx) -> List[Dict[str, Any]]:
             logger.info(f"SynthesizeFindings: Created research anchor for session {task.session_id}")
         except Exception as anchor_err:
             logger.warning(f"Research anchor creation failed (non-fatal): {anchor_err}")
+
+        # Integrate with memory: reflection → experience → curiosity queue
+        try:
+            from src.services.research_memory_integration import integrate_research_with_memory
+            integration_result = integrate_research_with_memory(
+                session_id=task.session_id,
+                root_question=sess.root_question,
+                synthesis=summary_obj,
+                llm_service=ctx.llm_service,
+                embedding_service=None  # Will use default embedding service
+            )
+            logger.info(
+                f"SynthesizeFindings: Memory integration complete - "
+                f"experience_id={integration_result['experience_id']}, "
+                f"questions_queued={integration_result['questions_queued']}"
+            )
+        except Exception as memory_err:
+            logger.warning(f"Memory integration failed (non-fatal): {memory_err}")
 
     except Exception as e:
         logger.error(f"SynthesizeFindings failed: {e}")
