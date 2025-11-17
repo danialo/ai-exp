@@ -202,18 +202,44 @@
             gap: 10px;
         }
 
-        .input-area input {
+        .input-area textarea {
             flex: 1;
             padding: 15px 20px;
             border: 2px solid #e0e0e0;
-            border-radius: 25px;
+            border-radius: 15px;
             font-size: 15px;
             outline: none;
             transition: border-color 0.3s;
+            resize: vertical;
+            min-height: 50px;
+            max-height: 200px;
+            font-family: inherit;
+            line-height: 1.4;
         }
 
-        .input-area input:focus {
+        .input-area textarea:focus {
             border-color: #667eea;
+        }
+
+        .char-counter {
+            position: absolute;
+            bottom: 5px;
+            right: 150px;
+            font-size: 11px;
+            color: #999;
+            pointer-events: none;
+        }
+
+        .char-counter.warning {
+            color: #ff6b6b;
+            font-weight: 600;
+        }
+
+        .input-container {
+            flex: 1;
+            position: relative;
+            display: flex;
+            align-items: flex-end;
         }
 
         .input-area button {
@@ -520,13 +546,19 @@
                 padding: 15px 20px;
             }
 
-            .input-area input {
+            .input-area textarea {
                 font-size: 16px; /* Prevents zoom on iOS */
+                min-height: 44px;
             }
 
             .input-area button {
                 padding: 12px 20px;
                 font-size: 14px;
+            }
+
+            .char-counter {
+                right: 120px;
+                font-size: 10px;
             }
 
             .modal-content {
@@ -580,13 +612,19 @@
                 padding: 6px 10px;
             }
 
-            .input-area input {
+            .input-area textarea {
                 padding: 12px 15px;
+                font-size: 16px;
             }
 
             .input-area button {
                 padding: 12px 15px;
                 font-size: 13px;
+            }
+
+            .char-counter {
+                right: 100px;
+                font-size: 9px;
             }
 
             .modal-content {
@@ -988,12 +1026,16 @@
         </div>
 
         <div class="input-area">
-            <input
-                type="text"
-                id="message-input"
-                placeholder="Type your message..."
-                autocomplete="off"
-            />
+            <div class="input-container">
+                <textarea
+                    id="message-input"
+                    placeholder="Type your message... (Shift+Enter to send)"
+                    autocomplete="off"
+                    maxlength="40000"
+                    rows="1"
+                ></textarea>
+                <span class="char-counter" id="char-counter">0 / 40,000</span>
+            </div>
             <button id="send-button">Send</button>
         </div>
     </div>
@@ -1082,10 +1124,28 @@
         const sendButton = document.getElementById('send-button');
         const experiencesCount = document.getElementById('experiences-count');
         const llmStatus = document.getElementById('llm-status');
+        const charCounter = document.getElementById('char-counter');
 
         let isProcessing = false;
         let conversationHistory = [];  // Track conversation for context
         let selectedModel = null;  // Track selected model
+
+        // Character counter and auto-resize
+        messageInput.addEventListener('input', () => {
+            const length = messageInput.value.length;
+            const maxLength = 40000;
+            charCounter.textContent = `${length.toLocaleString()} / ${maxLength.toLocaleString()}`;
+
+            if (length > maxLength * 0.9) {
+                charCounter.classList.add('warning');
+            } else {
+                charCounter.classList.remove('warning');
+            }
+
+            // Auto-resize textarea
+            messageInput.style.height = 'auto';
+            messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px';
+        });
 
         // Load available models on page load
         async function loadModels() {
@@ -1514,8 +1574,12 @@
 
         // Event listeners
         sendButton.addEventListener('click', sendMessage);
-        messageInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendMessage();
+        messageInput.addEventListener('keydown', (e) => {
+            // Shift+Enter to send, Enter alone for newline
+            if (e.key === 'Enter' && e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
         });
 
         // Load initial data
