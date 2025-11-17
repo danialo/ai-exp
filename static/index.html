@@ -1029,7 +1029,7 @@
             <div class="input-container">
                 <textarea
                     id="message-input"
-                    placeholder="Type your message... (Shift+Enter to send)"
+                    placeholder="Type your message... (Shift+Enter for new line)"
                     autocomplete="off"
                     maxlength="40000"
                     rows="1"
@@ -1575,11 +1575,12 @@
         // Event listeners
         sendButton.addEventListener('click', sendMessage);
         messageInput.addEventListener('keydown', (e) => {
-            // Shift+Enter to send, Enter alone for newline
-            if (e.key === 'Enter' && e.shiftKey) {
+            // Enter alone to send, Shift+Enter for newline
+            if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendMessage();
             }
+            // Shift+Enter creates a newline (default textarea behavior)
         });
 
         // Load initial data
