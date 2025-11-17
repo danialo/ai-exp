@@ -267,4 +267,7 @@ def configure_root_logger():
     logging.getLogger("chromadb.telemetry").setLevel(logging.CRITICAL)  # Kill telemetry spam
     logging.getLogger("openai").setLevel(logging.WARNING)
 
+    # Ensure awareness loop logs at INFO level (match other systems)
+    logging.getLogger("src.services.awareness_loop").setLevel(logging.INFO)
+
     logging.info("Root logger configured - all logs writing to logs/app/astra.log")
