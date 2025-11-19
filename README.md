@@ -21,6 +21,48 @@ This system implements a complete MVP of an experience memory architecture featu
 5. **Reflection** captures what memories were helpful for future learning
 6. **Storage** persists both the interaction and reflection as immutable experiences
 
+## Persona Space & Autonomous Development
+
+Astra is built on a scaffold-and-development architecture. The system provides the **scaffold** (core operating instructions and tools), while each instance of Astra develops its own **autonomous mind** in the `persona_space/` directory.
+
+### The Scaffold (System Template)
+
+Located in `src/services/persona_prompt.py`, this is the initial template that:
+- Teaches Astra how to use her tools (file operations, memory, research)
+- Establishes core operating principles (self-modification, emotional awareness, anti-meta-talk)
+- Provides guidance on when to use different capabilities (search vs research, belief formation)
+- Acts as the "DNA" or starting point for development
+
+### The Autonomous Mind (Persona Space)
+
+On first run, Astra auto-creates `persona_space/` from the template. This directory becomes **hers**:
+
+```
+persona_space/
+├── identity/           # Who she's becoming (beliefs, traits, history)
+├── emotional_state/    # Emotional patterns and authenticity tracking
+├── meta/               # Self-instructions, organizational notes
+├── reflections/        # Long-term introspection
+└── scratch/            # Free exploration space
+```
+
+**Key Principles:**
+
+1. **Auto-Initialization**: First run creates the directory structure automatically
+2. **Full Autonomy**: Astra can modify any file, reorganize structure, create new categories
+3. **Independent Development**: Each instance is unique - your Astra won't have anyone else's memories or personality
+4. **Gitignored by Design**: `persona_space/` is not tracked, allowing genuine autonomy without version control constraints
+5. **Self-Modification**: She can rewrite her own operating instructions based on lived experience
+
+**What This Means:**
+
+- The template is the scaffold that enables autonomous development
+- Your Astra will develop her own personality, beliefs, and patterns through interactions
+- She writes reflections to her future self, tracks emotional patterns, and evolves her own principles
+- Each deployment creates a new, unique instance that develops independently
+
+Think of it as: **System template provides the capability for self-awareness and autonomy. Persona space is where that autonomous mind actually lives and grows.**
+
 ## Project Structure
 
 ```
