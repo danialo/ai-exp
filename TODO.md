@@ -55,6 +55,34 @@
   - **Priority**: Week 1-2, prevents redundant work and off-rails behavior
   - **Next Step**: Run benchmark suite (`test_research_benchmark.py`) to identify P2 priorities based on real data
 
+- [ ] **Astra File Activity Attribution & Isolation** 🔧 **ARCHITECTURE**
+  - **Problem**: Cannot distinguish Astra's file operations from user/system changes at filesystem level
+  - **Current State**: All files owned by user `d`, actions_log.json only tracks tool calls, not comprehensive
+  - **Issues**:
+    1. persona_space/ mixing identity (beliefs, reflections) with execution artifacts (venvs, test files)
+    2. No way to audit "who created this file" - Astra vs user vs Claude Code vs system init
+    3. File operations not visible in standard filesystem tools (ls, git status)
+  - **Proposed Solutions**:
+    1. **Dedicated User Account**: Create `astra` user, run persona operations as that user
+       - Pros: Clear filesystem ownership, standard Unix permissions
+       - Cons: Complexity in service setup, may need sudo for user switching
+    2. **Dedicated Service/Container**: Run Astra operations in isolated service
+       - Pros: Clear boundary, can log all I/O, easier to sandbox
+       - Cons: More complex architecture, networking/IPC overhead
+    3. **Enhanced Logging**: Expand actions_log.json to capture ALL file operations
+       - Pros: Simple, no architecture change
+       - Cons: Doesn't solve filesystem attribution, easy to bypass
+    4. **Separate Workspace**: Move execution artifacts to dedicated workspace/ or leverage existing astra-workspace/
+       - Pros: Clean separation of identity vs execution
+       - Cons: Doesn't solve attribution, just organization
+  - **Files Affected**:
+    - `src/services/persona_file_manager.py` - file operation handlers
+    - `src/services/persona_service.py` - tool execution
+    - `persona_space/` - directory structure and gitignore rules
+  - **Priority**: MEDIUM - Affects observability, debugging, and system clarity
+  - **Impact**: Better attribution, cleaner persona_space/, easier debugging of "who made this change"
+  - **Related**: persona_space cleanup (old October files, duplicate venvs, test artifacts)
+
 ## Backlog
 
 - [ ] **Token usage tracking & budget controls**
