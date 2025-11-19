@@ -1493,7 +1493,7 @@ This revision represents growth in my self-understanding. My past statements wer
                 "type": "function",
                 "function": {
                     "name": "search_web",
-                    "description": "Quick single web search for a small fact or one-off lookup. Do NOT use this for multi-step research, current events analysis, or questions like 'what is going on with X' or 'what happened with Y'. For those, use research_and_summarize instead. This tool is for narrow, single-fact queries only.",
+                    "description": "Quick web search for simple factual lookups or when you need a few search results to answer a straightforward question. Use this as your default search tool. Only escalate to research_and_summarize if the user explicitly asks you to 'research' or 'investigate', or if the question requires synthesizing contradictory claims from multiple sources.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1674,7 +1674,7 @@ This revision represents growth in my self-understanding. My past statements wer
                 "type": "function",
                 "function": {
                     "name": "research_and_summarize",
-                    "description": "PRIMARY TOOL for any research question, current events, developing stories, or when the user asks you to 'research', 'investigate', or explain what is going on with a topic. Uses an HTN planner, web search, and multi-step synthesis to produce a structured summary with key events, contested claims, and open questions. Always prefer this over search_web for anything that requires understanding or investigation.",
+                    "description": "Deep multi-source research tool for complex questions requiring investigation across multiple sources. Use when the user explicitly asks to 'research' or 'investigate' a topic, or when understanding requires synthesis from multiple perspectives. Runs HTN planner, web search, and multi-step synthesis to produce structured summary with key events, contested claims, and open questions. DO NOT use for simple fact lookups - use search_web for that. Only use this when depth and synthesis are needed.",
                     "parameters": {
                         "type": "object",
                         "properties": {

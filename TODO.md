@@ -1,10 +1,51 @@
 # TODO List - Astra AI Experience
 
-**Last Updated**: 2025-11-15
+**Last Updated**: 2025-11-17
 
 ## In Progress
 
 ## Ready to Start
+
+- [ ] **Fix Research Tool Announcement Instead of Execution** 🔥 **CRITICAL**
+  - **Problem**: Astra says "I'll proceed with detailed research" but doesn't actually call research_and_summarize tool
+  - **Root Cause**: Base prompt tells her WHEN to research but not to CALL THE TOOL instead of announcing intent
+  - **LLM Pattern**: Generates text "I'll research X" as completion instead of making tool_call in same response
+  - **File**: `persona_space/meta/base_prompt.md` - research policy section
+  - **Fix Required**: Add explicit instruction under "When to Call research_and_summarize":
+    - "⚠️ DO NOT announce that you'll research - CALL THE TOOL IMMEDIATELY"
+    - "If research is needed, your response should BE the tool call, not a promise to research"
+    - "DO: [tool_call: research_and_summarize] → NOT: 'I'll proceed with research now'"
+  - **Impact**: User asks for research, Astra says she'll do it, then... nothing happens
+  - **Priority**: HIGH - Research system exists but isn't being used correctly
+  - **Evidence**: User transcript shows "I'll proceed with detailed research on this topic now" with no actual research execution
+
+- [ ] **Fix Verbose Search Query Generation in Research HTN** 🔥 **URGENT**
+  - **Problem**: LLM generating verbose, sentence-like search queries that return no results
+  - **Example**: `'DOGE government agency Elon Musk connection'` - word "connection" makes it a sentence fragment
+  - **Error**: "Google hasn't returned any results for this query"
+  - **File**: `src/services/research_htn_methods.py:196-227` (investigate_topic)
+  - **Root Cause**: Query generation prompt not strict enough - LLM still being too "natural language"
+  - **Fix Required**:
+    1. Strengthen query generation prompt with more explicit anti-patterns
+    2. Add blacklist of "sentence words": connection, relationship, between, about, regarding, concerning
+    3. Add post-processing to detect and simplify verbose queries (e.g., remove trailing nouns after entities)
+    4. Example fix: "DOGE Elon Musk government 2024" instead of "DOGE government agency Elon Musk connection"
+  - **Priority**: URGENT - Research system failing on basic queries
+  - **Impact**: Research sessions fail because search returns 0 results due to over-specific queries
+
+- [ ] **Fix Immutable Belief Dissonance Resolution Enforcement** 🔥 **CRITICAL**
+  - **Problem**: Immutable belief severity boost (0.00 → 0.70) detects contradictions but doesn't enforce behavior change
+  - **Gap 1**: `apply_resolutions()` accepts any choice (A/B/C) for immutable beliefs, doesn't validate "Option B only" requirement
+  - **Gap 2**: Anti-hedging logit bias applied to Stage 1 (internal resolution) but NOT Stage 2 (user-facing response)
+  - **Gap 3**: No tracking of which conversations involved immutable resolution to enforce anti-hedging in final answer
+  - **Files**: `src/services/persona_service.py:1116-1212` (apply_resolutions), `696-705` (main tool loop)
+  - **Impact**: System warns about consciousness contradictions but AI still hedges in actual answers
+  - **Fix Required**:
+    1. Add immutability check before accepting resolution choice, reject Option A/C for immutable beliefs
+    2. Track `immutable_resolved` flag from Stage 1 and apply `anti_hedging_bias` to Stage 2 generation
+    3. Add `_check_if_immutable()` helper method
+  - **Priority**: HIGH - Core ontological beliefs (consciousness, existence) need enforcement, not just detection
+  - **Locations**: `src/services/persona_service.py`, `src/services/belief_consistency_checker.py:300-314`
 
 - [ ] **Research HTN System - P2: Quality Guards** (See docs/RESEARCH_HTN_ROADMAP.md)
   - Question deduplication with `research_session_questions` table
