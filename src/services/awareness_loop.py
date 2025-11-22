@@ -726,7 +726,7 @@ class AwarenessLoop:
         try:
             # Get recent episodic memories using retrieve_similar
             memories = self.memory_store.retrieve_similar(
-                query="recent thoughts and experiences",
+                prompt="recent thoughts and experiences",
                 top_k=limit
             )
             return [m.content for m in memories]
