@@ -499,12 +499,14 @@ class AwarenessLoop:
 
     async def _introspection_loop(self) -> None:
         """Introspection loop (30s ± jitter): LLM introspection."""
+        logger.info("[INTROSPECT LOOP] Starting introspection loop")
         while self.running:
             # Jitter
             interval = self.config.introspection_interval + random.uniform(
                 -self.config.introspection_jitter,
                 self.config.introspection_jitter
             )
+            logger.info(f"[INTROSPECT LOOP] Sleeping for {interval:.1f} seconds until next introspection")
 
             await asyncio.sleep(interval)
 
