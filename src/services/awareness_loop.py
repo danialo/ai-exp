@@ -729,7 +729,8 @@ class AwarenessLoop:
                 prompt="recent thoughts and experiences",
                 top_k=limit
             )
-            return [m.content for m in memories]
+            # Combine prompt and response into narrative
+            return [f"{m.prompt_text}\n{m.response_text}" for m in memories]
         except Exception as e:
             logger.warning(f"Failed to fetch memories for introspection: {e}")
             return []
