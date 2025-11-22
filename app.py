@@ -851,6 +851,7 @@ async def startup_awareness():
             data_dir=Path(settings.AWARENESS_DATA_DIR),
             config=awareness_config,
             llm_service=mini_llm_service,  # Use mini model for cost-effective introspection
+            memory_store=retrieval_service,  # Enable introspection on prior conversations
         )
 
         # Start awareness loop

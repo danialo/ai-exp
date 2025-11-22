@@ -84,7 +84,8 @@ class AwarenessLoop:
         embedding_provider: EmbeddingProvider,
         data_dir: Path,
         config: AwarenessConfig,
-        llm_service: Optional[Any] = None
+        llm_service: Optional[Any] = None,
+        memory_store: Optional[Any] = None
     ):
         """
         Initialize awareness loop.
@@ -95,9 +96,11 @@ class AwarenessLoop:
             data_dir: Directory for state persistence
             config: Configuration object
             llm_service: LLM service for introspection (optional)
+            memory_store: Memory retrieval service for introspection context (optional)
         """
         self.config = config
         self.llm_service = llm_service
+        self.memory_store = memory_store
 
         # Components
         self.lock = AwarenessLock(redis_client)
