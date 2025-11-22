@@ -60,7 +60,7 @@ class AwarenessConfig:
     embedding_cache_ttl: int = 300
     watchdog_threshold_ms: float = 250.0
     watchdog_strikes: int = 3
-    introspection_budget_per_min: int = 100
+    introspection_budget_per_min: int = 2000  # Was 100 - completely insufficient for 30s interval calls
 
 
 class AwarenessMode:
