@@ -64,7 +64,7 @@ class SentenceTransformerEmbedding(EmbeddingProvider):
     'all-MiniLM-L6-v2' (384 dimensions, good balance of speed/quality).
     """
 
-    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         """Initialize sentence-transformer model.
 
         Args:
@@ -232,6 +232,6 @@ def create_embedding_provider(
         return MockEmbeddingProvider()
 
     if model_name is None:
-        model_name = "sentence-transformers/all-MiniLM-L6-v2"
+        model_name = "all-MiniLM-L6-v2"
 
     return SentenceTransformerEmbedding(model_name)

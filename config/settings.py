@@ -32,7 +32,7 @@ class Settings:
     # Embedding configuration
     EMBEDDING_MODEL: str = os.getenv(
         "EMBEDDING_MODEL",
-        "sentence-transformers/all-MiniLM-L6-v2",
+        "all-MiniLM-L6-v2",  # SentenceTransformer doesn't use 'sentence-transformers/' prefix
     )
     OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY")
     VENICEAI_API_KEY: str | None = os.getenv("VENICEAI_API_KEY")
