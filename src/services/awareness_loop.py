@@ -724,11 +724,10 @@ class AwarenessLoop:
             return []
 
         try:
-            # Get recent episodic memories
-            memories = await self.memory_store.search(
+            # Get recent episodic memories using retrieve_similar
+            memories = self.memory_store.retrieve_similar(
                 query="recent thoughts and experiences",
-                limit=limit,
-                memory_type="episodic"
+                top_k=limit
             )
             return [m.content for m in memories]
         except Exception as e:
