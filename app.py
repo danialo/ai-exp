@@ -2652,7 +2652,20 @@ async def get_memory_detail(experience_id: str):
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    return {"status": "healthy"}
+    health_status = {"status": "healthy"}
+
+    # Add Integration Layer health if available
+    if hasattr(app.state, 'integration_layer') and app.state.integration_layer is not None:
+        il = app.state.integration_layer
+        stats = il.get_stats()
+        health_status["integration_layer"] = {
+            "status": "running",
+            "mode": stats["mode"],
+            "signals_received": stats["total_percepts_seen"] + stats["total_dissonance_seen"],
+            "last_signal": stats["last_signal_timestamp"],
+        }
+
+    return health_status
 
 
 @app.get("/healthz/assert")
