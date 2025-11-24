@@ -28,6 +28,14 @@ from src.memory.models import (
     CaptureMethod,
 )
 
+# Integration Layer (Phase 1: signal publishing only)
+try:
+    from src.integration import IntegrationEventHub, DissonanceSignal, Priority
+except ImportError:
+    IntegrationEventHub = None
+    DissonanceSignal = None
+    Priority = None
+
 logger = logging.getLogger(__name__)
 
 # SENSITIVE META-COGNITIVE LOG: Dissonance Analysis
@@ -108,15 +116,17 @@ class BeliefConsistencyChecker:
     # Cooldown period to prevent repeated dissonance events for the same belief (in minutes)
     COOLDOWN_MINUTES = 120
 
-    def __init__(self, llm_service: LLMService, raw_store: Optional[RawStore] = None):
+    def __init__(self, llm_service: LLMService, raw_store: Optional[RawStore] = None, event_hub: Optional[Any] = None):
         """Initialize consistency checker.
 
         Args:
             llm_service: LLM for extracting claims and analyzing dissonance
             raw_store: Optional raw_store for persisting dissonance events
+            event_hub: Optional IntegrationEventHub for Phase 1 signal publishing
         """
         self.llm = llm_service
         self.raw_store = raw_store
+        self.event_hub = event_hub  # Optional IntegrationEventHub
         # Track last dissonance event per belief: belief_id -> (timestamp, event_hash)
         self._last_dissonance_events: Dict[str, tuple[float, str]] = {}
 
@@ -509,6 +519,10 @@ class BeliefConsistencyChecker:
                 logger.info(f"Severity breakdown: {len(high_severity)} high (>=0.6), {len(all_patterns) - len(high_severity)} low (<0.6)")
                 for pattern in all_patterns:
                     logger.debug(f"  Pattern: {pattern.pattern_type} | Belief: {pattern.belief_statement[:50]}... | Severity: {pattern.severity:.2f}")
+
+            # Publish dissonance signals to Integration Layer (Phase 1)
+            if self.event_hub and DissonanceSignal and all_patterns:
+                self._publish_dissonance_signals(all_patterns)
 
             return all_patterns
 
@@ -1115,6 +1129,40 @@ class BeliefConsistencyChecker:
 
         logger.info(f"Found {len(conflicting_ids)} unique conflicting memory IDs for: {belief_statement}")
         return list(conflicting_ids)
+
+    def _publish_dissonance_signals(self, patterns: List[DissonancePattern]):
+        """
+        Publish DissonanceSignals to IntegrationEventHub.
+
+        Phase 1: Simple publishing. High-severity patterns get HIGH priority.
+        """
+        import uuid
+
+        for pattern in patterns:
+            # Determine priority based on severity
+            if pattern.severity >= 0.8:
+                priority = Priority.CRITICAL
+            elif pattern.severity >= 0.6:
+                priority = Priority.HIGH
+            else:
+                priority = Priority.NORMAL
+
+            signal = DissonanceSignal(
+                signal_id=f"dissonance_{uuid.uuid4().hex[:8]}",
+                source="belief_consistency_checker",
+                timestamp=datetime.now(timezone.utc),
+                priority=priority,
+                pattern=pattern.pattern_type,
+                belief_id=pattern.belief_id,
+                conflicting_memory=pattern.conflicting_statement[:200],  # Truncate
+                severity=pattern.severity
+            )
+
+            # Publish to "dissonance" topic
+            try:
+                self.event_hub.publish("dissonance", signal)
+            except Exception as e:
+                logger.warning(f"Failed to publish dissonance signal: {e}")
 
 
 def create_belief_consistency_checker(

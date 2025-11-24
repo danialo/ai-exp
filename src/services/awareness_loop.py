@@ -35,6 +35,14 @@ from src.services.pii_redactor import redact_pii
 from src.services import awareness_metrics
 from src.memory.embedding import EmbeddingProvider
 
+# Integration Layer (Phase 1: signal publishing only)
+try:
+    from src.integration import IntegrationEventHub, PerceptSignal, Priority
+except ImportError:
+    IntegrationEventHub = None
+    PerceptSignal = None
+    Priority = None
+
 
 @dataclass
 class Percept:
@@ -85,7 +93,8 @@ class AwarenessLoop:
         data_dir: Path,
         config: AwarenessConfig,
         llm_service: Optional[Any] = None,
-        memory_store: Optional[Any] = None
+        memory_store: Optional[Any] = None,
+        event_hub: Optional[Any] = None  # IntegrationEventHub for Phase 1
     ):
         """
         Initialize awareness loop.
@@ -101,6 +110,7 @@ class AwarenessLoop:
         self.config = config
         self.llm_service = llm_service
         self.memory_store = memory_store
+        self.event_hub = event_hub  # Optional IntegrationEventHub
 
         # Components
         self.lock = AwarenessLock(redis_client)
@@ -388,6 +398,45 @@ class AwarenessLoop:
 
         await self.blackboard.update_presence(scalar, cur_vec, meta)
         self.last_presence_scalar = scalar
+
+        # Publish percept signals to Integration Layer (Phase 1)
+        if self.event_hub and PerceptSignal and batch:
+            self._publish_percept_signals(batch, entropy, self.last_novelty)
+
+    def _publish_percept_signals(self, percepts: List[Percept], entropy: float, novelty: float):
+        """
+        Publish PerceptSignals to IntegrationEventHub.
+
+        Phase 1: Simple publishing. No filtering or prioritization yet.
+        High-novelty percepts and user messages get priority.
+        """
+        from datetime import datetime
+
+        for p in percepts:
+            # Determine priority based on percept kind
+            if p.kind == "user":
+                priority = Priority.HIGH
+            elif novelty > 0.7:
+                priority = Priority.NORMAL
+            else:
+                priority = Priority.LOW
+
+            signal = PerceptSignal(
+                signal_id=f"percept_{self.tick_id}_{p.ts:.3f}",
+                source="awareness_loop",
+                timestamp=datetime.fromtimestamp(p.ts),
+                priority=priority,
+                percept_type=p.kind,
+                content=p.payload,
+                novelty=novelty,
+                entropy=entropy
+            )
+
+            # Publish to "percepts" topic
+            try:
+                self.event_hub.publish("percepts", signal)
+            except Exception as e:
+                logger.warning(f"Failed to publish percept signal: {e}")
 
     async def _slow_loop(self) -> None:
         """Slow loop (0.1 Hz): re-embed, compute novelty/similarity."""
