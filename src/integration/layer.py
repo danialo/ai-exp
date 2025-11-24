@@ -43,7 +43,7 @@ class IntegrationLayer:
     def __init__(
         self,
         event_hub: IntegrationEventHub,
-        identity_service: IdentityService,
+        identity_service: Optional[IdentityService] = None,
         mode: ExecutionMode = ExecutionMode.INTERACTIVE
     ):
         """
@@ -51,7 +51,7 @@ class IntegrationLayer:
 
         Args:
             event_hub: Event bus for subscribing to signals
-            identity_service: PIM facade for self-model
+            identity_service: Optional PIM facade for self-model (Phase 1: can be None)
             mode: Execution mode (INTERACTIVE/AUTONOMOUS/MAINTENANCE)
         """
         self.event_hub = event_hub
@@ -64,7 +64,10 @@ class IntegrationLayer:
         # Background task handle
         self._task: Optional[asyncio.Task] = None
 
-        logger.info(f"IntegrationLayer initialized (Phase 1: read-only observer, mode={mode.value})")
+        if identity_service:
+            logger.info(f"IntegrationLayer initialized (Phase 1: read-only observer, mode={mode.value}, identity_service=enabled)")
+        else:
+            logger.info(f"IntegrationLayer initialized (Phase 1: read-only observer, mode={mode.value}, identity_service=disabled)")
 
     async def start(self):
         """
@@ -81,8 +84,12 @@ class IntegrationLayer:
 
         logger.info("Subscribed to topics: percepts, dissonance")
 
-        # Start background task for periodic self-model update
-        self._task = asyncio.create_task(self._self_model_refresh_loop())
+        # Start background task for periodic self-model update (only if identity_service available)
+        if self.identity_service:
+            self._task = asyncio.create_task(self._self_model_refresh_loop())
+            logger.info("Self-model refresh loop started")
+        else:
+            logger.info("Self-model refresh loop disabled (no identity_service)")
 
         logger.info("IntegrationLayer started successfully")
 

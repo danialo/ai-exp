@@ -143,8 +143,9 @@ class AstraState:
     task_context: Dict[str, Any] = field(default_factory=dict)  # Dict[str, TaskNode]
 
     # Signals & Events (placeholder types for now)
-    percept_buffer: Deque[Any] = field(default_factory=deque)  # Deque[PerceptSignal]
-    dissonance_alerts: List[Any] = field(default_factory=list)  # List[DissonanceSignal]
+    # Bounded buffers to prevent unbounded growth
+    percept_buffer: Deque[Any] = field(default_factory=lambda: deque(maxlen=100))  # Deque[PerceptSignal], last 100
+    dissonance_alerts: List[Any] = field(default_factory=list)  # List[DissonanceSignal] - Phase 1: simple list, Phase 2: add pruning
     integration_events: List[Any] = field(default_factory=list)  # List[IntegrationEvent]
 
     # Modulation & Affect
