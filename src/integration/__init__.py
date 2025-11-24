@@ -41,6 +41,7 @@ from .signals import (
 # Infrastructure
 from .event_hub import IntegrationEventHub
 from .identity_service import IdentityService
+from .layer import IntegrationLayer
 
 __all__ = [
     # State
@@ -61,4 +62,5 @@ __all__ = [
     # Infrastructure
     "IntegrationEventHub",
     "IdentityService",
+    "IntegrationLayer",
 ]
