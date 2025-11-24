@@ -231,7 +231,9 @@ class AwarenessLoop:
         """
         Main loop - spawns tick tasks.
         """
+        print(f"[AWARENESS] run() called, self.running={self.running}")
         if not self.running:
+            print("[AWARENESS] run() exiting because self.running is False")
             return
 
         try:
@@ -239,10 +241,12 @@ class AwarenessLoop:
             self._tasks.append(asyncio.create_task(self._time_pacer()))
 
             # Start tick loops
+            print("[AWARENESS] Creating awareness loop tasks (fast, slow, introspection, snapshot)")
             self._tasks.append(asyncio.create_task(self._fast_loop()))
             self._tasks.append(asyncio.create_task(self._slow_loop()))
             self._tasks.append(asyncio.create_task(self._introspection_loop()))
             self._tasks.append(asyncio.create_task(self._snapshot_loop()))
+            print(f"[AWARENESS] Created {len(self._tasks)} tasks")
 
             # Wait for tasks
             await asyncio.gather(*self._tasks)
@@ -499,14 +503,14 @@ class AwarenessLoop:
 
     async def _introspection_loop(self) -> None:
         """Introspection loop (30s ± jitter): LLM introspection."""
-        logger.info("[INTROSPECT LOOP] Starting introspection loop")
+        print("[INTROSPECT LOOP] Starting introspection loop")
         while self.running:
             # Jitter
             interval = self.config.introspection_interval + random.uniform(
                 -self.config.introspection_jitter,
                 self.config.introspection_jitter
             )
-            logger.info(f"[INTROSPECT LOOP] Sleeping for {interval:.1f} seconds until next introspection")
+            print(f"[INTROSPECT LOOP] Sleeping for {interval:.1f} seconds until next introspection")
 
             await asyncio.sleep(interval)
 
