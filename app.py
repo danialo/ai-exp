@@ -78,6 +78,19 @@ from src.services.web_interpretation_service import create_web_interpretation_se
 
 # Adaptive Decision Framework imports
 from src.services.decision_framework import get_decision_registry
+
+# Integration Layer (Phase 1) imports
+try:
+    from src.integration import (
+        IntegrationLayer,
+        IntegrationEventHub,
+        IdentityService,
+        ExecutionMode,
+    )
+    INTEGRATION_LAYER_AVAILABLE = True
+except ImportError:
+    INTEGRATION_LAYER_AVAILABLE = False
+    logger.warning("Integration Layer not available - install src/integration package")
 from src.services.success_signal_evaluator import SuccessSignalEvaluator
 from src.services.abort_condition_monitor import AbortConditionMonitor
 from src.services.parameter_adapter import ParameterAdapter
@@ -684,6 +697,11 @@ redis_client: Optional[Redis] = None
 if settings.AWARENESS_ENABLED:
     logger.info("Awareness loop enabled - initializing Redis and components")
 
+# Integration Layer (Phase 1) globals
+integration_layer: Optional[Any] = None  # IntegrationLayer
+event_hub: Optional[Any] = None  # IntegrationEventHub
+identity_service: Optional[Any] = None  # IdentityService
+
 # Adaptive Decision Framework globals
 decision_registry = None
 success_evaluator = None
@@ -807,6 +825,7 @@ async def startup_awareness():
     """Start awareness loop and decision framework on application startup."""
     global awareness_loop, awareness_task, redis_client, gardener_task, belief_gardener
     global decision_registry, success_evaluator, abort_monitor, parameter_adapter, outcome_task
+    global integration_layer, event_hub, identity_service
 
     if not settings.AWARENESS_ENABLED:
         logger.info("Awareness loop disabled")
@@ -873,6 +892,53 @@ async def startup_awareness():
         if enhanced_feedback_aggregator:
             enhanced_feedback_aggregator.awareness_loop = awareness_loop
             logger.info("Awareness loop wired to enhanced feedback aggregator")
+
+        # Initialize Integration Layer (Phase 1)
+        if INTEGRATION_LAYER_AVAILABLE:
+            logger.info("Initializing Integration Layer (Phase 1: read-only observer)...")
+
+            # Create event hub
+            event_hub = IntegrationEventHub()
+            logger.info("IntegrationEventHub created")
+
+            # Create identity service (Phase 1: minimal, no full wiring yet)
+            # In Phase 2, we'll wire belief_store, persona_files, etc.
+            identity_service = IdentityService()
+            logger.info("IdentityService created (Phase 1: stub mode)")
+
+            # Create and start Integration Layer
+            integration_layer = IntegrationLayer(
+                event_hub=event_hub,
+                identity_service=identity_service,
+                mode=ExecutionMode.INTERACTIVE
+            )
+            await integration_layer.start()
+            logger.info("IntegrationLayer started successfully")
+
+            # Wire event_hub to awareness loop (recreate with event_hub)
+            # Note: In Phase 1, we're not recreating awareness_loop - it's already running
+            # In Phase 2, we'll pass event_hub during initialization
+            # For now, we'll use a workaround: set event_hub on existing awareness_loop
+            if hasattr(awareness_loop, 'event_hub'):
+                awareness_loop.event_hub = event_hub
+                logger.info("Event hub wired to awareness loop (hot-patched for Phase 1)")
+            else:
+                logger.warning("Awareness loop does not support event_hub yet - signals won't flow")
+
+            # Wire event_hub to belief_consistency_checker
+            if belief_consistency_checker and hasattr(belief_consistency_checker, 'event_hub'):
+                belief_consistency_checker.event_hub = event_hub
+                logger.info("Event hub wired to belief_consistency_checker")
+            else:
+                logger.warning("Belief consistency checker does not support event_hub yet")
+
+            # Store in app.state for API access
+            app.state.integration_layer = integration_layer
+            app.state.event_hub = event_hub
+
+            logger.info("Integration Layer Phase 1 initialization complete")
+        else:
+            logger.info("Integration Layer not available - skipping IL initialization")
 
         # Start outcome evaluation background task
         if outcome_evaluator:
@@ -2201,6 +2267,61 @@ async def get_trust_status():
         response["enhanced_feedback"] = enhanced_feedback_aggregator.get_telemetry()
 
     return response
+
+
+@app.get("/api/integration/state")
+async def get_integration_state():
+    """
+    Get Integration Layer state summary (Phase 1).
+
+    Returns condensed view of Global Workspace suitable for debugging.
+    Does not expose full AstraState to avoid leaking sensitive data.
+    """
+    if not hasattr(app.state, 'integration_layer') or app.state.integration_layer is None:
+        raise HTTPException(status_code=503, detail="Integration Layer not initialized")
+
+    il = app.state.integration_layer
+    state = il.get_state()
+
+    return {
+        "mode": state.mode.value,
+        "tick_id": state.tick_id,
+        "timestamp": state.timestamp.isoformat() if state.timestamp else None,
+        "percepts": [
+            {
+                "source": p.source,
+                "type": p.percept_type,
+                "priority": p.priority.name,
+                "novelty": p.novelty,
+                "timestamp": p.timestamp.isoformat(),
+            }
+            for p in list(state.percept_buffer)[-10:]  # Last 10 only
+        ],
+        "dissonance": [
+            {
+                "pattern": d.pattern,
+                "severity": d.severity,
+                "belief_id": d.belief_id,
+                "timestamp": d.timestamp.isoformat(),
+            }
+            for d in state.dissonance_alerts[-10:]  # Last 10 only
+        ],
+        "focus_stack_size": len(state.focus_stack),
+        "active_goals": len(state.active_goals),
+        "self_model_loaded": state.self_model is not None,
+        "self_model_info": {
+            "core_beliefs": len(state.self_model.core_beliefs) if state.self_model else 0,
+            "peripheral_beliefs": len(state.self_model.peripheral_beliefs) if state.self_model else 0,
+            "anchor_drift": state.self_model.anchor_drift if state.self_model else 0.0,
+            "confidence": state.self_model.confidence_self_model if state.self_model else 0.0,
+        } if state.self_model else None,
+        "budget_status": {
+            "tokens_available": state.budget_status.tokens_available,
+            "tokens_used_this_minute": state.budget_status.tokens_used_this_minute,
+            "beliefs_formed_today": state.budget_status.beliefs_formed_today,
+        },
+        "stats": il.get_stats(),
+    }
 
 
 @app.get("/api/persona/gardener/patterns")
