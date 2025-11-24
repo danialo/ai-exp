@@ -174,6 +174,9 @@ class Settings:
     AWARENESS_QUEUE_MAXSIZE: int = int(os.getenv("AWARENESS_QUEUE_MAXSIZE", "2048"))
     AWARENESS_NOTES_MAX: int = int(os.getenv("AWARENESS_NOTES_MAX", "100"))
     AWARENESS_EMBEDDING_DIM: int = int(os.getenv("AWARENESS_EMBEDDING_DIM", "64"))
+
+    # Integration Layer (Phase 1+)
+    INTEGRATION_LAYER_ENABLED: bool = os.getenv("INTEGRATION_LAYER_ENABLED", "true").lower() == "true"
     AWARENESS_EMBEDDING_CACHE_TTL: int = int(os.getenv("AWARENESS_EMBEDDING_CACHE_TTL", "300"))
     AWARENESS_WATCHDOG_THRESHOLD_MS: float = float(os.getenv("AWARENESS_WATCHDOG_THRESHOLD_MS", "250"))
     AWARENESS_WATCHDOG_STRIKES: int = int(os.getenv("AWARENESS_WATCHDOG_STRIKES", "3"))

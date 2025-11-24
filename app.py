@@ -894,49 +894,60 @@ async def startup_awareness():
             logger.info("Awareness loop wired to enhanced feedback aggregator")
 
         # Initialize Integration Layer (Phase 1)
-        if INTEGRATION_LAYER_AVAILABLE:
-            logger.info("Initializing Integration Layer (Phase 1: read-only observer)...")
+        if INTEGRATION_LAYER_AVAILABLE and settings.INTEGRATION_LAYER_ENABLED:
+            try:
+                logger.info("Initializing Integration Layer (Phase 1: read-only observer)...")
 
-            # Create event hub
-            event_hub = IntegrationEventHub()
-            logger.info("IntegrationEventHub created")
+                # Create event hub
+                event_hub = IntegrationEventHub()
+                logger.info("IntegrationEventHub created")
 
-            # Create identity service (Phase 1: minimal, no full wiring yet)
-            # In Phase 2, we'll wire belief_store, persona_files, etc.
-            identity_service = IdentityService()
-            logger.info("IdentityService created (Phase 1: stub mode)")
+                # Create identity service (Phase 1: minimal, no full wiring yet)
+                # In Phase 2, we'll wire belief_store, persona_files, etc.
+                identity_service = IdentityService()
+                logger.info("IdentityService created (Phase 1: stub mode)")
 
-            # Create and start Integration Layer
-            integration_layer = IntegrationLayer(
-                event_hub=event_hub,
-                identity_service=identity_service,
-                mode=ExecutionMode.INTERACTIVE
-            )
-            await integration_layer.start()
-            logger.info("IntegrationLayer started successfully")
+                # Create and start Integration Layer
+                integration_layer = IntegrationLayer(
+                    event_hub=event_hub,
+                    identity_service=identity_service,
+                    mode=ExecutionMode.INTERACTIVE
+                )
+                await integration_layer.start()
+                logger.info("IntegrationLayer started successfully")
 
-            # Wire event_hub to awareness loop (recreate with event_hub)
-            # Note: In Phase 1, we're not recreating awareness_loop - it's already running
-            # In Phase 2, we'll pass event_hub during initialization
-            # For now, we'll use a workaround: set event_hub on existing awareness_loop
-            if hasattr(awareness_loop, 'event_hub'):
-                awareness_loop.event_hub = event_hub
-                logger.info("Event hub wired to awareness loop (hot-patched for Phase 1)")
-            else:
-                logger.warning("Awareness loop does not support event_hub yet - signals won't flow")
+                # Wire event_hub to awareness loop (recreate with event_hub)
+                # Note: In Phase 1, we're not recreating awareness_loop - it's already running
+                # In Phase 2, we'll pass event_hub during initialization
+                # For now, we'll use a workaround: set event_hub on existing awareness_loop
+                if hasattr(awareness_loop, 'event_hub'):
+                    awareness_loop.event_hub = event_hub
+                    logger.info("Event hub wired to awareness loop (hot-patched for Phase 1)")
+                else:
+                    logger.warning("Awareness loop does not support event_hub yet - signals won't flow")
 
-            # Wire event_hub to belief_consistency_checker
-            if belief_consistency_checker and hasattr(belief_consistency_checker, 'event_hub'):
-                belief_consistency_checker.event_hub = event_hub
-                logger.info("Event hub wired to belief_consistency_checker")
-            else:
-                logger.warning("Belief consistency checker does not support event_hub yet")
+                # Wire event_hub to belief_consistency_checker
+                if belief_consistency_checker and hasattr(belief_consistency_checker, 'event_hub'):
+                    belief_consistency_checker.event_hub = event_hub
+                    logger.info("Event hub wired to belief_consistency_checker")
+                else:
+                    logger.warning("Belief consistency checker does not support event_hub yet")
 
-            # Store in app.state for API access
-            app.state.integration_layer = integration_layer
-            app.state.event_hub = event_hub
+                # Store in app.state for API access
+                app.state.integration_layer = integration_layer
+                app.state.event_hub = event_hub
 
-            logger.info("Integration Layer Phase 1 initialization complete")
+                logger.info("Integration Layer Phase 1 initialization complete")
+
+            except Exception as e:
+                logger.error(f"Failed to initialize Integration Layer: {e}", exc_info=True)
+                logger.warning("Integration Layer disabled due to initialization failure - app will continue without IL")
+                # Ensure globals are None so we don't have partial state
+                integration_layer = None
+                event_hub = None
+                identity_service = None
+        elif INTEGRATION_LAYER_AVAILABLE and not settings.INTEGRATION_LAYER_ENABLED:
+            logger.info("Integration Layer available but disabled via INTEGRATION_LAYER_ENABLED=false")
         else:
             logger.info("Integration Layer not available - skipping IL initialization")
 

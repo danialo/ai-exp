@@ -64,6 +64,11 @@ class IntegrationLayer:
         # Background task handle
         self._task: Optional[asyncio.Task] = None
 
+        # Phase 1.5: Simple metrics
+        self.total_percepts_seen = 0
+        self.total_dissonance_seen = 0
+        self.last_signal_timestamp: Optional[datetime] = None
+
         if identity_service:
             logger.info(f"IntegrationLayer initialized (Phase 1: read-only observer, mode={mode.value}, identity_service=enabled)")
         else:
@@ -114,6 +119,8 @@ class IntegrationLayer:
         Phase 2+: Will compute salience and update focus stack.
         """
         self.state.percept_buffer.append(signal)
+        self.total_percepts_seen += 1
+        self.last_signal_timestamp = signal.timestamp
 
         # Log high-priority percepts
         if signal.priority.value >= 3:  # HIGH or CRITICAL
@@ -127,8 +134,14 @@ class IntegrationLayer:
         Phase 2+: Will add to focus stack and trigger resolution.
         """
         self.state.dissonance_alerts.append(signal)
+        self.total_dissonance_seen += 1
+        self.last_signal_timestamp = signal.timestamp
 
-        logger.info(f"[IL] Dissonance alert: {signal.pattern} (severity={signal.severity:.2f}, belief_id={signal.belief_id})")
+        # Phase 1.5: Log high-severity dissonance for early visibility
+        if signal.severity >= 0.6:
+            logger.warning(f"[IL] HIGH DISSONANCE: {signal.pattern} (severity={signal.severity:.2f}, belief_id={signal.belief_id})")
+        else:
+            logger.info(f"[IL] Dissonance alert: {signal.pattern} (severity={signal.severity:.2f}, belief_id={signal.belief_id})")
 
     async def _self_model_refresh_loop(self):
         """
@@ -137,21 +150,36 @@ class IntegrationLayer:
         Runs every 5 seconds to keep self_model current.
         Phase 2+: Will be integrated into executive loop tick.
         """
+        consecutive_failures = 0
+        max_backoff = 60  # Max 60s backoff on repeated failures
+
         while True:
             try:
-                await asyncio.sleep(5)
+                # Base interval + backoff on failures
+                sleep_time = 5 + min(consecutive_failures * 5, max_backoff)
+                await asyncio.sleep(sleep_time)
 
                 # Refresh self-model
                 snapshot = self.identity_service.get_snapshot()
                 self.state.self_model = snapshot
                 self.state.timestamp = datetime.now()
 
+                # Reset failure counter on success
+                if consecutive_failures > 0:
+                    logger.info(f"[IL] Self-model refresh recovered after {consecutive_failures} failures")
+                    consecutive_failures = 0
+
                 logger.debug(f"[IL] Self-model refreshed: {len(snapshot.core_beliefs)} core beliefs, drift={snapshot.anchor_drift:.3f}")
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[IL] Error refreshing self-model: {e}", exc_info=True)
+                consecutive_failures += 1
+                if consecutive_failures <= 3:
+                    logger.error(f"[IL] Error refreshing self-model (attempt {consecutive_failures}): {e}", exc_info=True)
+                else:
+                    # After 3 failures, log without traceback to avoid spam
+                    logger.warning(f"[IL] Self-model refresh still failing (attempt {consecutive_failures}): {e}")
 
     def get_state(self) -> AstraState:
         """
@@ -175,5 +203,9 @@ class IntegrationLayer:
             "focus_stack_size": len(self.state.focus_stack),
             "active_goals": len(self.state.active_goals),
             "self_model_loaded": self.state.self_model is not None,
-            "last_update": self.state.timestamp.isoformat() if self.state.timestamp else None
+            "last_update": self.state.timestamp.isoformat() if self.state.timestamp else None,
+            # Phase 1.5 metrics
+            "total_percepts_seen": self.total_percepts_seen,
+            "total_dissonance_seen": self.total_dissonance_seen,
+            "last_signal_timestamp": self.last_signal_timestamp.isoformat() if self.last_signal_timestamp else None,
         }
