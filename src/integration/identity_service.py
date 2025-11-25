@@ -84,20 +84,14 @@ class IdentityService:
 
         logger.debug("Computing fresh SelfModelSnapshot")
 
-        # Read all beliefs from store and filter by type
+        # Read all beliefs from store and classify by confidence
         core_beliefs = []
         peripheral_beliefs = []
         if self.belief_store:
             try:
                 all_beliefs = self.belief_store.get_current()  # Returns Dict[str, BeliefVersion]
 
-                # Core beliefs: ontological with confidence=1.0
-                core_types = {"ontological"}
-                # Peripheral beliefs: everything else that's mutable
-                peripheral_types = {"experiential", "axiological", "epistemological", "capability"}
-
                 for belief_id, belief in all_beliefs.items():
-                    belief_type = getattr(belief, 'belief_type', '').lower()
                     confidence = getattr(belief, 'confidence', 0.0)
                     state = getattr(belief, 'state', '')
 
@@ -105,9 +99,11 @@ class IdentityService:
                     if state != 'asserted':
                         continue
 
-                    if belief_type in core_types and confidence >= 1.0:
+                    # Core beliefs: high confidence (>=1.0) foundational beliefs
+                    # Peripheral beliefs: everything else that's asserted
+                    if confidence >= 1.0:
                         core_beliefs.append(belief)
-                    elif belief_type in peripheral_types:
+                    else:
                         peripheral_beliefs.append(belief)
 
                 logger.debug(f"Loaded {len(core_beliefs)} core beliefs, {len(peripheral_beliefs)} peripheral beliefs")
