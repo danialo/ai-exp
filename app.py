@@ -902,10 +902,14 @@ async def startup_awareness():
                 event_hub = IntegrationEventHub()
                 logger.info("IntegrationEventHub created")
 
-                # Create identity service (Phase 1: minimal, no full wiring yet)
-                # In Phase 2, we'll wire belief_store, persona_files, etc.
-                identity_service = IdentityService()
-                logger.info("IdentityService created (Phase 1: stub mode)")
+                # Create identity service with full wiring to subsystems
+                identity_service = IdentityService(
+                    belief_store=belief_store,
+                    persona_file_manager=persona_service.file_manager if persona_service else None,
+                    awareness_loop=awareness_loop,
+                    identity_ledger=None  # TODO: Wire identity ledger when available
+                )
+                logger.info("IdentityService created with belief_store, persona_files, awareness_loop")
 
                 # Create and start Integration Layer
                 integration_layer = IntegrationLayer(

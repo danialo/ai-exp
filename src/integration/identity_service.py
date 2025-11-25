@@ -84,34 +84,45 @@ class IdentityService:
 
         logger.debug("Computing fresh SelfModelSnapshot")
 
-        # Read core beliefs (immutable ontological)
+        # Read all beliefs from store and filter by type
         core_beliefs = []
-        if self.belief_store:
-            try:
-                # BeliefType.ONTOLOGICAL with confidence=1.0
-                core_beliefs = self.belief_store.get_beliefs(
-                    belief_types=["ONTOLOGICAL"],
-                    confidence_min=1.0
-                )
-            except Exception as e:
-                logger.warning(f"Could not read core beliefs: {e}")
-
-        # Read peripheral beliefs (mutable)
         peripheral_beliefs = []
         if self.belief_store:
             try:
-                peripheral_beliefs = self.belief_store.get_beliefs(
-                    belief_types=["EXPERIENTIAL", "AXIOLOGICAL", "EPISTEMOLOGICAL", "CAPABILITY"]
-                )
+                all_beliefs = self.belief_store.get_current()  # Returns Dict[str, BeliefVersion]
+
+                # Core beliefs: ontological with confidence=1.0
+                core_types = {"ontological"}
+                # Peripheral beliefs: everything else that's mutable
+                peripheral_types = {"experiential", "axiological", "epistemological", "capability"}
+
+                for belief_id, belief in all_beliefs.items():
+                    belief_type = getattr(belief, 'belief_type', '').lower()
+                    confidence = getattr(belief, 'confidence', 0.0)
+                    state = getattr(belief, 'state', '')
+
+                    # Skip non-asserted beliefs
+                    if state != 'asserted':
+                        continue
+
+                    if belief_type in core_types and confidence >= 1.0:
+                        core_beliefs.append(belief)
+                    elif belief_type in peripheral_types:
+                        peripheral_beliefs.append(belief)
+
+                logger.debug(f"Loaded {len(core_beliefs)} core beliefs, {len(peripheral_beliefs)} peripheral beliefs")
             except Exception as e:
-                logger.warning(f"Could not read peripheral beliefs: {e}")
+                logger.warning(f"Could not read beliefs: {e}")
 
         # Read traits from persona_space/identity/traits.json
         traits = {}
         if self.persona_files:
             try:
-                traits_data = self.persona_files.read_file("identity/traits.json")
-                traits = {t['name']: t['value'] for t in traits_data.get('traits', [])}
+                import json
+                traits_raw = self.persona_files.read_file("identity/traits.json")
+                if traits_raw:
+                    traits_data = json.loads(traits_raw) if isinstance(traits_raw, str) else traits_raw
+                    traits = {t['name']: t['value'] for t in traits_data.get('traits', [])}
             except Exception as e:
                 logger.warning(f"Could not read traits: {e}")
 
