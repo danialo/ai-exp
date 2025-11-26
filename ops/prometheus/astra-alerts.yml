@@ -1,0 +1,48 @@
+groups:
+  - name: astra-integration-layer
+    rules:
+      # Alert 1: Tick Duration p95 > 1s
+      # If the executive loop is taking too long, something is wrong
+      - alert: AstraTickDurationHigh
+        expr: histogram_quantile(0.95, sum(rate(astra_tick_duration_seconds_bucket[5m])) by (le)) > 1.0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Astra tick duration p95 is high"
+          description: "Executive loop tick duration p95 is {{ $value | printf \"%.2f\" }}s (threshold: 1.0s). This may indicate a slow subsystem or resource contention."
+          runbook_url: "https://github.com/your-repo/docs/runbooks/astra-tick-duration.md"
+
+      # Alert 2: Error Rate (actions dispatched but failing)
+      # Monitor for dispatch failures using the error logs
+      - alert: AstraCognitivLoadCritical
+        expr: astra_cognitive_load > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Astra cognitive load is critical"
+          description: "Cognitive load is {{ $value | printf \"%.2f\" }} (threshold: 0.9). Astra may be overwhelmed with too many concurrent focus items or goals."
+          runbook_url: "https://github.com/your-repo/docs/runbooks/astra-cognitive-load.md"
+
+      # Alert 3: Budget Exhaustion - Token budget depleted
+      - alert: AstraTokenBudgetExhausted
+        expr: astra_budget_tokens_available < 100
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Astra token budget nearly exhausted"
+          description: "Only {{ $value }} tokens available. Astra will be unable to perform LLM operations until budget resets."
+          runbook_url: "https://github.com/your-repo/docs/runbooks/astra-token-budget.md"
+
+      # Bonus Alert: Identity Drift Warning
+      - alert: AstraIdentityDriftHigh
+        expr: astra_anchor_drift > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Astra identity drift is high"
+          description: "Identity drift from origin anchor is {{ $value | printf \"%.3f\" }} (threshold: 0.2). Core beliefs may be changing significantly."
+          runbook_url: "https://github.com/your-repo/docs/runbooks/astra-identity-drift.md"

@@ -613,12 +613,15 @@ class IntegrationLayer:
         self.state.mode = new_mode
         logger.info(f"[IL] Mode transition: {old_mode.value} → {new_mode.value}")
 
-        # Publish mode change event
-        self.event_hub.publish("mode_changed", {
-            "from": old_mode.value,
-            "to": new_mode.value,
-            "tick": self._tick_count,
-        })
+        # Publish mode change event (non-critical, don't crash on failure)
+        try:
+            self.event_hub.publish("mode_changed", {
+                "from": old_mode.value,
+                "to": new_mode.value,
+                "tick": self._tick_count,
+            })
+        except Exception as e:
+            logger.error(f"[IL] Failed to publish mode_changed event: {e}")
 
     def record_user_interaction(self):
         """Record that user interaction occurred (call from chat handler)."""
@@ -867,11 +870,14 @@ class IntegrationLayer:
         elif action.action_type == ActionType.INTROSPECTION:
             # Trigger awareness loop introspection
             if self.awareness_loop and hasattr(self.awareness_loop, 'trigger_introspection'):
-                await self.awareness_loop.trigger_introspection()
-                self._last_introspection_tick = self._tick_count
-                self.introspections_today += 1
-                self.state.last_introspection = datetime.now()
-                logger.info(f"[IL] Dispatched INTROSPECTION (tick {self._tick_count})")
+                try:
+                    await self.awareness_loop.trigger_introspection()
+                    self._last_introspection_tick = self._tick_count
+                    self.introspections_today += 1
+                    self.state.last_introspection = datetime.now()
+                    logger.info(f"[IL] Dispatched INTROSPECTION (tick {self._tick_count})")
+                except Exception as e:
+                    logger.error(f"[IL] Introspection failed: {e}")
 
         elif action.action_type == ActionType.GOAL_PURSUIT:
             # Publish event for HTN planner / task executor
