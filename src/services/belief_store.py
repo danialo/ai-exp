@@ -126,11 +126,43 @@ class BeliefStore:
         self.mutations_enabled = False
         logger.warning("BeliefStore mutations DISABLED")
 
+    # Stability threshold - beliefs with stability >= this cannot be mutated
+    STABILITY_THRESHOLD = 0.95
+
     def _check_mutation_allowed(self, belief_id: str, operation: str) -> bool:
         """Check if mutation is allowed. Returns False and logs if blocked."""
         if not self.mutations_enabled:
             logger.warning(f"BLOCKED: Belief mutation '{operation}' for {belief_id} - mutations disabled")
             return False
+        return True
+
+    def _check_belief_mutable(self, belief_id: str, belief_data: dict, operation: str) -> bool:
+        """
+        Check if a specific belief can be mutated based on its properties.
+
+        Blocks mutation if:
+        - immutable flag is True
+        - stability >= STABILITY_THRESHOLD (0.95)
+        - is_core flag is True
+
+        Returns False and logs if blocked.
+        """
+        # Check immutable flag
+        if belief_data.get("immutable", False):
+            logger.error(f"BLOCKED: Cannot {operation} immutable belief {belief_id}")
+            return False
+
+        # Check stability (metadata or top-level)
+        stability = belief_data.get("stability") or belief_data.get("metadata", {}).get("stability", 0.0)
+        if stability >= self.STABILITY_THRESHOLD:
+            logger.error(f"BLOCKED: Cannot {operation} high-stability belief {belief_id} (stability={stability})")
+            return False
+
+        # Check is_core flag
+        if belief_data.get("is_core", False) or belief_data.get("metadata", {}).get("is_core", False):
+            logger.error(f"BLOCKED: Cannot {operation} core belief {belief_id}")
+            return False
+
         return True
 
     def _initialize_empty_store(self):
@@ -258,6 +290,10 @@ class BeliefStore:
                 if from_ver != 0:
                     raise ValueError(f"CREATE requires from_ver=0, got {from_ver}")
             else:
+                # SAFETY: Check if belief is mutable (stability, immutable, is_core)
+                if not self._check_belief_mutable(belief_id, current[belief_id], f"apply_delta({op})"):
+                    return False
+
                 # Check version (optimistic lock)
                 current_belief = BeliefVersion(**current[belief_id])
                 if current_belief.ver != from_ver:
@@ -519,6 +555,10 @@ class BeliefStore:
 
             if belief_id not in current:
                 logger.warning(f"Cannot deprecate non-existent belief: {belief_id}")
+                return False
+
+            # SAFETY: Check if belief is mutable (stability, immutable, is_core)
+            if not self._check_belief_mutable(belief_id, current[belief_id], "deprecate_belief"):
                 return False
 
             current_belief = BeliefVersion(**current[belief_id])
