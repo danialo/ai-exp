@@ -284,6 +284,29 @@ class AwarenessLoop:
         # Release lock
         await self.lock.release()
 
+    async def trigger_introspection(self) -> bool:
+        """
+        Trigger an introspection cycle immediately.
+
+        Called by IntegrationLayer in Phase 2+ to control introspection timing.
+        Returns True if introspection was executed, False if skipped.
+
+        This method allows IL to take over introspection scheduling while
+        the internal _introspection_loop continues running (for backwards
+        compatibility). In Phase 2, the internal loop will be disabled.
+        """
+        if not self.running:
+            logger.warning("[INTROSPECT] trigger_introspection called but loop not running")
+            return False
+
+        try:
+            logger.info("[INTROSPECT] External trigger from IntegrationLayer")
+            await self._introspection_tick()
+            return True
+        except Exception as e:
+            logger.error(f"[INTROSPECT] External trigger failed: {e}", exc_info=True)
+            return False
+
     async def observe(self, kind: str, payload: Dict[str, Any]) -> None:
         """
         Add observation to percept queue.

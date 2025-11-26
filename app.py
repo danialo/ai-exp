@@ -919,14 +919,17 @@ async def startup_awareness():
                 )
                 logger.info("IdentityService created with belief_store, persona_files, awareness_loop")
 
-                # Create and start Integration Layer
+                # Create and start Integration Layer (Phase 2: Executive Loop)
                 integration_layer = IntegrationLayer(
                     event_hub=event_hub,
                     identity_service=identity_service,
-                    mode=ExecutionMode.INTERACTIVE
+                    mode=ExecutionMode.INTERACTIVE,
+                    awareness_loop=awareness_loop,  # For IL-controlled introspection
+                    belief_gardener=belief_gardener if 'belief_gardener' in dir() else None,
+                    snapshot_dir=Path("data/integration_snapshots"),
                 )
                 await integration_layer.start()
-                logger.info("IntegrationLayer started successfully")
+                logger.info("IntegrationLayer started (Phase 2: executive loop with introspection control)")
 
                 # Wire event_hub to awareness loop (recreate with event_hub)
                 # Note: In Phase 1, we're not recreating awareness_loop - it's already running
