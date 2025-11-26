@@ -127,8 +127,10 @@ app.add_middleware(
 # Include decision framework API router
 from src.api.decision_endpoints import router as decision_router
 from src.api.goal_endpoints import router as goal_router
+from src.api.integration_endpoints import router as integration_router
 app.include_router(decision_router)
 app.include_router(goal_router)
+app.include_router(integration_router)
 
 # Initialize components
 raw_store = create_raw_store(settings.RAW_STORE_DB_PATH)
