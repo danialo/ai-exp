@@ -56,6 +56,9 @@ class BeliefVersion:
     rationale: str
     metadata: Dict[str, Any]
     hash: str  # SHA-256 of canonical JSON (without hash field)
+    # Safety fields (Phase 1.5 identity protection)
+    stability: float = 0.0  # [0.0, 1.0] - beliefs >= 0.95 cannot be mutated
+    is_core: bool = False  # Core identity beliefs get triple protection
 
     def compute_hash(self) -> str:
         """Compute SHA-256 hash of belief (excluding hash field)."""

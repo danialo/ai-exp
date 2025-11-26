@@ -386,7 +386,19 @@ class IdentityService:
         belief = all_beliefs[belief_id]
         belief_type = getattr(belief, 'belief_type', '').lower()
 
-        # 4. Check protected types
+        # 4. Check core/stability protection (triple protection for identity)
+        is_core = getattr(belief, 'is_core', False)
+        stability = getattr(belief, 'stability', 0.0)
+
+        if is_core:
+            logger.warning(f"BLOCKED: Belief {belief_id} is marked is_core=True, immutable")
+            return False
+
+        if stability >= 0.95:
+            logger.warning(f"BLOCKED: Belief {belief_id} has stability={stability:.2f} >= 0.95, immutable")
+            return False
+
+        # 5. Check protected types
         if belief_type in self.PROTECTED_BELIEF_TYPES:
             if cause not in {"DISSONANCE_RESOLUTION", "ADMIN_OVERRIDE"}:
                 logger.warning(

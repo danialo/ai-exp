@@ -444,6 +444,24 @@ class RawStore:
             return exp is not None
         # TODO: Implement full tombstone logic with WAL entry
 
+    def list_by_session(self, session_id: str) -> list[ExperienceModel]:
+        """Get all experiences for a session.
+
+        Args:
+            session_id: Session ID to filter by
+
+        Returns:
+            List of ExperienceModels ordered by creation time
+        """
+        with Session(self.engine) as session:
+            statement = (
+                select(Experience)
+                .where(Experience.session_id == session_id)
+                .order_by(Experience.created_at.asc())
+            )
+            experiences = session.exec(statement).all()
+            return [experience_to_model(exp) for exp in experiences]
+
     def count_experiences(self, experience_type: Optional[ExperienceType] = None) -> int:
         """Count total experiences in store.
 

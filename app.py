@@ -67,6 +67,7 @@ from src.services.contrarian_sampler import (
     DossierStatus,
 )
 from src.services.belief_gardener import create_belief_gardener, GardenerConfig
+from src.services.belief_consolidator import create_belief_consolidator, ConsolidatorConfig
 from src.services.tag_injector import create_tag_injector
 from src.services.self_knowledge_index import create_self_knowledge_index
 from src.services.provenance_trust import create_provenance_trust, TrustConfig
@@ -611,6 +612,24 @@ if belief_store and raw_store and enhanced_feedback_aggregator:
     )
     logger.info(f"Belief gardener initialized with outcome-driven feedback (enabled={gardener_config.enabled})")
 
+# Initialize belief consolidator (LLM-based, less frequent than gardener)
+belief_consolidator = None
+if belief_store and raw_store and llm_service:
+    consolidator_config = ConsolidatorConfig(
+        enabled=True,
+        lookback_hours=24,
+        max_narratives_per_scan=100,
+    )
+    belief_consolidator = create_belief_consolidator(
+        llm_service=llm_service,
+        belief_store=belief_store,
+        raw_store=raw_store,
+        belief_vector_store=belief_vector_store if 'belief_vector_store' in dir() else None,
+        config=consolidator_config,
+        persona_space_path=str(settings.PERSONA_SPACE_PATH),
+    )
+    logger.info("Belief consolidator initialized (LLM-based, runs every 6 hours)")
+
 # Initialize tag injector for feedback tagging
 tag_injector = None
 if belief_store and llm_service:
@@ -926,6 +945,7 @@ async def startup_awareness():
                     mode=ExecutionMode.INTERACTIVE,
                     awareness_loop=awareness_loop,  # For IL-controlled introspection
                     belief_gardener=belief_gardener if 'belief_gardener' in dir() else None,
+                    belief_consolidator=belief_consolidator if 'belief_consolidator' in dir() else None,
                     snapshot_dir=Path("data/integration_snapshots"),
                 )
                 await integration_layer.start()
@@ -2944,6 +2964,53 @@ async def consolidate_beliefs():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error consolidating beliefs: {str(e)}")
+
+
+@app.post("/api/beliefs/consolidate-llm")
+async def consolidate_beliefs_llm():
+    """Trigger LLM-based belief consolidation (deeper analysis than pattern-based)."""
+    if not belief_consolidator:
+        raise HTTPException(status_code=503, detail="Belief consolidator not enabled")
+
+    try:
+        result = belief_consolidator.consolidate_beliefs()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error in LLM consolidation: {str(e)}")
+
+
+@app.get("/api/beliefs/conflicts")
+async def get_belief_conflicts():
+    """Get detected belief-experience conflicts."""
+    if not belief_consolidator:
+        raise HTTPException(status_code=503, detail="Belief consolidator not enabled")
+
+    try:
+        conflicts = belief_consolidator.get_pending_conflicts()
+        return {
+            "conflicts": conflicts,
+            "count": len(conflicts),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting conflicts: {str(e)}")
+
+
+@app.post("/api/beliefs/conflicts/{belief_id}/resolve")
+async def resolve_belief_conflict(belief_id: str, resolution: str):
+    """Resolve a belief-experience conflict."""
+    if not belief_consolidator:
+        raise HTTPException(status_code=503, detail="Belief consolidator not enabled")
+
+    try:
+        success = belief_consolidator.resolve_conflict(belief_id, resolution)
+        if success:
+            return {"status": "resolved", "belief_id": belief_id}
+        else:
+            raise HTTPException(status_code=404, detail="Conflict not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error resolving conflict: {str(e)}")
 
 
 # Task Scheduler Endpoints

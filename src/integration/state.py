@@ -50,6 +50,58 @@ class FocusItem:
     min_salience_threshold: float  # When to evict from stack
 
 
+class ActionType(Enum):
+    """Types of actions the IL can dispatch."""
+    USER_RESPONSE = "user_response"        # Respond to user message
+    GOAL_PURSUIT = "goal_pursuit"          # Work on active goal
+    INTROSPECTION = "introspection"        # Self-reflection
+    DISSONANCE_RESOLUTION = "dissonance_resolution"  # Resolve identity conflict
+    BELIEF_GARDENING = "belief_gardening"  # Maintenance: belief formation/promotion
+    GOAL_ADOPTION = "goal_adoption"        # Adopt a proposed goal
+    MEMORY_CONSOLIDATION = "memory_consolidation"  # Phase 4: consolidate sessions/insights
+
+
+class ConflictType(Enum):
+    """Types of conflicts detected by IL."""
+    GOAL_GOAL = "goal_goal"            # Two goals contradict each other
+    GOAL_CONSTRAINT = "goal_constraint"  # Goal violates safety constraint
+    RESOURCE = "resource"              # Multiple actions want same resource
+    DISSONANCE_GOAL = "dissonance_goal"  # Belief contradicts active goal
+
+
+@dataclass
+class Action:
+    """An action selected by the IL for dispatch."""
+    action_type: ActionType
+    target_id: Optional[str]  # ID of target (goal, dissonance, user message, etc.)
+    priority: int  # Higher = more urgent (CRITICAL=4, HIGH=3, NORMAL=2, LOW=1)
+    estimated_cost: Dict[str, int] = field(default_factory=dict)  # e.g., {'tokens': 500}
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Conflict:
+    """A conflict detected between goals, tasks, or constraints."""
+    conflict_type: ConflictType
+    involved: List[str]  # IDs of involved entities (goals, beliefs, etc.)
+    severity: float  # 0.0-1.0
+    description: str = ""
+
+
+@dataclass
+class GoalHandle:
+    """Lightweight reference to a goal for IL tracking."""
+    id: str
+    text: str
+    value: float
+    effort: float
+    risk: float
+    category: str
+    state: str
+    contradicts: List[str] = field(default_factory=list)
+    aligns_with: List[str] = field(default_factory=list)
+
+
 @dataclass
 class BudgetStatus:
     """Current budget allocation and usage."""
