@@ -107,9 +107,31 @@ class BeliefStore:
 
         self._lock = threading.RLock()
 
+        # SAFETY: Kill switch for belief mutations
+        # Set to False to freeze all belief writes
+        self.mutations_enabled = False  # FROZEN by default until safety controls in place
+        logger.warning("BeliefStore initialized with mutations DISABLED (safety freeze)")
+
         # Initialize if needed
         if not self.current_file.exists():
             self._initialize_empty_store()
+
+    def enable_mutations(self):
+        """Enable belief mutations (use with caution)."""
+        self.mutations_enabled = True
+        logger.warning("BeliefStore mutations ENABLED")
+
+    def disable_mutations(self):
+        """Disable belief mutations (safety freeze)."""
+        self.mutations_enabled = False
+        logger.warning("BeliefStore mutations DISABLED")
+
+    def _check_mutation_allowed(self, belief_id: str, operation: str) -> bool:
+        """Check if mutation is allowed. Returns False and logs if blocked."""
+        if not self.mutations_enabled:
+            logger.warning(f"BLOCKED: Belief mutation '{operation}' for {belief_id} - mutations disabled")
+            return False
+        return True
 
     def _initialize_empty_store(self):
         """Initialize empty belief store."""
@@ -209,6 +231,10 @@ class BeliefStore:
         Raises:
             ValueError: If delta violates guardrails
         """
+        # SAFETY: Check kill switch
+        if not self._check_mutation_allowed(belief_id, f"apply_delta({op})"):
+            return False
+
         evidence_refs_added = evidence_refs_added or []
         evidence_refs_removed = evidence_refs_removed or []
 
@@ -374,6 +400,10 @@ class BeliefStore:
         Returns:
             True if created successfully, False if already exists
         """
+        # SAFETY: Check kill switch
+        if not self._check_mutation_allowed(belief_id, "create_belief"):
+            return False
+
         metadata = metadata or {}
 
         with self._lock:
@@ -474,6 +504,10 @@ class BeliefStore:
         Returns:
             True if deprecated successfully
         """
+        # SAFETY: Check kill switch
+        if not self._check_mutation_allowed(belief_id, "deprecate_belief"):
+            return False
+
         metadata_update = {"deprecated": True}
         if replacement_id:
             metadata_update["replacement_id"] = replacement_id
