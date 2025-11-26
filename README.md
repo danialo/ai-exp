@@ -593,6 +593,10 @@ python scripts/init_db.py
 
 Only one process should write to the database at a time. Stop the web server before running CLI scripts that write to the database.
 
+## Development Methodology
+
+This project is purely vibe coded using [Claude Code](https://claude.ai/claude-code). The architecture emerged through iterative conversation-driven development, prioritizing working systems over formal specifications.
+
 ## Contributing
 
 This is an experimental MVP. Contributions welcome via issues and pull requests.
