@@ -418,6 +418,14 @@ if settings.PERSONA_MODE_ENABLED:
     # Expose to API endpoints
     app.state.belief_store = belief_store
 
+    # SAFETY: Enable mutations only if explicitly configured
+    # Mutations are FROZEN by default - require BELIEF_MUTATIONS_ENABLED=true
+    if settings.BELIEF_MUTATIONS_ENABLED:
+        belief_store.enable_mutations()
+        logger.warning("Belief mutations ENABLED via BELIEF_MUTATIONS_ENABLED=true")
+    else:
+        logger.info("Belief mutations remain FROZEN (set BELIEF_MUTATIONS_ENABLED=true to enable)")
+
     # Run migration from legacy belief system if needed
     try:
         migration_report = run_migration(

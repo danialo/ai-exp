@@ -187,6 +187,10 @@ class Settings:
     IDENTITY_ANCHOR_BETA_WEEK_CAP: float = float(os.getenv("IDENTITY_ANCHOR_BETA_WEEK_CAP", "0.01"))
     IDENTITY_LEDGER_DIR: str = os.getenv("IDENTITY_LEDGER_DIR", str(PROJECT_ROOT / "data" / "identity"))
 
+    # Belief mutation safety controls
+    # CAUTION: Only enable after safety rails are in place (IdentityService policy enforcement)
+    BELIEF_MUTATIONS_ENABLED: bool = os.getenv("BELIEF_MUTATIONS_ENABLED", "false").lower() == "true"
+
     # Autonomous belief gardener configuration
     BELIEF_GARDENER_ENABLED: bool = os.getenv("BELIEF_GARDENER_ENABLED", "false").lower() == "true"
     BELIEF_GARDENER_SCAN_INTERVAL: int = int(os.getenv("BELIEF_GARDENER_SCAN_INTERVAL", "60"))  # minutes
