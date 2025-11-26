@@ -671,6 +671,54 @@ class LLMService:
         merged = self._parse_json_or_die(raw)
         return merged
 
+    def generate_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ):
+        """Stream tokens as they arrive from the LLM.
+
+        This is a generator that yields content tokens one at a time.
+        Used for Server-Sent Events (SSE) streaming responses.
+
+        Args:
+            messages: List of message dicts (role, content)
+            temperature: Override default temperature
+            max_tokens: Override default max_tokens
+
+        Yields:
+            str: Content tokens as they arrive
+        """
+        # Detect reasoning models
+        is_reasoning_model = any(x in self.model.lower() for x in ["gpt-5", "o1", "o3"])
+        max_tokens_param = "max_completion_tokens" if is_reasoning_model else "max_tokens"
+
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+        }
+
+        # Only add max_tokens if explicitly set
+        final_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+        if final_max_tokens is not None:
+            kwargs[max_tokens_param] = final_max_tokens
+
+        # Only add temperature for non-reasoning models
+        if not is_reasoning_model:
+            kwargs["temperature"] = temperature if temperature is not None else self.temperature
+
+        logger.info(f"Starting streaming response from {self.model}")
+
+        response = self.client.chat.completions.create(**kwargs)
+
+        for chunk in response:
+            if chunk.choices and len(chunk.choices) > 0:
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    yield delta.content
+
     def tool_call(
         self,
         system: str,

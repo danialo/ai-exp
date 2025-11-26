@@ -8,13 +8,15 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 import uvicorn
 import numpy as np
+import json
+from uuid import uuid4
 
 # Import multi-file logging system
 from src.utils.logging_config import get_multi_logger, configure_root_logger
@@ -1267,8 +1269,47 @@ class StatsResponse(BaseModel):
     """Response model for stats endpoint."""
     total_experiences: int
     total_vectors: int
-    llm_model: Optional[str]
-    llm_enabled: bool
+
+
+# OpenAI-compatible API models for Open WebUI integration
+class OpenAIMessage(BaseModel):
+    """OpenAI chat message format."""
+    role: str  # "system", "user", "assistant"
+    content: str
+
+
+class OpenAIChatRequest(BaseModel):
+    """OpenAI-compatible chat completion request."""
+    model: str
+    messages: List[OpenAIMessage]
+    temperature: Optional[float] = 0.7
+    max_tokens: Optional[int] = None
+    stream: Optional[bool] = False
+
+
+class OpenAIChoice(BaseModel):
+    """OpenAI chat completion choice."""
+    index: int
+    message: Optional[Dict[str, str]] = None  # Non-streaming
+    delta: Optional[Dict[str, str]] = None    # Streaming
+    finish_reason: Optional[str] = None
+
+
+class OpenAIUsage(BaseModel):
+    """OpenAI usage statistics."""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+class OpenAIChatResponse(BaseModel):
+    """OpenAI-compatible chat completion response."""
+    id: str
+    object: str = "chat.completion"
+    created: int
+    model: str
+    choices: List[OpenAIChoice]
+    usage: Optional[OpenAIUsage] = None
 
 
 # Helper function to create LLM service dynamically
@@ -3946,6 +3987,184 @@ async def get_awareness_metrics_detailed():
         return metrics
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get metrics: {str(e)}")
+
+
+# =============================================================================
+# OpenAI-Compatible API Endpoints (for Open WebUI integration)
+# =============================================================================
+
+@app.get("/v1/models")
+async def openai_list_models():
+    """List available models in OpenAI format for Open WebUI discovery."""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "astra",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "astra",
+                "permission": [],
+                "root": "astra",
+                "parent": None,
+            }
+        ]
+    }
+
+
+def _convert_openai_to_astra(request: OpenAIChatRequest) -> tuple:
+    """Convert OpenAI message format to Astra's internal format.
+
+    Returns:
+        Tuple of (user_message, conversation_history, system_prompt)
+    """
+    system_prompt = None
+    conversation_history = []
+    user_message = ""
+
+    for msg in request.messages:
+        if msg.role == "system":
+            system_prompt = msg.content
+        elif msg.role == "user":
+            user_message = msg.content  # Last user message becomes the prompt
+            # Also add to history for context
+            conversation_history.append({"role": "user", "content": msg.content})
+        elif msg.role == "assistant":
+            conversation_history.append({"role": "assistant", "content": msg.content})
+
+    # Remove the last user message from history since it's the active prompt
+    if conversation_history and conversation_history[-1]["role"] == "user":
+        conversation_history = conversation_history[:-1]
+
+    return user_message, conversation_history, system_prompt
+
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(request: OpenAIChatRequest):
+    """OpenAI-compatible chat completions endpoint.
+
+    Routes through the full persona service - this IS Astra, with:
+    - Full self-aware prompt with beliefs/traits
+    - Tool calling (execute_goal, file operations, etc.)
+    - Memory retrieval and storage
+    - Affect tracking and mood
+
+    Enables Open WebUI and other OpenAI-compatible clients to talk to Astra.
+    Note: Streaming is not supported through persona service - returns complete response.
+    """
+    if not persona_service:
+        raise HTTPException(status_code=503, detail="Persona service not enabled")
+
+    # Convert OpenAI format to Astra format
+    user_message, conversation_history, system_prompt = _convert_openai_to_astra(request)
+
+    if not user_message:
+        raise HTTPException(status_code=400, detail="No user message found in request")
+
+    logger.info(f"OpenAI API request (persona): model={request.model}, stream={request.stream}, msg_len={len(user_message)}")
+
+    try:
+        # Use the full persona service - same as /api/persona/chat
+        result = persona_service.generate_response(
+            user_message=user_message,
+            retrieve_memories=True,
+            top_k=3,
+            conversation_history=conversation_history
+        )
+
+        # Handle dissonance resolution case
+        if isinstance(result, dict) and result.get("resolution_required"):
+            response_text = result["response"]
+        else:
+            # Normal response (tuple unpacking)
+            response_text, reconciliation = result
+
+        # Store the interaction in memory
+        user_valence, user_arousal, user_dominance = affect_detector.detect_vad(user_message)
+        interaction = InteractionPayload(
+            prompt=user_message,
+            response=response_text,
+            valence=user_valence,
+            arousal=user_arousal,
+            dominance=user_dominance,
+        )
+        ingestion_result = ingestion_pipeline.ingest_interaction(interaction)
+        logger.info(f"Stored OpenAI API interaction: {ingestion_result.experience_id}")
+
+        # Format as OpenAI response
+        openai_response = OpenAIChatResponse(
+            id=f"chatcmpl-{uuid4()}",
+            created=int(time.time()),
+            model=request.model,
+            choices=[
+                OpenAIChoice(
+                    index=0,
+                    message={"role": "assistant", "content": response_text},
+                    finish_reason="stop"
+                )
+            ],
+            usage=OpenAIUsage(
+                prompt_tokens=len(user_message) // 4,
+                completion_tokens=len(response_text) // 4,
+                total_tokens=(len(user_message) + len(response_text)) // 4,
+            )
+        )
+
+        if request.stream:
+            # Fake streaming - send the complete response as SSE chunks
+            # (True streaming would require refactoring persona_service)
+            async def fake_stream():
+                completion_id = f"chatcmpl-{uuid4()}"
+                created = int(time.time())
+
+                # Stream the response word by word for a streaming feel
+                words = response_text.split(' ')
+                for i, word in enumerate(words):
+                    token = word if i == 0 else ' ' + word
+                    chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": request.model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": token},
+                            "finish_reason": None
+                        }]
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
+
+                # Final chunk
+                final_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": request.model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop"
+                    }]
+                }
+                yield f"data: {json.dumps(final_chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                fake_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                }
+            )
+        else:
+            return openai_response
+
+    except Exception as e:
+        logger.error(f"OpenAI chat completion error: {e}")
+        logger.exception("Full traceback:")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Mount static files
