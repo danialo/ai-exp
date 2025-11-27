@@ -282,7 +282,8 @@ async def change_mode(request: Request, mode_request: ModeChangeRequest):
     previous_mode = integration_layer.state.mode.value
     new_mode_enum = valid_modes[mode_request.mode]
 
-    # Change the mode
+    # Change the mode (both IL.mode and IL.state.mode need to be updated)
+    integration_layer.mode = new_mode_enum
     integration_layer.state.mode = new_mode_enum
 
     return ModeChangeResponse(
@@ -304,9 +305,9 @@ async def get_tick_history(request: Request, limit: int = 20):
     if not integration_layer:
         raise HTTPException(status_code=503, detail="Integration Layer not initialized")
 
-    # Get tick history if available
-    tick_history = getattr(integration_layer, 'tick_history', [])
-    action_log = getattr(integration_layer, 'action_log', [])
+    # Get tick history if available (convert deque to list for slicing)
+    tick_history = list(getattr(integration_layer, 'tick_history', []))
+    action_log = list(getattr(integration_layer, 'action_log', []))
 
     # Get recent ticks (most recent first)
     recent_ticks = tick_history[-limit:][::-1] if tick_history else []

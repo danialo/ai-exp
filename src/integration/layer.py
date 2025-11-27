@@ -163,6 +163,10 @@ class IntegrationLayer:
         self._goal_proposal_queue: List[str] = []  # Goal IDs awaiting adoption
         self._pending_conflicts: List[Conflict] = []
 
+        # Phase 5: Tick history for observability
+        self.tick_history: deque = deque(maxlen=1000)
+        self.action_log: deque = deque(maxlen=1000)
+
         logger.info(
             f"IntegrationLayer initialized (Phase 3: full arbitration, mode={mode.value}, "
             f"tick_interval={self.TICK_INTERVAL_SECONDS}s)"
@@ -364,10 +368,11 @@ class IntegrationLayer:
 
     async def _execute_tick(self):
         """Execute one tick of the Executive Loop (Phase 3: full arbitration)."""
+        tick_start = datetime.now()
         self._tick_count += 1
         self.total_ticks_executed += 1
         self.state.tick_id = self._tick_count
-        self.state.timestamp = datetime.now()
+        self.state.timestamp = tick_start
 
         # === PHASE 0: MODE TRANSITION CHECK ===
         self._check_mode_transition()
@@ -399,6 +404,27 @@ class IntegrationLayer:
         if self._tick_count - self._last_snapshot_tick >= self.SNAPSHOT_INTERVAL_TICKS:
             await self._persist_snapshot()
             self._last_snapshot_tick = self._tick_count
+
+        # === PHASE 9: RECORD HISTORY ===
+        tick_duration = (datetime.now() - tick_start).total_seconds()
+        self.tick_history.append({
+            "tick_id": self._tick_count,
+            "timestamp": tick_start.isoformat(),
+            "duration_ms": round(tick_duration * 1000, 2),
+            "signals_processed": len(signals),
+            "actions_dispatched": len(actions),
+            "mode": self.mode.value,
+            "focus_stack_size": len(self.state.focus_stack),
+            "cognitive_load": self.state.cognitive_load,
+        })
+
+        for action in actions:
+            self.action_log.append({
+                "tick_id": self._tick_count,
+                "timestamp": tick_start.isoformat(),
+                "action_type": action.action_type.value,
+                "target_id": action.target_id,
+            })
 
     # =========================================================================
     # PHASE 1: COLLECT SIGNALS
@@ -874,7 +900,9 @@ class IntegrationLayer:
                     await self.awareness_loop.trigger_introspection()
                     self._last_introspection_tick = self._tick_count
                     self.introspections_today += 1
-                    self.state.last_introspection = datetime.now()
+                    now = datetime.now()
+                    self.state.last_introspection = now
+                    self.state.budget_status.last_introspection = now  # For cooldown tracking
                     logger.info(f"[IL] Dispatched INTROSPECTION (tick {self._tick_count})")
                 except Exception as e:
                     logger.error(f"[IL] Introspection failed: {e}")
