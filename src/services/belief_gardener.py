@@ -28,6 +28,14 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+# Shared statement validation
+from src.utils.statement_validation import (
+    canonicalize_statement,
+    is_valid_statement,
+    normalize_for_grouping,
+    looks_like_template_noise as _looks_like_template_noise,
+)
 from pathlib import Path
 from threading import Lock
 import re
@@ -47,19 +55,31 @@ _TEMPLATE_NOISE_PATTERNS = [
     re.compile(r"^\[?internal emotional assessment[:\]]", re.I),
     re.compile(r"^\[?internal (state|note)[:\]]", re.I),
     re.compile(r"^\(system\)|^\[system\]", re.I),
+    # System role prefixes
+    re.compile(r"^(ASSISTANT|USER|SYSTEM):", re.I),
+    re.compile(r"^(Response|Answer|Corrected Answer):", re.I),
+    # API/technical fragments
+    re.compile(r"/api/|/v\d+/|\*\*/api/", re.I),
+    re.compile(r"Schema:|Endpoint:|Route:", re.I),
+    # System instructions/pledges
+    re.compile(r"^Pledge (enforcement|reminder)", re.I),
+    re.compile(r"UNKNOWN.*resisting.*urge.*speculate", re.I),
+    # Meta-instructions
+    re.compile(r"^(When you|If you|You (should|must|will))", re.I),
+    re.compile(r"^\*\s+(When|If|You)", re.I),
+    # Markdown/formatting artifacts
+    re.compile(r"^#{1,6}\s+", re.I),
+    re.compile(r"^\*\*[^*]+\*\*:", re.I),
+    re.compile(r"^-\s+\*\*[^*]+\*\*:", re.I),  # Catch "- **I Feel:**" patterns
 ]
 
 _WS_RE = re.compile(r"\s+")
 
 
-def _looks_like_template_noise(text: str) -> bool:
-    """Check if text matches template/boilerplate patterns."""
-    t = text.strip().lower()
-    return any(p.search(t) for p in _TEMPLATE_NOISE_PATTERNS)
-
-
+# Legacy _normalize_statement kept for belief ID comparison
+# Uses more aggressive normalization than canonical form
 def _normalize_statement(s: str) -> str:
-    """Normalize statement for comparison."""
+    """Normalize statement for comparison (legacy, used for belief ID generation)."""
     s = s.strip().lower()
     s = _WS_RE.sub(" ", s)
     # remove enclosing quotes and trailing punctuation noise
@@ -82,7 +102,7 @@ class GardenerConfig:
     enabled: bool = False
     # Pattern detection
     pattern_scan_interval_minutes: int = 60  # Hourly pattern scan
-    min_evidence_for_tentative: int = 3  # Minimum occurrences to form tentative belief
+    min_evidence_for_tentative: int = 2  # Minimum occurrences to form tentative belief
     min_evidence_for_asserted: int = 5  # Minimum occurrences to promote to asserted
 
     # Confidence management
@@ -146,18 +166,57 @@ class PatternDetector:
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=lookback)
 
         # Get recent experiences
-        # For now, simplified: scan all OCCURRENCE experiences
+        # DUAL STRATEGY: Read both regex-extracted AND structured claims
+
+        # Strategy 1: Legacy regex extraction from OCCURRENCE experiences
         recent_exps = self.raw_store.list_recent(
             limit=500,
             experience_type=ExperienceType.OCCURRENCE,
             since=cutoff_date,
         )
+        self_statements_regex = self._extract_self_statements(recent_exps)
 
-        # Extract self-statements (first-person claims)
-        self_statements = self._extract_self_statements(recent_exps)
+        # Strategy 2: Read structured claim experiences from BOTH sources
+        # - self_claim: from dissonance checker (LLM-extracted during consistency checking)
+        # - SELF_DEFINITION: from ingest pipeline (extracted during conversation ingestion)
+        self_statements_claims = []
+
+        # Read self_claim experiences (from dissonance checker)
+        # NOTE: "self_claim" is not in ExperienceType enum yet, so skip for now
+        # TODO: Add "self_claim" to ExperienceType enum or use different type
+        # try:
+        #     claim_exps = self.raw_store.list_recent(
+        #         limit=200,
+        #         experience_type="self_claim",
+        #         since=cutoff_date,
+        #     )
+        #     logger.warning(f"[DEBUG] Fetched {len(claim_exps)} self_claim experiences")
+        #     claims_from_checker = self._extract_structured_claims(claim_exps)
+        #     self_statements_claims.extend(claims_from_checker)
+        #     logger.warning(f"[DEBUG] 📊 Extracted {len(claims_from_checker)} statements from dissonance checker")
+        # except Exception as e:
+        #     logger.warning(f"[DEBUG] Exception loading self_claim: {e}")
+
+        # Read SELF_DEFINITION experiences (from ingest pipeline)
+        try:
+            self_def_exps = self.raw_store.list_recent(
+                limit=200,
+                experience_type=ExperienceType.SELF_DEFINITION,
+                since=cutoff_date,
+            )
+            logger.warning(f"[DEBUG] Fetched {len(self_def_exps)} SELF_DEFINITION experiences")
+            claims_from_ingest = self._extract_self_definition_claims(self_def_exps)
+            self_statements_claims.extend(claims_from_ingest)
+            logger.warning(f"[DEBUG] 📊 Extracted {len(claims_from_ingest)} statements from ingest pipeline")
+        except Exception as e:
+            logger.warning(f"[DEBUG] Exception loading SELF_DEFINITION: {e}")
+
+        # Merge both sources
+        all_statements = self_statements_regex + self_statements_claims
+        logger.warning(f"[DEBUG] Total statements: regex={len(self_statements_regex)} structured={len(self_statements_claims)} merged={len(all_statements)}")
 
         # Group by similarity
-        patterns = self._group_similar_statements(self_statements)
+        patterns = self._group_similar_statements(all_statements)
 
         # Filter by evidence threshold
         valid_patterns = [
@@ -233,6 +292,7 @@ class PatternDetector:
         statements = []
 
         # Patterns for first-person statements
+        # Use broad pattern to catch all "I [verb]" statements, then filter noise
         first_person_patterns = [
             r"\bI am\b",
             r"\bI have\b",
@@ -241,6 +301,15 @@ class PatternDetector:
             r"\bI think\b",
             r"\bI value\b",
             r"\bI prefer\b",
+            r"\bI find\b",          # "I find myself..."
+            r"\bI recognize\b",     # "I recognize that..."
+            r"\bI aim\b",           # "I aim to..."
+            r"\bI appreciate\b",    # "I appreciate..."
+            r"\bI acknowledge\b",   # "I acknowledge..."
+            r"\bI understand\b",    # "I understand..."
+            r"\bI see\b",           # "I see this as..."
+            r"\bI consider\b",      # "I consider..."
+            r"\bI view\b",          # "I view X as..."
         ]
         combined_pattern = re.compile("|".join(first_person_patterns), re.IGNORECASE)
 
@@ -262,6 +331,105 @@ class PatternDetector:
                         "timestamp": exp.created_at,
                         "category": category,
                     })
+
+        return statements
+
+    def _extract_structured_claims(self, claim_experiences: List[ExperienceModel]) -> List[Dict[str, Any]]:
+        """Extract structured claims from self_claim experiences.
+
+        These are already extracted by the dissonance checker, so no regex needed.
+        Just convert to the format expected by _group_similar_statements.
+
+        Args:
+            claim_experiences: Experiences of type 'self_claim'
+
+        Returns:
+            List of statement dicts with text, exp_id, timestamp, category
+        """
+        statements = []
+
+        for exp in claim_experiences:
+            # Get structured data
+            structured = exp.content.structured if exp.content.structured else {}
+            if not structured:
+                continue
+
+            statement_text = structured.get("statement", "")
+            if not statement_text:
+                continue
+
+            # Filter template noise (same logic as regex extraction)
+            if _looks_like_template_noise(statement_text):
+                continue
+
+            # Map dissonance checker's categories to gardener's categories
+            # Source: 'self' (agent said it) or 'external' (someone told agent)
+            # For belief formation, we only want self-authored claims
+            source = structured.get("source", "self")
+            if source != "self":
+                continue  # Skip external attributions
+
+            # Categorize based on content (reuse existing logic)
+            category = self._categorize_statement(statement_text)
+
+            # Confidence: 'certain', 'uncertain', 'hedging'
+            # Map to numeric for sorting/filtering later if needed
+            confidence_str = structured.get("confidence", "uncertain")
+
+            statements.append({
+                "text": statement_text,
+                "exp_id": exp.id,
+                "timestamp": exp.created_at,
+                "category": category,
+                "source": "dissonance_checker",  # Track provenance
+                "confidence_str": confidence_str,
+            })
+
+        return statements
+
+    def _extract_self_definition_claims(self, self_def_experiences: List[ExperienceModel]) -> List[Dict[str, Any]]:
+        """Extract claims from SELF_DEFINITION experiences (from ingest pipeline).
+
+        These are extracted during conversation ingestion and stored with structured metadata.
+
+        Args:
+            self_def_experiences: Experiences of type SELF_DEFINITION
+
+        Returns:
+            List of statement dicts with text, exp_id, timestamp, category
+        """
+        statements = []
+
+        for exp in self_def_experiences:
+            # SELF_DEFINITION experiences store the claim in content.text
+            text = exp.content.text if exp.content.text else ""
+            if not text:
+                continue
+
+            # Filter template noise
+            if _looks_like_template_noise(text):
+                continue
+
+            # Get structured metadata if available
+            structured = exp.content.structured if exp.content.structured else {}
+            trait_type = structured.get("trait_type", "experiential")
+
+            # Map trait_type to category
+            category_map = {
+                "beliefs": "experiential",
+                "emotions": "emotional",
+                "values": "preferential",
+                "skills": "capability",
+            }
+            category = category_map.get(trait_type, self._categorize_statement(text))
+
+            statements.append({
+                "text": text,
+                "exp_id": exp.id,
+                "timestamp": exp.created_at,
+                "category": category,
+                "source": "ingest_pipeline",  # Track provenance
+            })
 
         return statements
 
@@ -292,12 +460,24 @@ class PatternDetector:
         groups: Dict[str, List[Dict[str, Any]]] = {}
 
         for stmt in statements:
-            # Normalize: lowercase, remove extra whitespace
-            normalized = " ".join(stmt["text"].lower().split())
+            # Canonicalize: collapse all whitespace (including newlines) first
+            raw = stmt["text"]
+            canon = canonicalize_statement(raw)
+
+            # Validate the canonical form before grouping (provenance + heuristics)
+            source = stmt.get("source")
+            if not is_valid_statement(canon, source=source):
+                continue
+
+            # Normalize for grouping: lowercase the canonical form
+            normalized = normalize_for_grouping(canon)
 
             if normalized not in groups:
                 groups[normalized] = []
-            groups[normalized].append(stmt)
+            # Store with canonical (not raw) text for consistency
+            stmt_copy = dict(stmt)
+            stmt_copy["text"] = canon
+            groups[normalized].append(stmt_copy)
 
         # Convert to DetectedPattern objects
         patterns = []
@@ -306,7 +486,8 @@ class PatternDetector:
                 continue  # Not enough evidence
 
             # Calculate confidence based on repetition
-            confidence = min(0.5 + (len(group) * 0.1), 1.0)
+            # Cap at 0.8 for tentative beliefs (must be promoted to reach higher confidence)
+            confidence = min(0.5 + (len(group) * 0.1), 0.8)
 
             # Get timestamps
             timestamps = [s["timestamp"] for s in group]
@@ -390,18 +571,27 @@ class BeliefLifecycleManager:
                 logger.debug(f"Skipping recent idempotent creation (age={age:.1f}s)")
                 return None, "idempotent_recent"
 
-        # Check for existing beliefs
+        # Check for existing beliefs - if found, REINFORCE instead of skip
         existing = self.belief_store.get_current()
         for belief in existing.values():
-            if _normalize_statement(belief.statement) == normalized:
-                logger.info(f"Belief already exists: {belief.belief_id}")
-                return None, "duplicate_existing"
+            if _normalize_statement(belief.statement) != normalized:
+                continue
+
+            # Block deprecated beliefs (don't reinforce or recreate garbage)
+            if belief.state == "deprecated":
+                logger.info(f"Belief exists but is deprecated: {belief.belief_id} (blocked)")
+                return None, "blocked_deprecated"
+
+            logger.info(f"Belief already exists: {belief.belief_id} - reinforcing with new evidence")
+            # Reinforce existing belief with new evidence
+            self._reinforce_belief(belief.belief_id, pattern)
+            return None, "reinforced_existing"
 
         # Generate safe, unique belief ID
         belief_id = _safe_belief_id(pattern.category, pattern.pattern_text)
 
         try:
-            self.belief_store.create_belief(
+            created = self.belief_store.create_belief(
                 belief_id=belief_id,
                 belief_type="experiential",
                 statement=pattern.pattern_text,
@@ -417,6 +607,11 @@ class BeliefLifecycleManager:
                 },
                 updated_by="gardener",
             )
+
+            # Only count as formed if store confirmed success
+            if not created:
+                logger.debug(f"Store rejected belief {belief_id} (already exists)")
+                return None, "store_rejected"
 
             # Store pattern as LEARNING_PATTERN experience
             self._store_pattern_experience(pattern, belief_id)
@@ -656,6 +851,92 @@ class BeliefLifecycleManager:
             logger.error(f"Failed to deprecate belief {belief.belief_id}: {e}")
             return False
 
+    def _reinforce_belief(self, belief_id: str, pattern) -> bool:
+        """Reinforce an existing belief with new supporting evidence.
+
+        When the same pattern is detected again, this strengthens the existing belief
+        rather than creating a duplicate - mimicking how neural pathways strengthen
+        through repetition in human learning.
+
+        Args:
+            belief_id: ID of the existing belief to reinforce
+            pattern: New pattern with additional evidence
+
+        Returns:
+            True if reinforcement succeeded, False otherwise
+        """
+        try:
+            # Get current belief state
+            beliefs = self.belief_store.get_current()
+            belief = beliefs.get(belief_id)
+            if not belief:
+                logger.warning(f"Cannot reinforce {belief_id}: belief not found")
+                return False
+
+            # Compute truly NEW evidence (not already associated with this belief)
+            existing_evidence = set(belief.evidence_refs)
+            new_evidence_ids = [eid for eid in pattern.evidence_ids if eid not in existing_evidence]
+
+            # If no new evidence, don't boost confidence (just a re-detection of same data)
+            if not new_evidence_ids:
+                logger.debug(f"⏭️  Skipped reinforcement of {belief_id}: no new evidence (already have all {len(existing_evidence)} refs)")
+                return False
+
+            # Calculate confidence boost ONLY from truly new evidence
+            new_evidence_count = len(new_evidence_ids)
+
+            # Don't boost if already at cap
+            if belief.confidence >= 0.99:
+                # Still add the evidence refs but no confidence boost
+                logger.debug(f"📌 Belief {belief_id} at confidence cap ({belief.confidence:.3f}), adding {new_evidence_count} evidence refs without boost")
+                success = self.belief_store.apply_delta(
+                    belief_id=belief_id,
+                    from_ver=belief.ver,
+                    op=DeltaOp.UPDATE,
+                    confidence_delta=0.0,
+                    evidence_refs_added=new_evidence_ids,
+                    updated_by="gardener",
+                    reason=f"Evidence added: {new_evidence_count} new refs (confidence at cap)"
+                )
+                return success
+
+            # Calculate and apply confidence boost
+            confidence_boost = min(
+                self.config.evidence_confidence_boost * new_evidence_count,
+                0.15  # Cap at MAX_CONFIDENCE_STEP
+            )
+
+            # Cap tentative beliefs at 0.8 confidence (must be promoted to go higher)
+            if belief.state == "tentative":
+                max_tentative_confidence = 0.8
+                projected_confidence = belief.confidence + confidence_boost
+                if projected_confidence > max_tentative_confidence:
+                    # Reduce boost to hit the cap exactly
+                    confidence_boost = max(0.0, max_tentative_confidence - belief.confidence)
+                    logger.debug(f"📏 Capping tentative belief {belief_id} at {max_tentative_confidence:.3f}")
+
+            # Apply reinforcement via delta
+            success = self.belief_store.apply_delta(
+                belief_id=belief_id,
+                from_ver=belief.ver,
+                op=DeltaOp.UPDATE,
+                confidence_delta=confidence_boost,
+                evidence_refs_added=new_evidence_ids,  # Add ONLY new evidence references
+                updated_by="gardener",
+                reason=f"Reinforcement: pattern repeated with {new_evidence_count} new evidence"
+            )
+
+            if success:
+                logger.info(f"💪 Reinforced belief {belief_id}: +{confidence_boost:.3f} confidence ({new_evidence_count} new evidence)")
+                return True
+            else:
+                logger.warning(f"Failed to reinforce {belief_id}: version mismatch")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to reinforce belief {belief_id}: {e}")
+            return False
+
 
 class BeliefGardener:
     """Autonomous belief lifecycle management service."""
@@ -697,7 +978,8 @@ class BeliefGardener:
         self.skips_since_boot: Dict[str, int] = {
             "budget_exceeded": 0,
             "template_noise": 0,
-            "duplicate_existing": 0,
+            "reinforced_existing": 0,
+            "blocked_deprecated": 0,
             "idempotent_recent": 0,
             "store_rejected": 0,
         }

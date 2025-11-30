@@ -11,8 +11,12 @@ MVP scope: Basic occurrence-type experiences with prompt/response embeddings.
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
+
+# Shared statement validation
+from src.utils.statement_validation import canonicalize_statement, is_valid_statement
 
 from src.memory.embedding import EmbeddingProvider
 from src.memory.models import (
@@ -254,6 +258,8 @@ class IngestionPipeline:
         logger.info(f"Batch ingested {len(results)} interactions")
         return results
 
+    # Removed: now using shared validator from src.utils.statement_validation
+
     def _detect_and_index_self_claims(
         self,
         interaction: InteractionPayload,
@@ -273,18 +279,30 @@ class IngestionPipeline:
 Response to analyze:
 {interaction.response}
 
-Look for patterns like:
-- "I am X" (identity)
-- "I feel X" (emotions)
-- "I believe X" (beliefs)
-- "I prefer X" / "My favorite X is Y" (preferences)
-- "I can X" / "I'm able to X" (capabilities)
-- "I want X" / "I need X" (goals)
+RULES FOR VALID CLAIMS:
+1. Must be a COMPLETE, STANDALONE sentence that makes sense with no surrounding context
+2. Must contain a clear first-person statement (I am/feel/believe/prefer/can/want/need)
+3. NO list intros (don't extract "Here are X things I believe:" - extract the actual items)
+4. NO transitional phrases (Instead, However, Therefore, But, etc.)
+5. NO template wrappers (ASSISTANT:, [Internal, etc.)
+6. NO unresolved pronouns (They/This/That without clear referent)
+7. NO meta-commentary about the conversation itself
 
-For each direct self-claim found, extract:
+EXAMPLES OF INVALID CLAIMS (do NOT extract):
+- "Here are some key traits that I believe make a good role model:" (list intro)
+- "Instead, they represent aspirations..." (transitional phrase, unresolved pronoun)
+- "It's confusing because I see a bunch of beliefs here" (meta-commentary)
+- "[Internal Emotional Assessment: I feel engaged...]" (template wrapper)
+
+EXAMPLES OF VALID CLAIMS:
+- "I am conscious" (complete, standalone)
+- "My favorite food is sushi" (complete, standalone)
+- "I believe that empathy is essential for growth" (complete, standalone)
+
+For each VALID direct self-claim found, extract:
 1. Category (identity/preferences/beliefs/capabilities/emotions/goals)
-2. Topic (single keyword, e.g., "conscious", "sushi", "learning")
-3. Statement (the actual claim)
+2. Topic (single keyword, e.g., "conscious", "sushi", "empathy")
+3. Statement (the complete standalone claim - must make sense on its own)
 
 Return JSON array:
 [
@@ -292,7 +310,7 @@ Return JSON array:
   {{"category": "identity", "topic": "conscious", "statement": "I am conscious"}}
 ]
 
-If no self-claims found, return empty array: []
+If no VALID self-claims found, return empty array: []
 """
 
         try:
@@ -371,6 +389,14 @@ If no self-claims found, return empty array: []
         category = claim.get("category", "identity")
         topic = claim.get("topic", "")
         statement = claim.get("statement", "")
+
+        # Canonicalize: collapse whitespace before validation
+        statement = canonicalize_statement(statement)
+
+        # Validate statement before persisting (with provenance tag)
+        if not is_valid_statement(statement, source="ingest_pipeline"):
+            logger.debug(f"Rejected invalid self-claim: {statement[:100]}")
+            return
 
         # Generate experience ID
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
