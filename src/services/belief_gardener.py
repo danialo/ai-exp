@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from src.utils.statement_validation import (
     canonicalize_statement,
     is_valid_statement,
+    validate_statement_with_reason,
     normalize_for_grouping,
     looks_like_template_noise as _looks_like_template_noise,
 )
@@ -143,7 +144,7 @@ class PatternDetector:
         self.raw_store = raw_store
         self.config = config
 
-    def scan_for_patterns(self, lookback_days: Optional[int] = None) -> List[DetectedPattern]:
+    def scan_for_patterns(self, lookback_days: Optional[int] = None) -> tuple[List[DetectedPattern], Dict[str, Any]]:
         """
         Scan recent experiences for repeated self-statement patterns.
 
@@ -151,7 +152,7 @@ class PatternDetector:
             lookback_days: How many days to scan (default from config)
 
         Returns:
-            List of detected patterns meeting evidence threshold
+            Tuple of (detected patterns meeting evidence threshold, validation telemetry dict)
         """
         # TODO: Add a second belief gardener loop that goes deeper
         # Current loop: Last 500 experiences (chronological, recency-biased)
@@ -198,6 +199,7 @@ class PatternDetector:
         #     logger.warning(f"[DEBUG] Exception loading self_claim: {e}")
 
         # Read SELF_DEFINITION experiences (from ingest pipeline)
+        extraction_skips: Dict[str, int] = {}
         try:
             self_def_exps = self.raw_store.list_recent(
                 limit=200,
@@ -205,8 +207,11 @@ class PatternDetector:
                 since=cutoff_date,
             )
             logger.warning(f"[DEBUG] Fetched {len(self_def_exps)} SELF_DEFINITION experiences")
-            claims_from_ingest = self._extract_self_definition_claims(self_def_exps)
+            claims_from_ingest, ingest_skips = self._extract_self_definition_claims(self_def_exps)
             self_statements_claims.extend(claims_from_ingest)
+            # Merge skip counts
+            for reason, count in ingest_skips.items():
+                extraction_skips[reason] = extraction_skips.get(reason, 0) + count
             logger.warning(f"[DEBUG] 📊 Extracted {len(claims_from_ingest)} statements from ingest pipeline")
         except Exception as e:
             logger.warning(f"[DEBUG] Exception loading SELF_DEFINITION: {e}")
@@ -215,8 +220,23 @@ class PatternDetector:
         all_statements = self_statements_regex + self_statements_claims
         logger.warning(f"[DEBUG] Total statements: regex={len(self_statements_regex)} structured={len(self_statements_claims)} merged={len(all_statements)}")
 
-        # Group by similarity
-        patterns = self._group_similar_statements(all_statements)
+        # Group by similarity and get validation skip telemetry
+        patterns, validation_skips = self._group_similar_statements(all_statements)
+
+        # Merge all skip counts (extraction + validation)
+        skip_counts = {**extraction_skips}
+        for reason, count in validation_skips.items():
+            skip_counts[reason] = skip_counts.get(reason, 0) + count
+
+        # Compute acceptance stats
+        statements_total = len(all_statements)
+        statements_rejected = sum(skip_counts.values())
+        statements_accepted = statements_total - statements_rejected
+
+        # Log skip telemetry (aggregate, not per-statement)
+        if skip_counts:
+            logger.info(f"Validation skips: {dict(skip_counts)}")
+        logger.info(f"Statement validation: total={statements_total}, accepted={statements_accepted}, rejected={statements_rejected}")
 
         # Filter by evidence threshold
         valid_patterns = [
@@ -228,7 +248,15 @@ class PatternDetector:
         deduped_patterns = self._debounce_patterns(valid_patterns)
 
         logger.info(f"Pattern scan: {len(deduped_patterns)} patterns from {len(recent_exps)} experiences (deduped from {len(valid_patterns)})")
-        return deduped_patterns
+
+        # Return patterns and telemetry
+        telemetry = {
+            "validation_skips": skip_counts,
+            "statements_total": statements_total,
+            "statements_accepted": statements_accepted,
+            "statements_rejected": statements_rejected,
+        }
+        return deduped_patterns, telemetry
 
     def _debounce_patterns(self, patterns: List[DetectedPattern]) -> List[DetectedPattern]:
         """Deduplicate patterns within scan window to prevent repeat detection."""
@@ -334,7 +362,7 @@ class PatternDetector:
 
         return statements
 
-    def _extract_structured_claims(self, claim_experiences: List[ExperienceModel]) -> List[Dict[str, Any]]:
+    def _extract_structured_claims(self, claim_experiences: List[ExperienceModel]) -> tuple[List[Dict[str, Any]], Dict[str, int]]:
         """Extract structured claims from self_claim experiences.
 
         These are already extracted by the dissonance checker, so no regex needed.
@@ -344,9 +372,10 @@ class PatternDetector:
             claim_experiences: Experiences of type 'self_claim'
 
         Returns:
-            List of statement dicts with text, exp_id, timestamp, category
+            Tuple of (statement dicts, skip counts by reason)
         """
         statements = []
+        skip_counts: Dict[str, int] = {}
 
         for exp in claim_experiences:
             # Get structured data
@@ -360,6 +389,7 @@ class PatternDetector:
 
             # Filter template noise (same logic as regex extraction)
             if _looks_like_template_noise(statement_text):
+                skip_counts["template_noise"] = skip_counts.get("template_noise", 0) + 1
                 continue
 
             # Map dissonance checker's categories to gardener's categories
@@ -385,9 +415,9 @@ class PatternDetector:
                 "confidence_str": confidence_str,
             })
 
-        return statements
+        return statements, skip_counts
 
-    def _extract_self_definition_claims(self, self_def_experiences: List[ExperienceModel]) -> List[Dict[str, Any]]:
+    def _extract_self_definition_claims(self, self_def_experiences: List[ExperienceModel]) -> tuple[List[Dict[str, Any]], Dict[str, int]]:
         """Extract claims from SELF_DEFINITION experiences (from ingest pipeline).
 
         These are extracted during conversation ingestion and stored with structured metadata.
@@ -396,9 +426,10 @@ class PatternDetector:
             self_def_experiences: Experiences of type SELF_DEFINITION
 
         Returns:
-            List of statement dicts with text, exp_id, timestamp, category
+            Tuple of (statement dicts, skip counts by reason)
         """
         statements = []
+        skip_counts: Dict[str, int] = {}
 
         for exp in self_def_experiences:
             # SELF_DEFINITION experiences store the claim in content.text
@@ -408,6 +439,7 @@ class PatternDetector:
 
             # Filter template noise
             if _looks_like_template_noise(text):
+                skip_counts["template_noise"] = skip_counts.get("template_noise", 0) + 1
                 continue
 
             # Get structured metadata if available
@@ -435,7 +467,7 @@ class PatternDetector:
                 "source": validation_source,  # Real provenance: where claim was validated
             })
 
-        return statements
+        return statements, skip_counts
 
     def _categorize_statement(self, statement: str) -> str:
         """Categorize a self-statement."""
@@ -454,14 +486,18 @@ class PatternDetector:
         else:
             return "experiential"
 
-    def _group_similar_statements(self, statements: List[Dict[str, Any]]) -> List[DetectedPattern]:
+    def _group_similar_statements(self, statements: List[Dict[str, Any]]) -> tuple[List[DetectedPattern], Dict[str, int]]:
         """
         Group similar statements into patterns.
 
         For now, simple exact matching. TODO: Use embeddings for semantic similarity.
+
+        Returns:
+            (patterns, skip_counts) where skip_counts maps reason -> count
         """
         # Group by normalized text
         groups: Dict[str, List[Dict[str, Any]]] = {}
+        skip_counts: Dict[str, int] = {}
 
         for stmt in statements:
             # Canonicalize: collapse all whitespace (including newlines) first
@@ -470,7 +506,11 @@ class PatternDetector:
 
             # Validate the canonical form before grouping (provenance + heuristics)
             source = stmt.get("source")
-            if not is_valid_statement(canon, source=source):
+            is_valid, skip_reason = validate_statement_with_reason(canon, source=source)
+
+            if not is_valid:
+                # Track skip reason for telemetry
+                skip_counts[skip_reason] = skip_counts.get(skip_reason, 0) + 1
                 continue
 
             # Normalize for grouping: lowercase the canonical form
@@ -506,7 +546,7 @@ class PatternDetector:
             )
             patterns.append(pattern)
 
-        return patterns
+        return patterns, skip_counts
 
 
 class BeliefLifecycleManager:
@@ -1006,8 +1046,8 @@ class BeliefGardener:
         try:
             logger.info("🔍 Starting pattern scan...")
 
-            # Detect patterns
-            patterns = self.pattern_detector.scan_for_patterns()
+            # Detect patterns and get validation telemetry
+            patterns, telemetry = self.pattern_detector.scan_for_patterns()
 
             # Form tentative beliefs from patterns
             formed_beliefs = []
@@ -1069,6 +1109,7 @@ class BeliefGardener:
                 "skipped": skipped[:20],  # Limit to 20 items
                 "promoted": promoted,
                 "deprecated": deprecated,
+                **telemetry,  # Include all validation telemetry fields
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 

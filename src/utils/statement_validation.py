@@ -27,6 +27,101 @@ def canonicalize_statement(text: str) -> str:
     return " ".join(text.strip().split())
 
 
+def validate_statement_with_reason(statement: str, source: Optional[str] = None) -> tuple[bool, Optional[str]]:
+    """
+    Validate statement and return (is_valid, rejection_reason).
+
+    Args:
+        statement: The statement to validate (canonical form)
+        source: Provenance tag
+
+    Returns:
+        (True, None) if valid
+        (False, reason_string) if invalid with granular reason:
+            - untrusted_provenance: Missing or wrong source tag
+            - list_scaffold: List markers (bullets, numbered)
+            - discourse_marker: Transitional phrases needing context
+            - meta_commentary: About conversation/system, not self
+            - markdown_scaffold: Markdown formatting
+            - pronoun_start: Unresolved pronoun at start
+            - no_verb: Missing verb (incomplete clause)
+    """
+    # Provenance-based filtering (strongest signal)
+    if source != "claim_extractor":
+        return (False, "untrusted_provenance")
+
+    # Basic sanity checks
+    if not statement or len(statement.strip()) < 10:
+        return (False, "too_short")
+
+    stmt = statement.strip()
+    stmt_lower = stmt.lower()
+
+    # Reject list intros and list scaffolding
+    if stmt.endswith(':'):
+        return (False, "list_scaffold")
+    if re.search(r':\s*(\d+[\.\)]|[-*])\s+', stmt):
+        return (False, "list_scaffold")
+    if re.search(r'^\s*(\d+[\.\)]|[-*])\s+', stmt):
+        return (False, "list_scaffold")
+
+    # Reject discourse markers (transitional phrases that require context)
+    discourse_markers = [
+        r'^\s*instead\b',
+        r'^\s*however\b',
+        r'^\s*therefore\b',
+        r'^\s*but\b',
+        r'^\s*thus\b',
+        r'^\s*moreover\b',
+        r'^\s*furthermore\b',
+        r'^\s*additionally\b',
+    ]
+    for pattern in discourse_markers:
+        if re.search(pattern, stmt_lower):
+            return (False, "discourse_marker")
+
+    # Reject meta-commentary about the conversation/system
+    meta_patterns = [
+        r'\b(this|the)\s+(conversation|chat|thread|exchange)\b',
+        r'\b(my|these)\s+(response|responses|answer|answers)\b',
+        r'\b(as an ai|language model)\b',
+        r'\bi appreciate your perspective\b',
+        r'\bit\'?s confusing\b',
+        r'\bi see a bunch of\b',
+        r'\bhere are\b',
+        r'\bpledge enforcement\b',
+        r'\bcorrected answer\b',
+    ]
+    if any(re.search(p, stmt_lower) for p in meta_patterns):
+        return (False, "meta_commentary")
+
+    # Reject markdown/template scaffolding
+    template_patterns = [
+        r'^\s*#{1,6}\s+',
+        r'^\s*[-*]\s+',
+        r'^\s*\*\*[^*]+\*\*[:\s]',
+        r'^\s*ASSISTANT:',
+        r'^\[Internal\s',
+        r'^\[Emotional\s',
+    ]
+    for pattern in template_patterns:
+        if re.search(pattern, stmt):
+            return (False, "markdown_scaffold")
+
+    # Reject statements with unresolved pronouns at the start
+    if re.search(r'^\s*(they|this|that|these|those)\s+(is|are|was|were|represent|show|indicate)', stmt_lower):
+        return (False, "pronoun_start")
+
+    # Must contain a verb (heuristic for complete clause)
+    if not re.search(
+        r'\b(am|is|are|was|were|have|has|had|do|does|did|will|would|can|could|feel|believe|want|need|prefer)\b',
+        stmt_lower
+    ):
+        return (False, "no_verb")
+
+    return (True, None)
+
+
 def is_valid_statement(statement: str, source: Optional[str] = None) -> bool:
     """
     Validate that a statement is a complete, standalone self-claim.

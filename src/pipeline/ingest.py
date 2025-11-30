@@ -224,7 +224,14 @@ class IngestionPipeline:
         stored_id = self.raw_store.append_experience(experience)
 
         # Detect and extract self-claims immediately
-        if self.llm_service and self.self_knowledge_index:
+        # Log gate outcome every time for observability
+        enabled = bool(self.llm_service)
+        logger.info(
+            f"Self-claim extraction gate: enabled={enabled} "
+            f"llm_service={self.llm_service is not None} "
+            f"self_knowledge_index={self.self_knowledge_index is not None}"
+        )
+        if self.llm_service:
             self._detect_and_index_self_claims(interaction, experience_id)
 
         logger.info(
@@ -353,38 +360,53 @@ If no VALID self-claims found, return empty array: []
 
             claims = json.loads(response_clean)
 
-            if not claims:
-                logger.debug(f"No self-claims detected in {experience_id}")
-                return
+            # Track claim extraction telemetry
+            extracted_count = len(claims) if claims else 0
+            persisted_count = 0
+            rejected_count = 0
 
-            logger.info(f"Detected {len(claims)} self-claim(s) in {experience_id}")
+            if not claims:
+                logger.info(f"Claim extraction complete: extracted=0, persisted=0, rejected=0 (no claims in {experience_id})")
+                return
 
             # Create SELF_DEFINITION experience for each claim
             for claim in claims:
-                self._create_self_definition_experience(
+                was_persisted = self._create_self_definition_experience(
                     claim=claim,
                     parent_experience_id=experience_id,
                     interaction=interaction,
                 )
+                if was_persisted:
+                    persisted_count += 1
+                else:
+                    rejected_count += 1
+
+            # INFO-level summary (not DEBUG) so it's always visible
+            logger.info(f"Claim extraction complete: extracted={extracted_count}, persisted={persisted_count}, rejected={rejected_count}")
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse self-claim detection response: {e}")
             logger.error(f"Raw response (len={len(response)}): '{response[:500]}'")
+            logger.error(f"Claim extraction failed for {experience_id}: JSON parse error")
         except Exception as e:
-            logger.error(f"Error detecting self-claims: {e}")
+            logger.error(f"Error detecting self-claims in {experience_id}: {e}")
+            logger.error(f"Claim extraction failed for {experience_id}: {type(e).__name__}")
 
     def _create_self_definition_experience(
         self,
         claim: dict,
         parent_experience_id: str,
         interaction: InteractionPayload,
-    ):
+    ) -> bool:
         """Create and index a SELF_DEFINITION experience.
 
         Args:
             claim: Dict with category, topic, statement
             parent_experience_id: ID of parent OCCURRENCE experience
             interaction: Original interaction payload
+
+        Returns:
+            True if experience was created and persisted, False if rejected
         """
         category = claim.get("category", "identity")
         topic = claim.get("topic", "")
@@ -397,7 +419,7 @@ If no VALID self-claims found, return empty array: []
         # Claims extracted by LLM are tagged as "claim_extractor"
         if not is_valid_statement(statement, source="claim_extractor"):
             logger.debug(f"Rejected invalid self-claim: {statement[:100]}")
-            return
+            return False
 
         # Generate experience ID
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -470,6 +492,8 @@ If no VALID self-claims found, return empty array: []
             f"Created and indexed SELF_DEFINITION {self_def_id}: "
             f"[{category}] {topic} - {statement[:50]}..."
         )
+
+        return True
 
 
 def create_ingestion_pipeline(

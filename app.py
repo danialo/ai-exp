@@ -264,7 +264,11 @@ if api_key:
         llm_service=llm_service,
         self_knowledge_index=self_knowledge_index,
     )
-    logger.info("Ingestion pipeline initialized with self-claim detection")
+    logger.info(
+        f"Ingestion pipeline initialized with self-claim detection: "
+        f"id={id(ingestion_pipeline)} llm_service={llm_service is not None} "
+        f"self_knowledge_index={self_knowledge_index is not None}"
+    )
 
     # Initialize experience lens for affect-aware response styling
     # Pass agent_mood for emergent personality behavior
@@ -510,13 +514,16 @@ if settings.PERSONA_MODE_ENABLED and belief_system and embedding_provider:
             logger.info(f"Belief-memory retrieval initialized with weights: {settings.BELIEF_MEMORY_WEIGHT} beliefs / {settings.MEMORY_WEIGHT} memories")
 
         # Initialize belief consistency checker for dissonance detection
-        if llm_service:
+        # Use mini_llm_service to avoid rate limit conflicts with main requests
+        if mini_llm_service:
             belief_consistency_checker = create_belief_consistency_checker(
-                llm_service=llm_service,
+                llm_service=mini_llm_service,
                 raw_store=raw_store,
             )
-            logger.info("Belief consistency checker initialized with dissonance event storage")
+            logger.info("Belief consistency checker initialized with mini LLM (gpt-4o-mini) for separate token quota")
             app.state.belief_consistency_checker = belief_consistency_checker
+        else:
+            logger.warning("Belief consistency checker NOT initialized - mini_llm_service is None")
 
     except Exception as e:
         logger.error(f"Failed to initialize belief vector services: {e}")
@@ -841,6 +848,17 @@ async def gardener_tick_loop():
             now = time.time()
             if now - gardener_last_scan >= SCAN_SECS:
                 logger.info("Running scheduled gardener scan")
+
+                # DEBUG: Verify which lifecycle manager is running
+                import inspect
+                lm = getattr(belief_gardener, "lifecycle_manager", None)
+                logger.warning(
+                    "[DEBUG] gardener=%s lm=%s lm_file=%s",
+                    type(belief_gardener).__name__,
+                    type(lm).__name__ if lm else None,
+                    inspect.getsourcefile(type(lm)) if lm else None,
+                )
+
                 belief_gardener.run_pattern_scan()
                 gardener_last_scan = now
 
@@ -2595,6 +2613,12 @@ async def persona_chat(request: ChatRequest):
             valence=valence,
             arousal=arousal,
             dominance=dominance,
+        )
+        # Log pipeline instance ID and llm_service availability
+        logger.info(
+            f"About to ingest via pipeline id={id(ingestion_pipeline)} "
+            f"llm_service={ingestion_pipeline.llm_service is not None} "
+            f"self_knowledge_index={ingestion_pipeline.self_knowledge_index is not None}"
         )
         result = ingestion_pipeline.ingest_interaction(interaction)
 
