@@ -423,12 +423,16 @@ class PatternDetector:
             }
             category = category_map.get(trait_type, self._categorize_statement(text))
 
+            # Extract REAL provenance from experience metadata
+            # This describes origin (claim_extractor), not route (ingest pipeline)
+            validation_source = structured.get("validation_source", None)
+
             statements.append({
                 "text": text,
                 "exp_id": exp.id,
                 "timestamp": exp.created_at,
                 "category": category,
-                "source": "ingest_pipeline",  # Track provenance
+                "source": validation_source,  # Real provenance: where claim was validated
             })
 
         return statements

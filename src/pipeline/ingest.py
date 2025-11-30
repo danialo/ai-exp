@@ -393,8 +393,9 @@ If no VALID self-claims found, return empty array: []
         # Canonicalize: collapse whitespace before validation
         statement = canonicalize_statement(statement)
 
-        # Validate statement before persisting (with provenance tag)
-        if not is_valid_statement(statement, source="ingest_pipeline"):
+        # Validate statement before persisting (with real provenance)
+        # Claims extracted by LLM are tagged as "claim_extractor"
+        if not is_valid_statement(statement, source="claim_extractor"):
             logger.debug(f"Rejected invalid self-claim: {statement[:100]}")
             return
 
@@ -437,6 +438,7 @@ If no VALID self-claims found, return empty array: []
                 "source_experience_id": parent_experience_id,
                 "source_prompt": interaction.prompt,
                 "source_response": interaction.response,
+                "validation_source": "claim_extractor",  # Real provenance for belief formation
             },
         )
 

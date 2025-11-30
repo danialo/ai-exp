@@ -36,14 +36,16 @@ def is_valid_statement(statement: str, source: Optional[str] = None) -> bool:
 
     Args:
         statement: The statement to validate (should be canonical form)
-        source: Optional provenance tag (e.g., "ingest_pipeline", "regex_extraction")
+        source: Provenance tag describing origin (REQUIRED for belief formation)
+                Valid values: "claim_extractor" (LLM-validated claims only)
 
     Returns:
         True if the statement is valid, False otherwise
     """
     # Provenance-based filtering (strongest signal)
-    # Only trust statements from the LLM claim extractor
-    if source is not None and source not in {"ingest_pipeline", "claim_extractor"}:
+    # HARD REQUIREMENT: Only trust statements from the LLM claim extractor
+    # Unknown provenance = reject by default
+    if source != "claim_extractor":
         return False
 
     # Basic sanity checks
