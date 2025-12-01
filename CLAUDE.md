@@ -6,3 +6,4 @@
 - Are you programming the right endpoint? /api/persona/chat THIS IS YOUR ENDPOINT. IF YOU ARE NOT USING THIS ENDPOINT YOU ARE BUILDING IT WRONG.
 - /api/chat ? STOP! THIS IS NOT YOUR FUCKING ENDPOINT AND IF YOU CODE IT YOU WILL BE RECODING THE CORRECT ENDPOINT. STOP!
 - Guess what endpoint you should NEVER use?  /api/chat
+- Before you consider an issue 'fixed' you need to restart and test the server.

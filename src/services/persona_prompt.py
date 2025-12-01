@@ -649,6 +649,50 @@ User: {user_message}
 
 {response_requirements}"""
 
+        # Truncate prompt if too long to prevent token overflow
+        # Target ~20K tokens max (~80K chars at 4 chars/token)
+        MAX_PROMPT_CHARS = 50000
+        if len(full_prompt) > MAX_PROMPT_CHARS:
+            # Keep beliefs section (most important), truncate context and memories
+            # Find where context section starts and truncate there
+            import logging
+            logger = logging.getLogger(__name__)
+            original_len = len(full_prompt)
+
+            # Try to preserve structure by finding section markers
+            context_marker = "## Your Current Context"
+            memory_marker = "## YOUR PAST MEMORIES"
+
+            # Find the beliefs section end (after first ---)
+            beliefs_end = full_prompt.find("---\n\n", full_prompt.find("## YOUR FOUNDATIONAL BELIEFS"))
+            if beliefs_end == -1:
+                beliefs_end = 5000  # fallback
+            else:
+                beliefs_end += 5  # include the ---
+
+            # Keep first part (beliefs + base prompt header) and last part (current interaction)
+            interaction_marker = "## Current Interaction"
+            interaction_start = full_prompt.rfind(interaction_marker)
+
+            if interaction_start > 0 and beliefs_end > 0:
+                # Calculate how much middle content we can keep
+                first_part = full_prompt[:min(beliefs_end, 15000)]
+                last_part = full_prompt[interaction_start:]
+
+                remaining_budget = MAX_PROMPT_CHARS - len(first_part) - len(last_part) - 200  # 200 for truncation notice
+
+                if remaining_budget > 1000:
+                    # Get some middle content (context, memories)
+                    middle_start = beliefs_end
+                    middle_content = full_prompt[middle_start:interaction_start]
+                    if len(middle_content) > remaining_budget:
+                        middle_content = middle_content[:remaining_budget]
+                    full_prompt = first_part + "\n\n[... CONTEXT TRUNCATED FOR TOKEN LIMIT ...]\n\n" + middle_content + "\n\n" + last_part
+                else:
+                    full_prompt = first_part + "\n\n[... CONTEXT TRUNCATED FOR TOKEN LIMIT ...]\n\n" + last_part
+
+                logger.warning(f"Truncated prompt from {original_len} to {len(full_prompt)} chars to prevent token overflow")
+
         return full_prompt
 
     def _build_beliefs_section(self, belief_results: Optional[List] = None, user_message: Optional[str] = None) -> str:

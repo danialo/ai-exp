@@ -47,6 +47,8 @@ def validate_statement_with_reason(statement: str, source: Optional[str] = None)
             - no_verb: Missing verb (incomplete clause)
     """
     # Provenance-based filtering (strongest signal)
+    # HARD REQUIREMENT: Only trust statements from the LLM claim extractor
+    # Unknown provenance = reject by default
     if source != "claim_extractor":
         return (False, "untrusted_provenance")
 
@@ -103,6 +105,10 @@ def validate_statement_with_reason(statement: str, source: Optional[str] = None)
         r'^\s*ASSISTANT:',
         r'^\[Internal\s',
         r'^\[Emotional\s',
+        # Catch dissonance checker output format: [ALIGNMENT|0.0] belief | analysis
+        # Whitelist only known leak tags to avoid blocking future legitimate bracket formats
+        r'^\s*\[(?:ALIGNMENT|DRIFT|COHERENCE|DISSONANCE|CONTRADICTION|CONFLICT)\|\d+(?:\.\d+)?\]',
+        r'\s\|\s*analysis\b',  # "statement | analysis" marker (from checker output) - tight match
     ]
     for pattern in template_patterns:
         if re.search(pattern, stmt):
@@ -198,6 +204,10 @@ def is_valid_statement(statement: str, source: Optional[str] = None) -> bool:
         r'^\s*ASSISTANT:',
         r'^\[Internal\s',
         r'^\[Emotional\s',
+        # Catch dissonance checker output format: [ALIGNMENT|0.0] belief | analysis
+        # Whitelist only known leak tags to avoid blocking future legitimate bracket formats
+        r'^\s*\[(?:ALIGNMENT|DRIFT|COHERENCE|DISSONANCE|CONTRADICTION|CONFLICT)\|\d+(?:\.\d+)?\]',
+        r'\s\|\s*analysis\b',  # "statement | analysis" marker (from checker output) - tight match
     ]
     for pattern in template_patterns:
         if re.search(pattern, stmt):
@@ -223,13 +233,120 @@ def normalize_for_grouping(canonical_statement: str) -> str:
     """
     Normalize a canonical statement for grouping/deduplication.
 
+    Applies deterministic linguistic transformations to reduce paraphrasing noise:
+    - Lowercasing
+    - Contraction expansion (I'm → I am, don't → do not)
+    - Progressive aspect collapse (I am feeling → I feel)
+    - Adjective/noun emotion aliases (curiosity → curious)
+    - Article removal (a/an/the)
+    - Punctuation stripping
+    - Extra whitespace collapse
+
     Args:
         canonical_statement: Statement already in canonical form
 
     Returns:
-        Lowercase version for grouping
+        Normalized form optimized for grouping similar statements
     """
-    return canonical_statement.lower()
+    text = canonical_statement.lower()
+
+    # Expand common contractions (deterministic, order matters)
+    # Do longer contractions first to avoid partial matches
+    contractions = {
+        # Negations
+        "won't": "will not",
+        "can't": "cannot",
+        "n't": " not",  # catches don't, doesn't, didn't, wasn't, weren't, etc.
+
+        # Be verbs
+        "'m": " am",
+        "'re": " are",
+        "'s": " is",  # ambiguous (is/has/possessive) but mostly "is" in self-claims
+
+        # Have verbs
+        "'ve": " have",
+        "'d": " would",  # ambiguous (would/had) but mostly "would"
+        "'ll": " will",
+    }
+
+    for contraction, expansion in contractions.items():
+        text = text.replace(contraction, expansion)
+
+    # Strip punctuation early so pattern rules are easier
+    text = re.sub(r'[^\w\s]', ' ', text)
+    text = ' '.join(text.split())
+
+    # Tier 1: Strip discourse filler and intensifiers (high-yield deterministic noise)
+    filler_phrases = [
+        # Discourse openers/connectors
+        r'\bin essence\b', r'\bin other words\b', r'\bbasically\b', r'\boverall\b',
+        r'\bto be honest\b', r'\bfor example\b', r'\bkind of\b', r'\bsort of\b',
+        r'\bfor instance\b', r'\bin general\b', r'\bto sum up\b', r'\bin summary\b',
+        # Intensifiers and hedges
+        r'\bindeed\b', r'\breally\b', r'\btruly\b', r'\bactually\b', r'\bvery\b',
+        r'\bquite\b', r'\bextremely\b', r'\bhighly\b', r'\bparticularly\b',
+    ]
+    for pattern in filler_phrases:
+        text = re.sub(pattern, ' ', text)
+    text = ' '.join(text.split())
+
+    # Collapse progressive aspect for common introspective verbs
+    # "I am feeling curious" → "I feel curious"
+    # "I am thinking about X" → "I think about X"
+    prog_map = {
+        "feeling": "feel",
+        "thinking": "think",
+        "believing": "believe",
+        "noticing": "notice",
+        "wondering": "wonder",
+        "learning": "learn",
+        "reflecting": "reflect",
+        "considering": "consider",
+        "experiencing": "experience",
+        "processing": "process",
+        "recognizing": "recognize",
+        "appreciating": "appreciate",
+    }
+
+    def _collapse_progressive(m: re.Match) -> str:
+        verb = m.group(1)
+        return f"i {prog_map.get(verb, verb)}"
+
+    text = re.sub(
+        r"\bi am (feeling|thinking|believing|noticing|wondering|learning|reflecting|considering|experiencing|processing|recognizing|appreciating)\b",
+        _collapse_progressive,
+        text
+    )
+
+    # Collapse "I am being X" → "I am X"
+    text = re.sub(r"\bi am being\b", "i am", text)
+
+    # Remove articles (a, an, the)
+    text = re.sub(r'\b(a|an|the)\b', '', text)
+    text = ' '.join(text.split())
+
+    # Emotion noun → adjective aliases (context-aware: only after "feel")
+    # "I feel curiosity" → "I feel curious"
+    # But NOT "I notice curiosity" → "I notice curious" (broken)
+    emotion_aliases = {
+        "curiosity": "curious",
+        "happiness": "happy",
+        "sadness": "sad",
+        "anger": "angry",
+        "excitement": "excited",
+        "motivation": "motivated",
+        "inspiration": "inspired",
+        "fascination": "fascinated",
+        "enthusiasm": "enthusiastic",
+        "engagement": "engaged",
+    }
+
+    # Only apply aliases in "feel X" context
+    for noun, adj in emotion_aliases.items():
+        text = re.sub(rf'\bfeel {noun}\b', f'feel {adj}', text)
+        text = re.sub(rf'\bfeeling {noun}\b', f'feeling {adj}', text)
+
+    return text
 
 
 # Legacy helper for template noise detection (used by belief_gardener.py)

@@ -145,7 +145,9 @@ class AdaptiveBeliefLifecycleManager(BeliefLifecycleManager):
         Overrides parent method to add decision framework integration.
         """
         # Check abort conditions
-        if self.abort_monitor:
+        # TEMPORARILY DISABLED: abort_monitor has broken coherence measurement (always 0)
+        # TODO: Fix awareness.last_sim_live or disable coherence-based aborts
+        if False and self.abort_monitor:
             aborted, reason = self.abort_monitor.check_abort_conditions()
             if aborted:
                 logger.warning(f"Belief formation aborted: {reason}")
@@ -214,7 +216,8 @@ class AdaptiveBeliefLifecycleManager(BeliefLifecycleManager):
         Overrides parent method to add decision framework integration.
         """
         # Check abort conditions
-        if self.abort_monitor:
+        # TEMPORARILY DISABLED: abort_monitor has broken coherence measurement (always 0)
+        if False and self.abort_monitor:
             aborted, reason = self.abort_monitor.check_abort_conditions()
             if aborted:
                 logger.warning(f"Belief promotion aborted: {reason}")
@@ -302,7 +305,8 @@ class AdaptiveBeliefLifecycleManager(BeliefLifecycleManager):
             decay_evidence: Evidence count for decay (ignored, for compatibility)
         """
         # Check abort conditions
-        if self.abort_monitor:
+        # TEMPORARILY DISABLED: abort_monitor has broken coherence measurement (always 0)
+        if False and self.abort_monitor:
             aborted, reason = self.abort_monitor.check_abort_conditions()
             if aborted:
                 logger.warning(f"Belief deprecation aborted: {reason}")

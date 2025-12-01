@@ -92,6 +92,9 @@ class LedgerEvent:
     success_score: Optional[float] = None  # Success score from outcome evaluation
     abort_reason: Optional[str] = None  # Reason for abort if applicable
 
+    # Scan correlation field
+    scan_id: Optional[str] = None  # Correlation ID for pattern scans
+
 
 def _compute_sha(rec: Dict[str, Any]) -> str:
     """Compute SHA-256 hash of ledger record (excluding sha field)."""

@@ -25,6 +25,8 @@ Current observations:
 
 import logging
 import time
+import uuid
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -46,6 +48,7 @@ from src.memory.raw_store import RawStore
 from src.memory.models import ExperienceType, ExperienceModel, ContentModel, ProvenanceModel, Actor, CaptureMethod
 from src.services.belief_store import BeliefStore, DeltaOp
 from src.services.identity_ledger import append_event, LedgerEvent
+from src.memory.embedding import create_embedding_provider
 from src.services.feedback_aggregator import FeedbackAggregator, FeedbackConfig
 
 logger = logging.getLogger(__name__)
@@ -144,12 +147,13 @@ class PatternDetector:
         self.raw_store = raw_store
         self.config = config
 
-    def scan_for_patterns(self, lookback_days: Optional[int] = None) -> tuple[List[DetectedPattern], Dict[str, Any]]:
+    def scan_for_patterns(self, lookback_days: Optional[int] = None, scan_id: Optional[str] = None) -> tuple[List[DetectedPattern], Dict[str, Any]]:
         """
         Scan recent experiences for repeated self-statement patterns.
 
         Args:
             lookback_days: How many days to scan (default from config)
+            scan_id: Optional correlation ID for this scan (for tracing)
 
         Returns:
             Tuple of (detected patterns meeting evidence threshold, validation telemetry dict)
@@ -221,7 +225,29 @@ class PatternDetector:
         logger.warning(f"[DEBUG] Total statements: regex={len(self_statements_regex)} structured={len(self_statements_claims)} merged={len(all_statements)}")
 
         # Group by similarity and get validation skip telemetry
-        patterns, validation_skips = self._group_similar_statements(all_statements)
+        patterns, grouping_telemetry = self._group_similar_statements(all_statements)
+
+        # DEBUG: Log config and grouping results
+        logger.warning(
+            f"[DEBUG] Config: min_evidence_tentative={self.config.min_evidence_for_tentative} "
+            f"min_evidence_asserted={self.config.min_evidence_for_asserted}"
+        )
+        pattern_sizes = sorted([p.evidence_count() for p in patterns], reverse=True)
+        size_histogram = {
+            1: sum(1 for s in pattern_sizes if s == 1),
+            2: sum(1 for s in pattern_sizes if s == 2),
+            3: sum(1 for s in pattern_sizes if s == 3),
+        }
+        logger.warning(
+            f"[DEBUG] Patterns before threshold: total={len(patterns)} "
+            f"sizes_top10={pattern_sizes[:10]} histogram={size_histogram}"
+        )
+
+        # Extract telemetry components
+        validation_skips = grouping_telemetry["skip_counts"]
+        accepted_by_source = grouping_telemetry["accepted_by_source"]
+        accepted_by_category = grouping_telemetry["accepted_by_category"]
+        rejection_samples = grouping_telemetry["rejection_samples"]
 
         # Merge all skip counts (extraction + validation)
         skip_counts = {**extraction_skips}
@@ -234,9 +260,23 @@ class PatternDetector:
         statements_accepted = statements_total - statements_rejected
 
         # Log skip telemetry (aggregate, not per-statement)
+        scan_prefix = f"[scan_id={scan_id}] " if scan_id else ""
+
+        # Log acceptance breakdown
+        if accepted_by_source:
+            logger.info(f"{scan_prefix}Accepted by source: {dict(accepted_by_source)}")
+        if accepted_by_category:
+            logger.info(f"{scan_prefix}Accepted by category: {dict(accepted_by_category)}")
+
+        # Log rejection breakdown with samples
         if skip_counts:
-            logger.info(f"Validation skips: {dict(skip_counts)}")
-        logger.info(f"Statement validation: total={statements_total}, accepted={statements_accepted}, rejected={statements_rejected}")
+            logger.info(f"{scan_prefix}Validation skips: {dict(skip_counts)}")
+            for reason, count in skip_counts.items():
+                samples = rejection_samples.get(reason, [])
+                if samples:
+                    logger.info(f"{scan_prefix}  Rejected {count} for '{reason}'. Samples: {samples}")
+
+        logger.info(f"{scan_prefix}Statement validation: total={statements_total}, accepted={statements_accepted}, rejected={statements_rejected}")
 
         # Filter by evidence threshold
         valid_patterns = [
@@ -247,11 +287,15 @@ class PatternDetector:
         # Debounce: ignore repeating boilerplate within session window
         deduped_patterns = self._debounce_patterns(valid_patterns)
 
-        logger.info(f"Pattern scan: {len(deduped_patterns)} patterns from {len(recent_exps)} experiences (deduped from {len(valid_patterns)})")
+        logger.info(f"{scan_prefix}Pattern scan: {len(deduped_patterns)} patterns from {len(recent_exps)} experiences (deduped from {len(valid_patterns)})")
 
         # Return patterns and telemetry
         telemetry = {
+            "scan_id": scan_id,  # Include for correlation
             "validation_skips": skip_counts,
+            "accepted_by_source": accepted_by_source,  # NEW
+            "accepted_by_category": accepted_by_category,  # NEW
+            "rejection_samples": rejection_samples,  # NEW
             "statements_total": statements_total,
             "statements_accepted": statements_accepted,
             "statements_rejected": statements_rejected,
@@ -486,18 +530,22 @@ class PatternDetector:
         else:
             return "experiential"
 
-    def _group_similar_statements(self, statements: List[Dict[str, Any]]) -> tuple[List[DetectedPattern], Dict[str, int]]:
+    def _group_similar_statements(self, statements: List[Dict[str, Any]]) -> tuple[List[DetectedPattern], Dict[str, Any]]:
         """
         Group similar statements into patterns.
 
         For now, simple exact matching. TODO: Use embeddings for semantic similarity.
 
         Returns:
-            (patterns, skip_counts) where skip_counts maps reason -> count
+            (patterns, telemetry_dict) where telemetry includes skip_counts, accepted_by_source, accepted_by_category
         """
         # Group by normalized text
         groups: Dict[str, List[Dict[str, Any]]] = {}
         skip_counts: Dict[str, int] = {}
+        accepted_by_source: Dict[str, int] = {}  # NEW: Track acceptance by source
+        accepted_by_category: Dict[str, int] = {}  # NEW: Track acceptance by category
+        rejection_samples: Dict[str, List[str]] = {}  # NEW: Track rejection samples
+        MAX_SAMPLES_PER_REASON = 3  # Maximum samples per rejection reason
 
         for stmt in statements:
             # Canonicalize: collapse all whitespace (including newlines) first
@@ -505,13 +553,33 @@ class PatternDetector:
             canon = canonicalize_statement(raw)
 
             # Validate the canonical form before grouping (provenance + heuristics)
-            source = stmt.get("source")
+            source = stmt.get("source", "unknown")
+            category = stmt.get("category", "unknown")
             is_valid, skip_reason = validate_statement_with_reason(canon, source=source)
 
             if not is_valid:
                 # Track skip reason for telemetry
                 skip_counts[skip_reason] = skip_counts.get(skip_reason, 0) + 1
+
+                # NEW: Collect rejection samples (hash-based deterministic sampling)
+                if skip_reason not in rejection_samples:
+                    rejection_samples[skip_reason] = []
+
+                if len(rejection_samples[skip_reason]) < MAX_SAMPLES_PER_REASON:
+                    # First 3 samples: always collect
+                    rejection_samples[skip_reason].append(canon[:100])
+                else:
+                    # Deterministic hash-based replacement
+                    stmt_hash = hash(canon) % 100
+                    if stmt_hash < 10:  # 10% replacement probability
+                        idx = stmt_hash % MAX_SAMPLES_PER_REASON
+                        rejection_samples[skip_reason][idx] = canon[:100]
+
                 continue
+
+            # NEW: Track acceptance by source and category
+            accepted_by_source[source] = accepted_by_source.get(source, 0) + 1
+            accepted_by_category[category] = accepted_by_category.get(category, 0) + 1
 
             # Normalize for grouping: lowercase the canonical form
             normalized = normalize_for_grouping(canon)
@@ -523,8 +591,499 @@ class PatternDetector:
             stmt_copy["text"] = canon
             groups[normalized].append(stmt_copy)
 
+        # Tier 2: Soft merge pass via Jaccard similarity (deterministic near-duplicate detection)
+        # Apply after exact grouping but before pattern formation
+        # This catches paraphrases that differ by 1-2 tokens
+        JACCARD_THRESHOLD = 0.90  # Start strict
+        STOPWORDS = {"i", "me", "my", "am", "are", "is", "was", "were", "be", "been", "being",
+                     "a", "an", "the", "and", "or", "to", "of", "in", "on", "for", "with",
+                     "that", "this", "it", "as", "at", "by", "from"}
+        NEGATION_TOKENS = {"not", "never", "no", "cannot", "can't", "won't"}
+
+        def peel_structure(s: str) -> str:
+            """
+            Strip copula headers and justification wrappers before tokenization.
+
+            Tier 2.5: Structure peel to bridge gaps like:
+            - "I am conscious: I experience..." vs "I believe I'm conscious because I experience..."
+
+            Transformations:
+            1. Strip "X: Y" patterns (keep both X and Y, remove colon)
+            2. Strip justification frames like "I believe X because Y" → "X Y"
+            3. Strip common copula wrappers
+            """
+            text = s.strip()
+
+            # Pattern 1: Strip colons in "X: Y" (keep both sides)
+            # After normalize_for_grouping strips punctuation, this may not trigger
+            # But if it does, keep both parts
+            if ': ' in text:
+                text = text.replace(': ', ' ')
+
+            # Pattern 2: Strip "because" justification frames
+            # Transform: "I believe X because Y" → "X Y" (keep both clauses as content)
+            text_lower = text.lower()
+            if 'because' in text_lower:
+                # Match "I believe/think/feel/sense [that] X because Y"
+                match = re.search(r'^i (believe|think|feel|sense)( that)? (.+?) because (.+)$', text_lower)
+                if match:
+                    claim = match.group(3).strip()
+                    reason = match.group(4).strip()
+                    # Merge both parts without the justification wrapper
+                    text = f"{claim} {reason}"
+                else:
+                    # Also catch "I am X because Y" (high yield)
+                    match2 = re.search(r'^i am (.+?) because (.+)$', text_lower)
+                    if match2:
+                        claim = match2.group(1).strip()
+                        reason = match2.group(2).strip()
+                        text = f"{claim} {reason}"
+
+            # Pattern 3: Strip common copula wrappers at start
+            # "I believe that X" → "X", "I think X" → "X"
+            text_lower = text.lower()
+            for prefix in ['i believe that ', 'i think that ', 'i feel that ', 'i believe ', 'i think ']:
+                if text_lower.startswith(prefix):
+                    text = text[len(prefix):]
+                    text_lower = text.lower()
+
+            return text.strip()
+
+        def tokenize_for_jaccard(s: str) -> set:
+            """Extract content tokens with cheap stemming."""
+            # Split tokens, but preserve negation tokens even if short
+            all_toks = s.split()
+            toks = []
+            for t in all_toks:
+                # Always keep negation tokens, even short ones like "no"
+                if t in NEGATION_TOKENS:
+                    toks.append(t)
+                elif len(t) > 2 and t not in STOPWORDS:
+                    toks.append(t)
+
+            # Cheap stemming: chop common suffixes
+            def stem(t):
+                # Don't stem negation tokens
+                if t in NEGATION_TOKENS:
+                    return t
+                for suffix in ("ing", "ed", "ly", "s"):
+                    if len(t) > 4 and t.endswith(suffix):
+                        return t[:-len(suffix)]
+                return t
+            return {stem(t) for t in toks}
+
+        def extract_numbers(s: str) -> set:
+            """Extract numeric tokens for guard."""
+            return {t for t in s.split() if t.isdigit()}
+
+        def has_negation(tokset: set) -> bool:
+            """Check if token set contains negation."""
+            return bool(tokset & NEGATION_TOKENS)
+
+        def jaccard_similarity(a: set, b: set) -> float:
+            """Compute Jaccard similarity between token sets."""
+            if not a or not b:
+                return 0.0
+            inter = len(a & b)
+            if inter == 0:
+                return 0.0
+            return inter / len(a | b)
+
+        # Build token sets and number sets for all normalized keys
+        # Apply structure peel before tokenization (Tier 2.5)
+        keys = list(groups.keys())
+        peeled = {k: peel_structure(k) for k in keys}
+        token_sets = {k: tokenize_for_jaccard(peeled[k]) for k in keys}
+        number_sets = {k: extract_numbers(k) for k in keys}
+
+        # Build inverted index: token -> keys containing token
+        inverted_index = {}
+        for k, toks in token_sets.items():
+            for tok in toks:
+                inverted_index.setdefault(tok, set()).add(k)
+
+        # Build inverted index for peeled equality (O(n) instead of O(n²))
+        peeled_to_keys = defaultdict(list)
+        for k in keys:
+            peeled_to_keys[peeled[k]].append(k)
+
+        # Find merges for singletons
+        singletons = [k for k, g in groups.items() if len(g) == 1]
+        soft_merges = []  # (src_key, dst_key, score)
+        merge_blocks = {"negation_mismatch": 0, "number_mismatch": 0}
+        best_scores = []  # Track best score for each singleton (for telemetry)
+
+        for src_key in singletons:
+            # Fast-path: Perfect peeled equality (O(1) lookup via inverted index)
+            # This catches cases where tokenization/stemming still differ even though peeled text is identical
+            perfect_match = None
+            candidates = peeled_to_keys.get(peeled[src_key], [])
+
+            # Collect valid candidates (passed guards)
+            valid_candidates = []
+            for cand_key in candidates:
+                if cand_key != src_key:
+                    # Still apply guards (negation + number mismatch)
+                    if has_negation(token_sets[src_key]) != has_negation(token_sets[cand_key]):
+                        merge_blocks["negation_mismatch"] += 1
+                        continue
+                    if number_sets[src_key] != number_sets[cand_key]:
+                        merge_blocks["number_mismatch"] += 1
+                        continue
+                    valid_candidates.append(cand_key)
+
+            # Deterministic dst selection: prefer non-singleton, then lex-smallest
+            if valid_candidates:
+                # Sort: non-singletons first (len > 1), then lexicographically
+                perfect_match = sorted(valid_candidates, key=lambda k: (len(groups[k]) == 1, k))[0]
+
+            if perfect_match:
+                # Peeled equality → score = 1.0, merge immediately
+                soft_merges.append((src_key, perfect_match, 1.0))
+                # Capture canonical for telemetry
+                src_canon = groups[src_key][0]["text"] if src_key in groups else ""
+                dst_canon = groups[perfect_match][0]["text"] if perfect_match in groups else ""
+                best_scores.append((src_key, perfect_match, 1.0, src_canon, dst_canon))
+                continue
+
+            # Find candidate keys by inverted index (only keys sharing at least one token)
+            candidates = set()
+            for tok in token_sets[src_key]:
+                candidates |= inverted_index.get(tok, set())
+            candidates.discard(src_key)
+
+            # Find best match
+            best_key = None
+            best_score = 0.0
+            for cand_key in candidates:
+                score = jaccard_similarity(token_sets[src_key], token_sets[cand_key])
+                if score > best_score:
+                    # Guard: negation mismatch requires higher threshold
+                    if has_negation(token_sets[src_key]) != has_negation(token_sets[cand_key]):
+                        if score < 0.97:
+                            merge_blocks["negation_mismatch"] += 1
+                            continue
+                    # Guard: number mismatch requires higher threshold
+                    if number_sets[src_key] != number_sets[cand_key]:
+                        if score < 0.97:
+                            merge_blocks["number_mismatch"] += 1
+                            continue
+                    best_key, best_score = cand_key, score
+
+            # Track best score for telemetry (even if below threshold)
+            # Capture canonical text NOW (before merges change groups)
+            if best_key:
+                src_canon = groups[src_key][0]["text"] if src_key in groups else ""
+                dst_canon = groups[best_key][0]["text"] if best_key in groups else ""
+                best_scores.append((src_key, best_key, best_score, src_canon, dst_canon))
+
+            # Accept merge if score meets threshold
+            if best_key and best_score >= JACCARD_THRESHOLD:
+                soft_merges.append((src_key, best_key, best_score))
+
+        # Apply merges (greedy, highest score first)
+        soft_merge_count = 0
+        merge_log = []  # For telemetry
+        for src_key, dst_key, score in sorted(soft_merges, key=lambda x: -x[2]):
+            # Only merge if source is still a singleton (avoid double-merging)
+            if src_key in groups and dst_key in groups and len(groups[src_key]) == 1:
+                # Get canonical examples for logging
+                src_canon = groups[src_key][0]["text"]
+                dst_canon = groups[dst_key][0]["text"]
+
+                # Perform merge
+                groups[dst_key].extend(groups[src_key])
+                del groups[src_key]
+                soft_merge_count += 1
+
+                # Log top 20 merges for telemetry
+                if len(merge_log) < 20:
+                    merge_log.append({
+                        "score": round(score, 3),
+                        "src_norm": src_key[:60],
+                        "dst_norm": dst_key[:60],
+                        "src_canon": src_canon[:60],
+                        "dst_canon": dst_canon[:60]
+                    })
+
+        # Compute histogram after soft merge
+        sizes_after_soft = [len(g) for g in groups.values()]
+        histogram_after_soft = {size: sizes_after_soft.count(size) for size in range(1, 10)}
+        total_blocked = sum(merge_blocks.values())
+        logger.warning(f"[DEBUG] Soft merge complete: {soft_merge_count} merges applied, {total_blocked} blocked. Histogram after soft merge: {histogram_after_soft}")
+
+        # Log best score distribution (telemetry to validate embedding decision)
+        if best_scores:
+            # Dedupe reversed pairs: keep only max score per unique pair
+            pair_best = {}
+            for src_key, dst_key, score, src_canon, dst_canon in best_scores:
+                pair_id = tuple(sorted([src_key, dst_key]))
+                if pair_id not in pair_best or score > pair_best[pair_id][2]:
+                    pair_best[pair_id] = (src_key, dst_key, score, src_canon, dst_canon)
+
+            # Sort by score descending
+            best_scores_deduped = sorted(pair_best.values(), key=lambda x: -x[2])
+            top_10_scores = [round(score, 3) for _, _, score, _, _ in best_scores_deduped[:10]]
+            logger.warning(f"[DEBUG] Best Jaccard scores (top 10 of {len(best_scores_deduped)} unique pairs): {top_10_scores}")
+
+            # Log top 3 with examples (using pre-captured canonical text)
+            logger.warning(f"[DEBUG] Top 3 singleton pairs by Jaccard score:")
+            for src_key, dst_key, score, src_canon, dst_canon in best_scores_deduped[:3]:
+                logger.warning(f"[DEBUG]   J={round(score, 3)}: '{src_canon[:50]}' vs '{dst_canon[:50]}'")
+
+        # Log sample merges
+        if merge_log:
+            logger.warning(f"[DEBUG] Top {len(merge_log)} soft merges:")
+            for m in merge_log[:5]:  # Log top 5 in detail
+                logger.warning(f"[DEBUG]   J={m['score']}: '{m['src_canon']}' -> '{m['dst_canon']}'")
+
+        # Log block reasons
+        if merge_blocks:
+            logger.warning(f"[DEBUG] Soft merge blocks: {merge_blocks}")
+
+        # ==================== TIER 3: Embedding-based candidate generation ====================
+        # Use cosine similarity on peeled text to find semantic near-matches among singletons
+        # Embeddings are lazy-loaded only when singletons remain after Jaccard merge
+        COS_THRESHOLD = 0.80  # Minimum cosine for merge candidate (tuned: max observed was 0.825)
+        COS_STRICT = 0.90     # Required cosine when guards triggered (negation/number mismatch)
+        K_NEIGHBORS = 8       # Top-K neighbors to consider per singleton
+        JACCARD_FLOOR = 0.20  # Optional safety brake - reject if Jaccard below this
+        MNN_GATING = True     # Mutual nearest neighbor: only merge if both are in each other's top-K
+
+        # Get current singletons (after Jaccard merge)
+        singleton_keys_t3 = [k for k, g in groups.items() if len(g) == 1]
+        t3_merge_count = 0
+        t3_merge_log = []
+        t3_blocks = {"negation_mismatch": 0, "number_mismatch": 0, "below_jaccard_floor": 0, "below_cos_threshold_topk": 0, "below_cos_threshold_total": 0, "above_cos_threshold_total": 0, "mnn_reject": 0, "already_merged": 0}
+        t3_cosine_scores = []  # For telemetry: cosine scores that passed threshold
+        best_cos_per_src: Dict[str, float] = {}  # Track best cosine score per source (for observability)
+        t3_edges_above_threshold = 0  # Count of directed edges above threshold in top-K (not unique pairs)
+        t3_cosine_computations = 0  # Total cosine similarity computations (actual pairs evaluated)
+        t3_unique_pairs = 0  # Unique pairs after dedupe (for observability)
+        already_merged_examples: List[tuple] = []  # Track examples of skipped merges
+
+        if singleton_keys_t3:
+            logger.warning(f"[DEBUG] Tier 3 embedding pass: {len(singleton_keys_t3)} singletons remaining")
+
+            # Get unique peeled texts and build embedding cache
+            unique_peeled = {}  # peeled_text -> [keys with this peeled text]
+            for k in singleton_keys_t3:
+                p = peeled[k]
+                if p not in unique_peeled:
+                    unique_peeled[p] = []
+                unique_peeled[p].append(k)
+
+            # Only embed if we have multiple unique peeled texts
+            if len(unique_peeled) >= 2:
+                try:
+                    # Lazy-load embedding provider
+                    embedder = create_embedding_provider()
+                    peeled_texts = list(unique_peeled.keys())
+                    embeddings = embedder.embed_batch(peeled_texts)
+
+                    # Build peeled -> embedding map
+                    peeled_to_embedding = {p: emb for p, emb in zip(peeled_texts, embeddings)}
+
+                    # Compute cosine similarity matrix (brute force for now)
+                    import numpy as np
+
+                    def cosine_sim(a: List[float], b: List[float]) -> float:
+                        a_arr = np.array(a)
+                        b_arr = np.array(b)
+                        dot = np.dot(a_arr, b_arr)
+                        norm_a = np.linalg.norm(a_arr)
+                        norm_b = np.linalg.norm(b_arr)
+                        if norm_a == 0 or norm_b == 0:
+                            return 0.0
+                        return float(dot / (norm_a * norm_b))
+
+                    # For each singleton, find K nearest neighbors
+                    # Collect all merge candidates, then apply greedy merging
+                    merge_candidates = []  # (cos_score, src_key, dst_key)
+
+                    # Build top-K map for MNN gating: key -> set of top-K neighbor keys
+                    top_k_neighbors: Dict[str, Set[str]] = {}
+
+                    for src_key in singleton_keys_t3:
+                        if src_key not in groups:  # Already merged
+                            continue
+
+                        src_peeled = peeled[src_key]
+                        src_emb = peeled_to_embedding[src_peeled]
+
+                        # Track best cosine for this source (for observability even when below threshold)
+                        best_cos = 0.0
+
+                        # Score all other singletons
+                        scored = []
+                        for dst_key in singleton_keys_t3:
+                            if dst_key == src_key or dst_key not in groups:
+                                continue
+                            dst_peeled = peeled[dst_key]
+                            if dst_peeled == src_peeled:  # Same peeled text - already handled in Tier 2.5
+                                continue
+
+                            dst_emb = peeled_to_embedding[dst_peeled]
+                            cos = cosine_sim(src_emb, dst_emb)
+                            t3_cosine_computations += 1  # Count actual pair evaluations
+                            scored.append((cos, dst_key))
+
+                            # Track threshold for ALL pairs (conservation invariant)
+                            if cos < COS_THRESHOLD:
+                                t3_blocks["below_cos_threshold_total"] += 1
+                            else:
+                                t3_blocks["above_cos_threshold_total"] += 1
+
+                            # Track best cosine for this source
+                            if cos > best_cos:
+                                best_cos = cos
+
+                        # Store best cos for this source (for telemetry)
+                        if best_cos > 0:
+                            best_cos_per_src[src_key] = best_cos
+
+                        # Take top K and store for MNN check
+                        scored.sort(key=lambda x: -x[0])
+                        top_k_neighbors[src_key] = {dst_key for _, dst_key in scored[:K_NEIGHBORS]}
+
+                        for cos, dst_key in scored[:K_NEIGHBORS]:
+                            if cos >= COS_THRESHOLD:
+                                merge_candidates.append((cos, src_key, dst_key))
+                                t3_cosine_scores.append(cos)
+                                t3_edges_above_threshold += 1
+                            else:
+                                # Track top-K neighbors that failed threshold (for observability)
+                                t3_blocks["below_cos_threshold_topk"] += 1
+
+                    # Dedupe: keep only best score per unique pair
+                    pair_best = {}
+                    for cos, src_key, dst_key in merge_candidates:
+                        pair_id = tuple(sorted([src_key, dst_key]))
+                        if pair_id not in pair_best or cos > pair_best[pair_id][0]:
+                            pair_best[pair_id] = (cos, src_key, dst_key)
+
+                    # Sort by score descending for greedy merge
+                    sorted_candidates = sorted(pair_best.values(), key=lambda x: -x[0])
+                    t3_unique_pairs = len(sorted_candidates)  # After dedupe (for observability)
+
+                    # Greedy merge application
+                    for cos, src_key, dst_key in sorted_candidates:
+                        if src_key not in groups or dst_key not in groups:
+                            t3_blocks["already_merged"] += 1
+                            if len(already_merged_examples) < 3:
+                                already_merged_examples.append((round(cos, 3), src_key[:80], dst_key[:80]))
+                            continue
+
+                        # MNN gating: only merge if both are in each other's top-K
+                        if MNN_GATING:
+                            src_in_dst_topk = src_key in top_k_neighbors.get(dst_key, set())
+                            dst_in_src_topk = dst_key in top_k_neighbors.get(src_key, set())
+                            if not (src_in_dst_topk and dst_in_src_topk):
+                                t3_blocks["mnn_reject"] += 1
+                                continue
+
+                        # Deterministic: always merge smaller key into larger key (lex order)
+                        if src_key > dst_key:
+                            src_key, dst_key = dst_key, src_key
+
+                        # Apply guards (negation + number mismatch)
+                        src_has_neg = has_negation(token_sets[src_key])
+                        dst_has_neg = has_negation(token_sets[dst_key])
+                        src_nums = number_sets[src_key]
+                        dst_nums = number_sets[dst_key]
+
+                        needs_strict = False
+                        if src_has_neg != dst_has_neg:
+                            needs_strict = True
+                            if cos < COS_STRICT:
+                                t3_blocks["negation_mismatch"] += 1
+                                continue
+
+                        if src_nums != dst_nums:
+                            needs_strict = True
+                            if cos < COS_STRICT:
+                                t3_blocks["number_mismatch"] += 1
+                                continue
+
+                        # Optional Jaccard floor brake
+                        src_tokens = token_sets[src_key]
+                        dst_tokens = token_sets[dst_key]
+                        intersection = len(src_tokens & dst_tokens)
+                        union = len(src_tokens | dst_tokens)
+                        jaccard = intersection / union if union > 0 else 0.0
+
+                        if jaccard < JACCARD_FLOOR:
+                            t3_blocks["below_jaccard_floor"] += 1
+                            continue
+
+                        # Perform merge
+                        src_canon = groups[src_key][0]["text"]
+                        dst_canon = groups[dst_key][0]["text"]
+                        groups[dst_key].extend(groups[src_key])
+                        del groups[src_key]
+                        t3_merge_count += 1
+
+                        # Log for telemetry
+                        if len(t3_merge_log) < 20:
+                            t3_merge_log.append({
+                                "cos": round(cos, 3),
+                                "jaccard": round(jaccard, 3),
+                                "src_canon": src_canon[:60],
+                                "dst_canon": dst_canon[:60],
+                                "guards": "strict" if needs_strict else "normal"
+                            })
+
+                except Exception as e:
+                    logger.error(f"[DEBUG] Tier 3 embedding error: {e}")
+
+        # Tier 3 telemetry - ALWAYS log when singletons were evaluated (for observability)
+        if singleton_keys_t3:
+            sizes_after_t3 = [len(g) for g in groups.values()]
+            histogram_after_t3 = {size: sizes_after_t3.count(size) for size in range(1, 10)}
+            logger.warning(f"[DEBUG] Tier 3 complete: {t3_merge_count} merges, {t3_unique_pairs} unique pairs, {t3_cosine_computations} comps (above={t3_blocks['above_cos_threshold_total']}, below={t3_blocks['below_cos_threshold_total']}). Histogram: {histogram_after_t3}")
+
+            # Log best-cos distribution with percentiles (critical for threshold tuning)
+            if best_cos_per_src:
+                cos_values = sorted(best_cos_per_src.values())
+                n = len(cos_values)
+                if n:
+                    # Proper percentile calculation: index = (n-1) * percentile
+                    p50 = cos_values[int((n - 1) * 0.50)]
+                    p90 = cos_values[int((n - 1) * 0.90)]
+                    p95 = cos_values[int((n - 1) * 0.95)]
+                    max_cos = cos_values[-1]
+                    logger.warning(f"[DEBUG] Tier 3 best-cos stats: n={n}, p50={p50:.3f}, p90={p90:.3f}, p95={p95:.3f}, max={max_cos:.3f}")
+                top_best = sorted(best_cos_per_src.values(), reverse=True)[:10]
+                logger.warning(f"[DEBUG] Tier 3 best-cos (top 10): {[round(c, 3) for c in top_best]}")
+
+            if t3_cosine_scores:
+                t3_cosine_scores.sort(reverse=True)
+                logger.warning(f"[DEBUG] Tier 3 above-threshold scores: {[round(c, 3) for c in t3_cosine_scores[:10]]}")
+
+            if t3_merge_log:
+                logger.warning(f"[DEBUG] Tier 3 top merges:")
+                for m in t3_merge_log[:5]:
+                    logger.warning(f"[DEBUG]   cos={m['cos']} J={m['jaccard']} ({m['guards']}): '{m['src_canon']}' -> '{m['dst_canon']}'")
+
+            # Always log blocks (shows why merges didn't happen)
+            logger.warning(f"[DEBUG] Tier 3 blocks: {t3_blocks}")
+
+            # Log examples of skipped merges (for debugging overlap vs dedupe)
+            if already_merged_examples:
+                logger.warning(f"[DEBUG] Tier 3 already_merged examples: {already_merged_examples}")
+
         # Convert to DetectedPattern objects
         patterns = []
+
+        # DEBUG: Log singleton normalized keys (pairs of canon vs normalized)
+        # This shows what statements are NOT collapsing despite template canonicalization
+        singletons = [(norm, grp) for norm, grp in groups.items() if len(grp) == 1]
+        if singletons:
+            logger.warning(f"[DEBUG] Found {len(singletons)} singleton patterns (not grouping). Sample (canon -> normalized):")
+            for norm, grp in singletons[:20]:  # Log first 20 singletons
+                canon = grp[0]["text"]
+                logger.warning(f"[DEBUG]   '{canon[:80]}' -> '{norm[:80]}'")
+
         for normalized_text, group in groups.items():
             if len(group) < self.config.min_evidence_for_tentative:
                 continue  # Not enough evidence
@@ -546,7 +1105,14 @@ class PatternDetector:
             )
             patterns.append(pattern)
 
-        return patterns, skip_counts
+        # Return patterns and comprehensive telemetry
+        telemetry = {
+            "skip_counts": skip_counts,
+            "accepted_by_source": accepted_by_source,
+            "accepted_by_category": accepted_by_category,
+            "rejection_samples": rejection_samples,  # NEW
+        }
+        return patterns, telemetry
 
 
 class BeliefLifecycleManager:
@@ -584,9 +1150,13 @@ class BeliefLifecycleManager:
             self._counter_reset_date = today
             logger.info("Daily action counters reset")
 
-    def seed_tentative_belief(self, pattern: DetectedPattern) -> Tuple[Optional[str], Optional[str]]:
+    def seed_tentative_belief(self, pattern: DetectedPattern, scan_id: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
         """
         Create a tentative belief from a detected pattern.
+
+        Args:
+            pattern: The detected pattern
+            scan_id: Optional correlation ID from pattern scan
 
         Returns (belief_id, skip_reason).
         - If created: (belief_id, None)
@@ -665,6 +1235,7 @@ class BeliefLifecycleManager:
                 ts=datetime.now(timezone.utc).timestamp(),
                 schema=2,
                 event="belief_auto_formed",
+                scan_id=scan_id,  # Thread correlation ID
                 beliefs_touched=[belief_id],
                 evidence_refs=pattern.evidence_ids,
                 meta={
@@ -1044,16 +1615,18 @@ class BeliefGardener:
             return {"enabled": True, "message": "scan_in_progress"}
 
         try:
-            logger.info("🔍 Starting pattern scan...")
+            # Generate correlation ID for this scan
+            scan_id = str(uuid.uuid4())
+            logger.info(f"[scan_id={scan_id}] 🔍 Starting pattern scan...")
 
             # Detect patterns and get validation telemetry
-            patterns, telemetry = self.pattern_detector.scan_for_patterns()
+            patterns, telemetry = self.pattern_detector.scan_for_patterns(scan_id=scan_id)
 
             # Form tentative beliefs from patterns
             formed_beliefs = []
             skipped = []
             for pattern in patterns:
-                belief_id, skip_reason = self.lifecycle_manager.seed_tentative_belief(pattern)
+                belief_id, skip_reason = self.lifecycle_manager.seed_tentative_belief(pattern, scan_id=scan_id)
                 if belief_id:
                     formed_beliefs.append({
                         "belief_id": belief_id,
@@ -1103,6 +1676,7 @@ class BeliefGardener:
                     deprecated.append(belief.belief_id)
 
             summary = {
+                "scan_id": scan_id,  # NEW: Include scan correlation ID
                 "patterns_detected": len(patterns),
                 "beliefs_formed": len(formed_beliefs),
                 "formed_beliefs": formed_beliefs,
@@ -1113,7 +1687,7 @@ class BeliefGardener:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
-            logger.info(f"✅ Pattern scan complete: {summary}")
+            logger.info(f"[scan_id={scan_id}] ✅ Pattern scan complete: {summary}")
             return summary
 
         finally:

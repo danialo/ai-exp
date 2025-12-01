@@ -90,6 +90,8 @@ class DissonancePattern:
     analysis: str  # Why this is dissonant
     severity: float  # 0.0-1.0, how significant the dissonance
     immutable: bool = False  # True if this involves an immutable core belief
+    belief_id: str = ""  # ID of the belief involved
+    conflicting_statement: str = ""  # The conflicting statement from memory
 
 
 @dataclass
@@ -303,6 +305,10 @@ class BeliefConsistencyChecker:
 
         # Step 1: Extract self-claims from memories
         extracted_claims = self._extract_self_claims(memories)
+
+        # Step 1.5: Persist extracted claims as experiences for Belief Gardener
+        if self.raw_store and extracted_claims:
+            self._persist_self_claims(extracted_claims, query)
 
         # Step 2: Compare beliefs against claims
         dissonance_patterns = self._detect_dissonance(beliefs_to_check, extracted_claims)
@@ -772,6 +778,9 @@ class BeliefConsistencyChecker:
                                       for word in belief_statement.lower().split()[:3])
                             ]
 
+                            # Extract conflicting statement from related claims
+                            conflicting_stmt = related_claims[0].statement if related_claims else ""
+
                             patterns.append(DissonancePattern(
                                 belief_statement=matching_belief.statement,
                                 belief_confidence=matching_belief.confidence,
@@ -779,6 +788,8 @@ class BeliefConsistencyChecker:
                                 memory_claims=related_claims,
                                 analysis=analysis,
                                 severity=float(severity_str),
+                                belief_id=getattr(matching_belief, 'belief_id', ''),
+                                conflicting_statement=conflicting_stmt,
                             ))
                 except Exception as e:
                     logger.debug(f"Failed to parse dissonance line: {line} - {e}")
@@ -894,6 +905,71 @@ class BeliefConsistencyChecker:
             lines.append("\n⚠️ REMEMBER: For immutable beliefs, answer DIRECTLY and CONFIDENTLY without hedging language.\n")
 
         return "".join(lines)
+
+    def _persist_self_claims(
+        self,
+        claims: List[SelfClaim],
+        query: str,
+    ) -> None:
+        """Persist extracted self-claims as experiences for Belief Gardener.
+
+        This wires the dissonance checker's claim extraction to the belief formation
+        pipeline. Claims become first-class experiences that the Gardener can cluster
+        and promote to beliefs.
+
+        Args:
+            claims: Extracted self-claims from memories
+            query: The query that triggered claim extraction
+        """
+        from datetime import datetime, timezone
+        from src.memory.models import ExperienceModel, ExperienceType
+
+        for claim in claims:
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            experience_id = f"claim_{timestamp}_{hash(claim.statement) % 10000:04x}"
+
+            # Build text representation
+            text = f"{claim.statement}"
+
+            # Structure claim data for Gardener consumption
+            structured_data = {
+                "statement": claim.statement,
+                "source": claim.source,  # 'self' or 'external'
+                "confidence": claim.confidence,  # 'certain', 'uncertain', 'hedging'
+                "context": claim.context,
+                "source_experience_id": claim.experience_id,
+                "extracted_from_query": query,
+                "validation_source": "claim_extractor",  # CRITICAL: Mark as trusted for provenance filtering
+            }
+
+            # Create experience model (use SELF_DEFINITION type)
+            claim_experience = ExperienceModel(
+                id=experience_id,
+                type=ExperienceType.SELF_DEFINITION,  # Use existing enum value
+                content={
+                    "text": text,
+                    "structured": structured_data,
+                },
+                provenance={
+                    "sources": [{"uri": f"exp://{claim.experience_id}", "hash": None}],
+                    "actor": Actor.AGENT,  # Use AGENT enum (Astra made the claim)
+                    "method": CaptureMethod.MODEL_INFER,  # Use MODEL_INFER enum (extracted by LLM)
+                },
+                confidence={
+                    "value": 0.8 if claim.confidence == "certain" else 0.5 if claim.confidence == "uncertain" else 0.3,
+                    "source": "llm_extraction"
+                },
+            )
+
+            # Store it
+            try:
+                self.raw_store.append_experience(claim_experience)
+                logger.debug(f"Stored self-claim: {claim.statement[:80]}")
+            except Exception as e:
+                logger.error(f"Failed to persist self-claim: {e}")
+
+        if claims:
+            logger.info(f"✅ Persisted {len(claims)} self-claims as experiences for Belief Gardener")
 
     def _store_dissonance_event(
         self,

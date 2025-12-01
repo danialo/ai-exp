@@ -650,9 +650,17 @@ class PersonaService:
         # Start with system prompt, then conversation history, then current user message
         messages = [{"role": "system", "content": full_prompt}]
 
-        # Add conversation history if provided
+        # Add conversation history if provided (with truncation to prevent token overflow)
         if conversation_history:
-            messages.extend(conversation_history)
+            # Truncate to last 6 messages (~3 turns) to stay within token limits
+            # System prompt is ~8-10K tokens, leaving ~15K for conversation + response
+            MAX_HISTORY_MESSAGES = 6
+            if len(conversation_history) > MAX_HISTORY_MESSAGES:
+                truncated = conversation_history[-MAX_HISTORY_MESSAGES:]
+                logger.info(f"Truncated conversation history from {len(conversation_history)} to {MAX_HISTORY_MESSAGES} messages")
+                messages.extend(truncated)
+            else:
+                messages.extend(conversation_history)
 
         # Add current user message
         messages.append({"role": "user", "content": user_message})
@@ -1831,7 +1839,18 @@ This revision represents growth in my self-understanding. My past statements wer
                     if not content:
                         result = f"Source file not found: src/{path}\n\nMake sure the file exists and the path is correct (relative to src/ directory).\nTip: Use list_source_files() first to see what files are available."
                     else:
-                        result = content
+                        # Truncate large files to prevent token overflow
+                        MAX_SOURCE_LINES = 200
+                        MAX_SOURCE_CHARS = 12000
+                        lines = content.split('\n')
+                        if len(lines) > MAX_SOURCE_LINES or len(content) > MAX_SOURCE_CHARS:
+                            truncated_lines = lines[:MAX_SOURCE_LINES]
+                            result = '\n'.join(truncated_lines)
+                            if len(result) > MAX_SOURCE_CHARS:
+                                result = result[:MAX_SOURCE_CHARS]
+                            result += f"\n\n[... FILE TRUNCATED: showing first {MAX_SOURCE_LINES} lines of {len(lines)} total. File is {len(content)} chars. Use line ranges for specific sections.]"
+                        else:
+                            result = content
 
             elif tool_name == "execute_script":
                 command = arguments.get("command")
