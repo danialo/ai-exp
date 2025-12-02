@@ -35,7 +35,6 @@ class Settings:
         "all-MiniLM-L6-v2",  # SentenceTransformer doesn't use 'sentence-transformers/' prefix
     )
     OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY")
-    VENICEAI_API_KEY: str | None = os.getenv("VENICEAI_API_KEY")
 
     # Web search and browsing configuration
     SERP_API_KEY: str | None = os.getenv("SERPAPI_API_KEY")
@@ -51,9 +50,9 @@ class Settings:
     WEB_CONTENT_MAX_LENGTH: int = int(os.getenv("WEB_CONTENT_MAX_LENGTH", "10000"))  # chars for interpretation
 
     # LLM configuration
-    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "venice")  # "openai" or "venice"
-    LLM_BASE_URL: str | None = os.getenv("LLM_BASE_URL", "https://api.venice.ai/api/v1")
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "llama-3.3-70b")
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai")
+    LLM_BASE_URL: str | None = os.getenv("LLM_BASE_URL")  # None = use OpenAI default
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o")
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "500"))
     LLM_TOP_K: int | None = int(os.getenv("LLM_TOP_K")) if os.getenv("LLM_TOP_K") else None
@@ -196,9 +195,9 @@ class Settings:
     BELIEF_GARDENER_SCAN_INTERVAL: int = int(os.getenv("BELIEF_GARDENER_SCAN_INTERVAL", "60"))  # minutes
     BELIEF_GARDENER_MIN_EVIDENCE_TENTATIVE: int = int(os.getenv("BELIEF_GARDENER_MIN_EVIDENCE_TENTATIVE", "3"))
     BELIEF_GARDENER_MIN_EVIDENCE_ASSERTED: int = int(os.getenv("BELIEF_GARDENER_MIN_EVIDENCE_ASSERTED", "5"))
-    BELIEF_GARDENER_DAILY_BUDGET_FORMATIONS: int = int(os.getenv("BELIEF_GARDENER_DAILY_BUDGET_FORMATIONS", "3"))
-    BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS: int = int(os.getenv("BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS", "5"))
-    BELIEF_GARDENER_DAILY_BUDGET_DEPRECATIONS: int = int(os.getenv("BELIEF_GARDENER_DAILY_BUDGET_DEPRECATIONS", "3"))
+    BELIEF_GARDENER_DAILY_BUDGET_FORMATIONS: int = int(os.getenv("BELIEF_GARDENER_DAILY_BUDGET_FORMATIONS", "100"))
+    BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS: int = int(os.getenv("BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS", "100"))
+    BELIEF_GARDENER_DAILY_BUDGET_DEPRECATIONS: int = int(os.getenv("BELIEF_GARDENER_DAILY_BUDGET_DEPRECATIONS", "50"))
     BELIEF_GARDENER_LOOKBACK_DAYS: int = int(os.getenv("BELIEF_GARDENER_LOOKBACK_DAYS", "30"))
 
     # Adaptive Decision Framework configuration

@@ -528,40 +528,47 @@ Be rigorous and intellectually honest. The goal is to stress-test the belief, no
             outcome: Outcome to apply
         """
         logger.info(f"Applying outcome {outcome} to belief {belief.belief_id}")
+        success = False
 
-        if outcome == Outcome.CONFIRMED:
-            # Boost confidence slightly
-            success = self.belief_store.apply_delta(
-                belief_id=belief.belief_id,
-                from_ver=belief.ver,
-                op=DeltaOp.REINFORCE,
-                confidence_delta=self.config.confirmed_boost,
-                updated_by="contrarian",
-                reason=f"Survived challenge {dossier.id}",
-            )
-            dossier.notes = "Belief confirmed under challenge"
+        try:
+            if outcome == Outcome.CONFIRMED:
+                # Boost confidence slightly
+                success = self.belief_store.apply_delta(
+                    belief_id=belief.belief_id,
+                    from_ver=belief.ver,
+                    op=DeltaOp.REINFORCE,
+                    confidence_delta=self.config.confirmed_boost,
+                    updated_by="contrarian",
+                    reason=f"Survived challenge {dossier.id}",
+                )
+                dossier.notes = "Belief confirmed under challenge"
 
-        elif outcome == Outcome.WEAKENED:
-            # Reduce confidence
-            success = self.belief_store.apply_delta(
-                belief_id=belief.belief_id,
-                from_ver=belief.ver,
-                op=DeltaOp.UPDATE,
-                confidence_delta=-self.config.weakened_penalty,
-                updated_by="contrarian",
-                reason=f"Weakened by challenge {dossier.id}",
-            )
-            dossier.notes = f"Confidence reduced due to score {dossier.contrarian_score:.3f}"
+            elif outcome == Outcome.WEAKENED:
+                # Reduce confidence
+                success = self.belief_store.apply_delta(
+                    belief_id=belief.belief_id,
+                    from_ver=belief.ver,
+                    op=DeltaOp.UPDATE,
+                    confidence_delta=-self.config.weakened_penalty,
+                    updated_by="contrarian",
+                    reason=f"Weakened by challenge {dossier.id}",
+                )
+                dossier.notes = f"Confidence reduced due to score {dossier.contrarian_score:.3f}"
 
-        elif outcome == Outcome.REFRAMED:
-            # Deprecate and create new (simplified version - just deprecate for now)
-            success = self.belief_store.deprecate_belief(
-                belief_id=belief.belief_id,
-                from_ver=belief.ver,
-                updated_by="contrarian",
-                reason=f"Reframed due to challenge {dossier.id}",
-            )
-            dossier.notes = "Belief deprecated, awaiting reframing"
+            elif outcome == Outcome.REFRAMED:
+                # Deprecate and create new (simplified version - just deprecate for now)
+                success = self.belief_store.deprecate_belief(
+                    belief_id=belief.belief_id,
+                    from_ver=belief.ver,
+                    updated_by="contrarian",
+                    reason=f"Reframed due to challenge {dossier.id}",
+                )
+                dossier.notes = "Belief deprecated, awaiting reframing"
+
+        except ValueError as e:
+            # Mutation was blocked by guardrails
+            logger.info(f"Contrarian outcome blocked for {belief.belief_id}: {e}")
+            dossier.notes = f"Outcome blocked: {e}"
 
         # Close dossier
         dossier.status = DossierStatus.CLOSED

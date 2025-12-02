@@ -19,9 +19,9 @@ async def test_execute_goal():
     print("\n1. Initializing services...")
     code_access = CodeAccessService(project_root="/home/d/git/ai-exp")
 
-    # Use the existing LLM service (Venice AI / OpenAI-compatible)
+    # Use the existing LLM service (OpenAI)
     llm_service = LLMService(
-        api_key=settings.VENICEAI_API_KEY or settings.OPENAI_API_KEY,
+        api_key=settings.OPENAI_API_KEY,
         model=settings.LLM_MODEL,
         base_url=settings.LLM_BASE_URL,
         temperature=0.2  # Lower temp for code generation

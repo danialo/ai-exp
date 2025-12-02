@@ -12,6 +12,7 @@ import gzip
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, asdict
@@ -87,6 +88,28 @@ class BeliefDelta:
     reason: str  # Why this delta was applied
 
 
+class MutationMode(str, Enum):
+    """Mutation modes for gradual rollout."""
+    DISABLED = "disabled"           # No mutations allowed
+    REINFORCE_ONLY = "reinforce"    # Only reinforce existing beliefs
+    CREATE_LIMITED = "create_limited"  # Creates + reinforces with limits
+    FULL = "full"                   # All operations (use with caution)
+
+
+@dataclass
+class ScanContext:
+    """Context for a single gardener scan - tracks rate limits and idempotency."""
+    scan_id: str
+    creates: int = 0
+    updates: int = 0
+    reinforcements: int = 0
+    applied_keys: set = None  # (op, belief_id) tuples already applied this scan
+
+    def __post_init__(self):
+        if self.applied_keys is None:
+            self.applied_keys = set()
+
+
 class BeliefStore:
     """Versioned belief store with append-only history."""
 
@@ -94,6 +117,29 @@ class BeliefStore:
     MIN_CONFIDENCE_STEP = 0.02
     MAX_CONFIDENCE_STEP = 0.15
     MIN_EVIDENCE_FOR_ASSERTED = 2
+
+    # === NAMESPACE GUARDRAILS ===
+    # Namespaces where creates are allowed
+    ALLOWED_CREATE_NAMESPACES = {"auto.", "peripheral."}
+    # Namespaces that are NEVER writable (except by migration actor)
+    PROTECTED_NAMESPACES = {"core."}
+
+    # === RATE LIMITS (per scan) ===
+    MAX_CREATES_PER_SCAN = 10
+    MAX_UPDATES_PER_SCAN = 30
+    MAX_REINFORCEMENTS_PER_SCAN = 50
+    MAX_CREATES_PER_CATEGORY = 5  # Limit per category (emotional spam vector)
+
+    # === STATEMENT GUARDRAILS ===
+    MIN_STATEMENT_TOKENS = 3      # Too short = noise
+    MAX_STATEMENT_TOKENS = 50     # Too long = rambling junk
+
+    # Patterns that should never become beliefs (capability/policy spam)
+    BLOCKED_PATTERNS = [
+        "i can browse", "i can delete", "i can create files",
+        "i can execute", "i can search", "i can read",
+        "i have access to", "i have tools", "my tools include",
+    ]
 
     def __init__(self, data_dir: Path):
         """Initialize belief store.
@@ -107,37 +153,255 @@ class BeliefStore:
 
         self.current_file = self.beliefs_dir / "current.json"
         self.index_file = self.beliefs_dir / "index.json"
+        self.backup_dir = self.beliefs_dir / "backups"
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.RLock()
 
-        # SAFETY: Kill switch for belief mutations
-        # Set to False to freeze all belief writes
-        self.mutations_enabled = False  # FROZEN by default until safety controls in place
-        logger.warning("BeliefStore initialized with mutations DISABLED (safety freeze)")
+        # === MUTATION CONTROL ===
+        # Read mode from environment (supports gradual rollout)
+        # BELIEF_MUTATION_MODE: disabled | reinforce | create_limited | full
+        env_mode = os.environ.get("BELIEF_MUTATION_MODE", "create_limited").lower()
+        mode_map = {
+            "disabled": MutationMode.DISABLED,
+            "reinforce": MutationMode.REINFORCE_ONLY,
+            "create_limited": MutationMode.CREATE_LIMITED,
+            "full": MutationMode.FULL,
+        }
+        self.mutation_mode = mode_map.get(env_mode, MutationMode.CREATE_LIMITED)
+
+        # Current scan context (set by gardener before mutations)
+        self._current_scan: Optional[ScanContext] = None
+
+        # Category counts for current scan
+        self._category_creates: Dict[str, int] = {}
+
+        # Write telemetry for current scan
+        self._scan_telemetry = {
+            "writes_attempted": 0,
+            "writes_applied": 0,
+            "writes_blocked": 0,
+            "writes_idempotent_skip": 0,
+            "writes_failed": 0,
+            "blocked_reasons": {},
+        }
+
+        logger.warning(f"BeliefStore initialized with mutation_mode={self.mutation_mode.value}")
 
         # Initialize if needed
         if not self.current_file.exists():
             self._initialize_empty_store()
 
+    # === MUTATION MODE CONTROL ===
+
+    def set_mutation_mode(self, mode: MutationMode):
+        """Set mutation mode."""
+        old_mode = self.mutation_mode
+        self.mutation_mode = mode
+        logger.warning(f"BeliefStore mutation_mode changed: {old_mode.value} -> {mode.value}")
+
     def enable_mutations(self):
-        """Enable belief mutations (use with caution)."""
-        self.mutations_enabled = True
-        logger.warning("BeliefStore mutations ENABLED")
+        """Enable limited mutations (create_limited mode)."""
+        self.set_mutation_mode(MutationMode.CREATE_LIMITED)
 
     def disable_mutations(self):
-        """Disable belief mutations (safety freeze)."""
-        self.mutations_enabled = False
-        logger.warning("BeliefStore mutations DISABLED")
+        """Disable all mutations."""
+        self.set_mutation_mode(MutationMode.DISABLED)
+
+    # === SCAN CONTEXT MANAGEMENT ===
+
+    def begin_scan(self, scan_id: str) -> None:
+        """Begin a new scan context. Call before gardener mutations."""
+        # Backup current beliefs before scan
+        self._create_scan_backup(scan_id)
+
+        self._current_scan = ScanContext(scan_id=scan_id)
+        self._category_creates = {}
+        self._scan_telemetry = {
+            "writes_attempted": 0,
+            "writes_applied": 0,
+            "writes_blocked": 0,
+            "writes_idempotent_skip": 0,
+            "writes_failed": 0,
+            "blocked_reasons": {},
+        }
+        logger.info(f"[BeliefStore] Scan began: {scan_id}")
+
+    def end_scan(self) -> Dict[str, Any]:
+        """End current scan context. Returns telemetry."""
+        if not self._current_scan:
+            return {}
+
+        telemetry = {
+            **self._scan_telemetry,
+            "scan_id": self._current_scan.scan_id,
+            "creates": self._current_scan.creates,
+            "updates": self._current_scan.updates,
+            "reinforcements": self._current_scan.reinforcements,
+            "category_creates": dict(self._category_creates),
+        }
+
+        logger.info(
+            f"[BeliefStore] Scan ended: {self._current_scan.scan_id} | "
+            f"applied={telemetry['writes_applied']} blocked={telemetry['writes_blocked']} "
+            f"creates={telemetry['creates']} reinforcements={telemetry['reinforcements']}"
+        )
+
+        self._current_scan = None
+        return telemetry
+
+    def _create_scan_backup(self, scan_id: str) -> None:
+        """Create backup before scan."""
+        if self.current_file.exists():
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            backup_file = self.backup_dir / f"{timestamp}_{scan_id[:8]}.json"
+            import shutil
+            shutil.copy(self.current_file, backup_file)
+            logger.debug(f"[BeliefStore] Backup created: {backup_file.name}")
 
     # Stability threshold - beliefs with stability >= this cannot be mutated
     STABILITY_THRESHOLD = 0.95
 
-    def _check_mutation_allowed(self, belief_id: str, operation: str) -> bool:
-        """Check if mutation is allowed. Returns False and logs if blocked."""
-        if not self.mutations_enabled:
-            logger.warning(f"BLOCKED: Belief mutation '{operation}' for {belief_id} - mutations disabled")
-            return False
-        return True
+    # === GUARDRAIL CHECKS ===
+
+    def _record_block(self, reason: str) -> None:
+        """Record a blocked write in telemetry."""
+        self._scan_telemetry["writes_blocked"] += 1
+        self._scan_telemetry["blocked_reasons"][reason] = \
+            self._scan_telemetry["blocked_reasons"].get(reason, 0) + 1
+
+    def _check_mutation_allowed(
+        self,
+        belief_id: str,
+        operation: str,
+        statement: str = "",
+        category: str = "",
+        updated_by: str = "system",
+    ) -> tuple[bool, str]:
+        """
+        Check if mutation is allowed by mode, namespace, rate limits, and content guardrails.
+
+        Returns:
+            (allowed: bool, reason: str) - reason is empty if allowed
+        """
+        self._scan_telemetry["writes_attempted"] += 1
+
+        # 1. Mode check
+        if self.mutation_mode == MutationMode.DISABLED:
+            reason = "mutations_disabled"
+            logger.warning(f"BLOCKED: {operation} for {belief_id} - {reason}")
+            self._record_block(reason)
+            return False, reason
+
+        # 2. Namespace protection (core.* is sacred)
+        for protected in self.PROTECTED_NAMESPACES:
+            if belief_id.startswith(protected) and updated_by != "migration":
+                reason = f"protected_namespace:{protected}"
+                logger.warning(f"BLOCKED: {operation} for {belief_id} - {reason}")
+                self._record_block(reason)
+                return False, reason
+
+        # 3. Mode-specific operation checks
+        is_create = "create" in operation.lower()
+        is_reinforce = "reinforce" in operation.lower()
+        is_update = "update" in operation.lower() and not is_reinforce
+
+        if self.mutation_mode == MutationMode.REINFORCE_ONLY:
+            if is_create or is_update:
+                reason = "mode_reinforce_only"
+                logger.info(f"BLOCKED: {operation} for {belief_id} - {reason}")
+                self._record_block(reason)
+                return False, reason
+
+        # 4. Namespace allowlist for creates
+        if is_create:
+            allowed_ns = any(belief_id.startswith(ns) for ns in self.ALLOWED_CREATE_NAMESPACES)
+            if not allowed_ns:
+                reason = f"create_namespace_not_allowed"
+                logger.warning(f"BLOCKED: {operation} for {belief_id} - {reason}")
+                self._record_block(reason)
+                return False, reason
+
+        # 5. Rate limits (if scan context exists)
+        if self._current_scan:
+            # Idempotency check
+            idempotency_key = (operation, belief_id)
+            if idempotency_key in self._current_scan.applied_keys:
+                self._scan_telemetry["writes_idempotent_skip"] += 1
+                return False, "idempotent_skip"
+
+            # Per-scan rate limits
+            if is_create and self._current_scan.creates >= self.MAX_CREATES_PER_SCAN:
+                reason = "rate_limit_creates"
+                logger.warning(f"BLOCKED: {operation} for {belief_id} - {reason} ({self._current_scan.creates}/{self.MAX_CREATES_PER_SCAN})")
+                self._record_block(reason)
+                return False, reason
+
+            if is_reinforce and self._current_scan.reinforcements >= self.MAX_REINFORCEMENTS_PER_SCAN:
+                reason = "rate_limit_reinforcements"
+                logger.info(f"BLOCKED: {operation} for {belief_id} - {reason}")
+                self._record_block(reason)
+                return False, reason
+
+            if is_update and self._current_scan.updates >= self.MAX_UPDATES_PER_SCAN:
+                reason = "rate_limit_updates"
+                logger.info(f"BLOCKED: {operation} for {belief_id} - {reason}")
+                self._record_block(reason)
+                return False, reason
+
+            # Per-category rate limit for creates
+            if is_create and category:
+                cat_count = self._category_creates.get(category, 0)
+                if cat_count >= self.MAX_CREATES_PER_CATEGORY:
+                    reason = f"rate_limit_category:{category}"
+                    logger.info(f"BLOCKED: {operation} for {belief_id} - {reason} ({cat_count}/{self.MAX_CREATES_PER_CATEGORY})")
+                    self._record_block(reason)
+                    return False, reason
+
+        # 6. Statement content guardrails (for creates)
+        if is_create and statement:
+            # Token length check
+            tokens = statement.lower().split()
+            if len(tokens) < self.MIN_STATEMENT_TOKENS:
+                reason = "statement_too_short"
+                logger.debug(f"BLOCKED: {operation} for {belief_id} - {reason}")
+                self._record_block(reason)
+                return False, reason
+
+            if len(tokens) > self.MAX_STATEMENT_TOKENS:
+                reason = "statement_too_long"
+                logger.debug(f"BLOCKED: {operation} for {belief_id} - {reason}")
+                self._record_block(reason)
+                return False, reason
+
+            # Blocked pattern check
+            statement_lower = statement.lower()
+            for pattern in self.BLOCKED_PATTERNS:
+                if pattern in statement_lower:
+                    reason = f"blocked_pattern:{pattern}"
+                    logger.debug(f"BLOCKED: {operation} for {belief_id} - {reason}")
+                    self._record_block(reason)
+                    return False, reason
+
+        return True, ""
+
+    def _record_write_success(self, operation: str, belief_id: str, category: str = "") -> None:
+        """Record successful write and update counters."""
+        self._scan_telemetry["writes_applied"] += 1
+
+        if self._current_scan:
+            # Record for idempotency
+            self._current_scan.applied_keys.add((operation, belief_id))
+
+            # Update counters
+            if "create" in operation.lower():
+                self._current_scan.creates += 1
+                if category:
+                    self._category_creates[category] = self._category_creates.get(category, 0) + 1
+            elif "reinforce" in operation.lower():
+                self._current_scan.reinforcements += 1
+            else:
+                self._current_scan.updates += 1
 
     def _check_belief_mutable(self, belief_id: str, belief_data: dict, operation: str) -> bool:
         """
@@ -261,14 +525,24 @@ class BeliefStore:
             reason: Explanation for this change
 
         Returns:
-            True if delta applied successfully, False if version mismatch
+            True if delta applied successfully, False if version mismatch or blocked
 
         Raises:
             ValueError: If delta violates guardrails
         """
-        # SAFETY: Check kill switch
-        if not self._check_mutation_allowed(belief_id, f"apply_delta({op})"):
-            return False
+        # SAFETY: Check guardrails (mode, namespace, rate limits)
+        op_name = f"apply_delta({op.value})" if hasattr(op, 'value') else f"apply_delta({op})"
+        allowed, block_reason = self._check_mutation_allowed(
+            belief_id=belief_id,
+            operation=op_name,
+            updated_by=updated_by,
+        )
+        if not allowed:
+            # Raise ValueError so callers can distinguish blocked from version mismatch
+            # Treat idempotent_skip as success (already in desired state)
+            if block_reason == "idempotent_skip":
+                return True
+            raise ValueError(f"blocked:{block_reason}")
 
         evidence_refs_added = evidence_refs_added or []
         evidence_refs_removed = evidence_refs_removed or []
@@ -407,6 +681,9 @@ class BeliefStore:
                 f"Applied delta to {belief_id}: ver {from_ver}->{to_ver}, op={op}, confidence_delta={confidence_delta}"
             )
 
+            # Record success for telemetry
+            self._record_write_success(op_name, belief_id)
+
             return True
 
     def create_belief(
@@ -437,10 +714,23 @@ class BeliefStore:
             updated_by: Actor creating this belief
 
         Returns:
-            True if created successfully, False if already exists
+            True if created successfully, False if already exists or blocked
         """
-        # SAFETY: Check kill switch
-        if not self._check_mutation_allowed(belief_id, "create_belief"):
+        # Extract category from belief_id (e.g., "auto.emotional.xxx" -> "emotional")
+        category = ""
+        parts = belief_id.split(".")
+        if len(parts) >= 2:
+            category = parts[1]  # auto.emotional.xxx -> emotional
+
+        # SAFETY: Check all guardrails (mode, namespace, rate limits, content)
+        allowed, block_reason = self._check_mutation_allowed(
+            belief_id=belief_id,
+            operation="create_belief",
+            statement=statement,
+            category=category,
+            updated_by=updated_by,
+        )
+        if not allowed:
             return False
 
         metadata = metadata or {}
@@ -451,7 +741,7 @@ class BeliefStore:
                 current = json.load(f)
 
             if belief_id in current:
-                logger.warning(f"Belief {belief_id} already exists")
+                logger.info(f"Belief {belief_id} already exists - skipping create")
                 return False
 
             # Create belief at ver=1
@@ -520,6 +810,9 @@ class BeliefStore:
                 logger.error(f"Failed to log belief creation to ledger: {e}")
 
             logger.info(f"Created belief {belief_id} at ver=1")
+
+            # Record success for telemetry
+            self._record_write_success("create_belief", belief_id, category)
 
             return True
 

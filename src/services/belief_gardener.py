@@ -115,9 +115,9 @@ class GardenerConfig:
     deprecation_threshold: float = 0.30  # Auto-deprecate below this
 
     # Guardrails
-    daily_budget_formations: int = 3  # Max new beliefs per day
-    daily_budget_promotions: int = 5  # Max promotions per day
-    daily_budget_deprecations: int = 3  # Max deprecations per day
+    daily_budget_formations: int = 100  # Max new beliefs per day
+    daily_budget_promotions: int = 100  # Max promotions per day
+    daily_budget_deprecations: int = 50  # Max deprecations per day
     require_approval_for_core: bool = True  # Human approval for core beliefs
 
     # Pattern matching
@@ -1164,9 +1164,9 @@ class BeliefLifecycleManager:
         """
         self._check_and_reset_counters()
 
-        # Check daily budget
+        # Check daily budget (log aggregated at scan level, not per-pattern)
         if self._action_counters["formations"] >= self.config.daily_budget_formations:
-            logger.warning(f"Daily formation budget exceeded ({self.config.daily_budget_formations})")
+            logger.warning(f"[DEBUG] Budget check: counter={self._action_counters['formations']} limit={self.config.daily_budget_formations}")
             return None, "budget_exceeded"
 
         # Filter template noise
@@ -1296,6 +1296,10 @@ class BeliefLifecycleManager:
         Returns:
             True if promoted, False otherwise
         """
+        # Skip core.* beliefs entirely - they're protected at store level too
+        if belief_id.startswith("core."):
+            return False
+
         beliefs = self.belief_store.get_current()
         if belief_id not in beliefs:
             return False
@@ -1317,7 +1321,10 @@ class BeliefLifecycleManager:
 
         # Get feedback score from aggregator
         if self.feedback_aggregator:
-            feedback_score, _ = self.feedback_aggregator.score(belief_id)
+            # EnhancedFeedbackAggregator returns (score, neg, actor_contributions)
+            # Base FeedbackAggregator returns (score, neg)
+            result = self.feedback_aggregator.score(belief_id)
+            feedback_score = result[0] if result else 0.0
         else:
             # No aggregator available - use neutral score
             logger.warning(f"No feedback aggregator for {belief_id}, using neutral score")
@@ -1343,6 +1350,10 @@ class BeliefLifecycleManager:
         Returns:
             True if deprecated, False otherwise
         """
+        # Skip core.* beliefs entirely - they're protected at store level too
+        if belief_id.startswith("core."):
+            return False
+
         beliefs = self.belief_store.get_current()
         if belief_id not in beliefs:
             return False
@@ -1355,7 +1366,10 @@ class BeliefLifecycleManager:
 
         # Get negative feedback score from aggregator
         if self.feedback_aggregator:
-            _, neg_feedback, _ = self.feedback_aggregator.score(belief_id)
+            # EnhancedFeedbackAggregator returns (score, neg, actor_contributions)
+            # Base FeedbackAggregator returns (score, neg)
+            result = self.feedback_aggregator.score(belief_id)
+            neg_feedback = result[1] if len(result) > 1 else 0.0
         else:
             # No aggregator available - use neutral score
             logger.warning(f"No feedback aggregator for {belief_id}, using neutral score")
@@ -1382,15 +1396,19 @@ class BeliefLifecycleManager:
             target_confidence = min(0.85, belief.confidence + 0.1)
             confidence_delta = round(target_confidence - belief.confidence, 6)  # Round to avoid float precision issues
 
-            success = self.belief_store.apply_delta(
-                belief_id=belief.belief_id,
-                from_ver=belief.ver,
-                op=DeltaOp.UPDATE,
-                confidence_delta=confidence_delta,
-                state_change="tentative->asserted",
-                updated_by="gardener",
-                reason="Auto-promotion: evidence threshold met and positive feedback"
-            )
+            try:
+                success = self.belief_store.apply_delta(
+                    belief_id=belief.belief_id,
+                    from_ver=belief.ver,
+                    op=DeltaOp.UPDATE,
+                    confidence_delta=confidence_delta,
+                    state_change="tentative->asserted",
+                    updated_by="gardener",
+                    reason="Auto-promotion: evidence threshold met and positive feedback"
+                )
+            except ValueError as e:
+                logger.info(f"Promotion blocked for {belief.belief_id}: {e}")
+                return False
 
             if not success:
                 logger.warning(f"Failed to promote {belief.belief_id}: version mismatch")
@@ -1436,15 +1454,19 @@ class BeliefLifecycleManager:
             # Determine state transition
             state_change = f"{belief.state}->tentative"
 
-            success = self.belief_store.apply_delta(
-                belief_id=belief.belief_id,
-                from_ver=belief.ver,
-                op=DeltaOp.UPDATE,
-                confidence_delta=confidence_delta,
-                state_change=state_change,
-                updated_by="gardener",
-                reason="Auto-deprecation: evidence decay or negative feedback"
-            )
+            try:
+                success = self.belief_store.apply_delta(
+                    belief_id=belief.belief_id,
+                    from_ver=belief.ver,
+                    op=DeltaOp.UPDATE,
+                    confidence_delta=confidence_delta,
+                    state_change=state_change,
+                    updated_by="gardener",
+                    reason="Auto-deprecation: evidence decay or negative feedback"
+                )
+            except ValueError as e:
+                logger.info(f"Deprecation blocked for {belief.belief_id}: {e}")
+                return False
 
             if not success:
                 logger.warning(f"Failed to deprecate {belief.belief_id}: version mismatch")
@@ -1480,6 +1502,10 @@ class BeliefLifecycleManager:
         Returns:
             True if reinforcement succeeded, False otherwise
         """
+        # Skip core.* beliefs entirely - they're protected at store level too
+        if belief_id.startswith("core."):
+            return False
+
         try:
             # Get current belief state
             beliefs = self.belief_store.get_current()
@@ -1504,15 +1530,19 @@ class BeliefLifecycleManager:
             if belief.confidence >= 0.99:
                 # Still add the evidence refs but no confidence boost
                 logger.debug(f"📌 Belief {belief_id} at confidence cap ({belief.confidence:.3f}), adding {new_evidence_count} evidence refs without boost")
-                success = self.belief_store.apply_delta(
-                    belief_id=belief_id,
-                    from_ver=belief.ver,
-                    op=DeltaOp.UPDATE,
-                    confidence_delta=0.0,
-                    evidence_refs_added=new_evidence_ids,
-                    updated_by="gardener",
-                    reason=f"Evidence added: {new_evidence_count} new refs (confidence at cap)"
-                )
+                try:
+                    success = self.belief_store.apply_delta(
+                        belief_id=belief_id,
+                        from_ver=belief.ver,
+                        op=DeltaOp.UPDATE,
+                        confidence_delta=0.0,
+                        evidence_refs_added=new_evidence_ids,
+                        updated_by="gardener",
+                        reason=f"Evidence added: {new_evidence_count} new refs (confidence at cap)"
+                    )
+                except ValueError as e:
+                    logger.info(f"Reinforcement blocked for {belief_id}: {e}")
+                    return False
                 return success
 
             # Calculate and apply confidence boost
@@ -1531,15 +1561,19 @@ class BeliefLifecycleManager:
                     logger.debug(f"📏 Capping tentative belief {belief_id} at {max_tentative_confidence:.3f}")
 
             # Apply reinforcement via delta
-            success = self.belief_store.apply_delta(
-                belief_id=belief_id,
-                from_ver=belief.ver,
-                op=DeltaOp.UPDATE,
-                confidence_delta=confidence_boost,
-                evidence_refs_added=new_evidence_ids,  # Add ONLY new evidence references
-                updated_by="gardener",
-                reason=f"Reinforcement: pattern repeated with {new_evidence_count} new evidence"
-            )
+            try:
+                success = self.belief_store.apply_delta(
+                    belief_id=belief_id,
+                    from_ver=belief.ver,
+                    op=DeltaOp.UPDATE,
+                    confidence_delta=confidence_boost,
+                    evidence_refs_added=new_evidence_ids,  # Add ONLY new evidence references
+                    updated_by="gardener",
+                    reason=f"Reinforcement: pattern repeated with {new_evidence_count} new evidence"
+                )
+            except ValueError as e:
+                logger.info(f"Reinforcement blocked for {belief_id}: {e}")
+                return False
 
             if success:
                 logger.info(f"💪 Reinforced belief {belief_id}: +{confidence_boost:.3f} confidence ({new_evidence_count} new evidence)")
@@ -1564,6 +1598,7 @@ class BeliefGardener:
         feedback_aggregator=None  # Optional: use enhanced version if provided
     ):
         self.config = config
+        self.belief_store = belief_store  # Store reference for scan context management
         self.pattern_detector = PatternDetector(raw_store, config)
 
         # Initialize feedback aggregator (use provided or create default)
@@ -1619,12 +1654,17 @@ class BeliefGardener:
             scan_id = str(uuid.uuid4())
             logger.info(f"[scan_id={scan_id}] 🔍 Starting pattern scan...")
 
+            # Begin scan context for rate limiting and telemetry
+            self.belief_store.begin_scan(scan_id)
+
             # Detect patterns and get validation telemetry
             patterns, telemetry = self.pattern_detector.scan_for_patterns(scan_id=scan_id)
 
             # Form tentative beliefs from patterns
             formed_beliefs = []
             skipped = []
+            budget_exceeded_count = 0
+
             for pattern in patterns:
                 belief_id, skip_reason = self.lifecycle_manager.seed_tentative_belief(pattern, scan_id=scan_id)
                 if belief_id:
@@ -1639,11 +1679,19 @@ class BeliefGardener:
                     if skip_reason in self.skips_since_boot:
                         self.skips_since_boot[skip_reason] += 1
 
-                    skipped.append({
-                        "statement": pattern.pattern_text[:80],
-                        "reason": skip_reason,
-                        "evidence_count": pattern.evidence_count(),
-                    })
+                    # Count budget_exceeded silently, log once at end
+                    if skip_reason == "budget_exceeded":
+                        budget_exceeded_count += 1
+                    else:
+                        skipped.append({
+                            "statement": pattern.pattern_text[:80],
+                            "reason": skip_reason,
+                            "evidence_count": pattern.evidence_count(),
+                        })
+
+            # Log budget exceeded once per scan (not per pattern)
+            if budget_exceeded_count > 0:
+                logger.warning(f"[scan_id={scan_id}] Formation budget exceeded: {budget_exceeded_count} patterns skipped")
 
             # Update last scan timestamp
             self.last_scan_ts = time.time()
@@ -1675,6 +1723,9 @@ class BeliefGardener:
                 if belief.state in ("asserted", "tentative") and self.lifecycle_manager.consider_deprecation(belief.belief_id, decay_evidence=0):
                     deprecated.append(belief.belief_id)
 
+            # End scan context and get write telemetry
+            store_telemetry = self.belief_store.end_scan()
+
             summary = {
                 "scan_id": scan_id,  # NEW: Include scan correlation ID
                 "patterns_detected": len(patterns),
@@ -1684,6 +1735,7 @@ class BeliefGardener:
                 "promoted": promoted,
                 "deprecated": deprecated,
                 **telemetry,  # Include all validation telemetry fields
+                "store_writes": store_telemetry,  # Include write telemetry from store
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 

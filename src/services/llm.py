@@ -42,7 +42,7 @@ class LLMService:
             model: Model name to use
             temperature: Temperature for generation (0-2)
             max_tokens: Maximum tokens in response
-            base_url: Optional base URL for API endpoint (e.g., Venice AI)
+            base_url: Optional base URL for API endpoint
             self_aware_prompt_builder: Optional builder for self-aware prompts
             top_k: Top-k sampling for creativity (if supported by API)
             top_p: Nucleus sampling parameter (0-1)
@@ -266,7 +266,9 @@ class LLMService:
             if frequency_penalty is not None or self.frequency_penalty is not None:
                 kwargs["frequency_penalty"] = frequency_penalty if frequency_penalty is not None else self.frequency_penalty
 
-            if logit_bias is not None and len(logit_bias) > 0:
+            # logit_bias only supported by OpenAI API directly, not other providers
+            is_openai_api = self.client.base_url and "api.openai.com" in str(self.client.base_url)
+            if logit_bias is not None and len(logit_bias) > 0 and is_openai_api:
                 kwargs["logit_bias"] = logit_bias
 
         # VERBOSE DIAGNOSTIC LOGGING

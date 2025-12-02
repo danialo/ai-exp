@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 import time
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
@@ -98,6 +99,7 @@ from src.services.success_signal_evaluator import SuccessSignalEvaluator
 from src.services.abort_condition_monitor import AbortConditionMonitor
 from src.services.parameter_adapter import ParameterAdapter
 from src.services.outcome_evaluation_task import OutcomeEvaluationTask
+from src.utils.leader_lock import LeaderLock
 from src.services.belief_gardener_integration import create_adaptive_belief_lifecycle_manager
 
 # Awareness loop imports
@@ -201,30 +203,11 @@ experience_lens = None
 agent_router = None
 coder_agent = None
 
-# Determine which LLM provider to use
-api_key = None
-base_url = None
-if settings.LLM_PROVIDER == "venice" and settings.VENICEAI_API_KEY:
-    api_key = settings.VENICEAI_API_KEY
-    base_url = settings.LLM_BASE_URL
-elif settings.LLM_PROVIDER == "openai" and settings.OPENAI_API_KEY:
-    api_key = settings.OPENAI_API_KEY
-    base_url = None
-elif settings.VENICEAI_API_KEY:  # Fallback to Venice if available
-    api_key = settings.VENICEAI_API_KEY
-    base_url = settings.LLM_BASE_URL
-elif settings.OPENAI_API_KEY:  # Fallback to OpenAI if available
-    api_key = settings.OPENAI_API_KEY
-    base_url = None
+# LLM provider - OpenAI only
+api_key = settings.OPENAI_API_KEY
+base_url = settings.LLM_BASE_URL  # None = OpenAI default
 
-# LOCK PROVIDER: No silent fallbacks allowed
-assert settings.LLM_PROVIDER in ["openai", "venice"], f"Invalid LLM_PROVIDER: {settings.LLM_PROVIDER}"
-if settings.LLM_PROVIDER == "openai":
-    assert settings.OPENAI_API_KEY, "OpenAI provider configured but OPENAI_API_KEY not set"
-    assert api_key == settings.OPENAI_API_KEY, f"Provider routing failed: expected OpenAI, got different key"
-elif settings.LLM_PROVIDER == "venice":
-    assert settings.VENICEAI_API_KEY, "Venice provider configured but VENICEAI_API_KEY not set"
-    assert api_key == settings.VENICEAI_API_KEY, f"Provider routing failed: expected Venice, got different key"
+assert settings.OPENAI_API_KEY, "OPENAI_API_KEY not set"
 
 logger.info(f"🔒 LLM PROVIDER LOCKED: {settings.LLM_PROVIDER} | Model: {settings.LLM_MODEL}")
 
@@ -876,6 +859,13 @@ async def startup_awareness():
     global decision_registry, success_evaluator, abort_monitor, parameter_adapter, outcome_task
     global integration_layer, event_hub, identity_service
 
+    # Leader election for background loops (only one worker should run them)
+    leader_lock = LeaderLock()
+    is_leader = leader_lock.try_acquire()
+    app.state.leader_lock = leader_lock  # Store for cleanup on shutdown
+    app.state.is_leader = is_leader
+    app.state.leader_pid = os.getpid() if is_leader else None
+
     if not settings.AWARENESS_ENABLED:
         logger.info("Awareness loop disabled")
         return
@@ -922,34 +912,35 @@ async def startup_awareness():
             memory_store=retrieval_service,  # Enable introspection on prior conversations
         )
 
-        # Start awareness loop
-        await awareness_loop.start()
-        awareness_task = asyncio.create_task(awareness_loop.run())
+        # Start awareness loop (only on leader worker to avoid lock conflicts)
+        if is_leader:
+            await awareness_loop.start()
+            awareness_task = asyncio.create_task(awareness_loop.run())
+            logger.warning("Awareness loop started (leader)")
 
-        logger.info("Awareness loop started successfully")
+            # Wire awareness loop to persona service
+            if persona_service:
+                persona_service.set_awareness_loop(awareness_loop)
+                logger.info("Awareness loop wired to persona service")
 
-        # Wire awareness loop to persona service
-        if persona_service:
-            persona_service.set_awareness_loop(awareness_loop)
-            logger.info("Awareness loop wired to persona service")
+            # Wire awareness loop to outcome-driven trust system
+            if outcome_evaluator:
+                outcome_evaluator.awareness_loop = awareness_loop
+                logger.info("Awareness loop wired to outcome evaluator")
 
-        # Wire awareness loop to outcome-driven trust system
-        if outcome_evaluator:
-            outcome_evaluator.awareness_loop = awareness_loop
-            logger.info("Awareness loop wired to outcome evaluator")
+            if enhanced_feedback_aggregator:
+                enhanced_feedback_aggregator.awareness_loop = awareness_loop
+                logger.info("Awareness loop wired to enhanced feedback aggregator")
+        else:
+            logger.warning("Awareness loop skipped (not leader worker)")
 
-        if enhanced_feedback_aggregator:
-            enhanced_feedback_aggregator.awareness_loop = awareness_loop
-            logger.info("Awareness loop wired to enhanced feedback aggregator")
-
-        # Initialize Integration Layer (Phase 1)
-        if INTEGRATION_LAYER_AVAILABLE and settings.INTEGRATION_LAYER_ENABLED:
+        # Initialize Integration Layer (Phase 1) - only on leader worker
+        if INTEGRATION_LAYER_AVAILABLE and settings.INTEGRATION_LAYER_ENABLED and is_leader:
             try:
-                logger.info("Initializing Integration Layer (Phase 1: read-only observer)...")
+                logger.warning("Initializing Integration Layer (leader)")
 
                 # Create event hub
                 event_hub = IntegrationEventHub()
-                logger.info("IntegrationEventHub created")
 
                 # Create identity service with full wiring to subsystems
                 identity_service = IdentityService(
@@ -958,7 +949,6 @@ async def startup_awareness():
                     awareness_loop=awareness_loop,
                     identity_ledger=None  # TODO: Wire identity ledger when available
                 )
-                logger.info("IdentityService created with belief_store, persona_files, awareness_loop")
 
                 # Create and start Integration Layer (Phase 2: Executive Loop)
                 integration_layer = IntegrationLayer(
@@ -971,45 +961,32 @@ async def startup_awareness():
                     snapshot_dir=Path("data/integration_snapshots"),
                 )
                 await integration_layer.start()
-                logger.info("IntegrationLayer started (Phase 2: executive loop with introspection control)")
+                logger.warning("IntegrationLayer started (leader)")
 
-                # Wire event_hub to awareness loop (recreate with event_hub)
-                # Note: In Phase 1, we're not recreating awareness_loop - it's already running
-                # In Phase 2, we'll pass event_hub during initialization
-                # For now, we'll use a workaround: set event_hub on existing awareness_loop
+                # Wire event_hub to awareness loop
                 if hasattr(awareness_loop, 'event_hub'):
                     awareness_loop.event_hub = event_hub
-                    logger.info("Event hub wired to awareness loop (hot-patched for Phase 1)")
-                else:
-                    logger.warning("Awareness loop does not support event_hub yet - signals won't flow")
 
                 # Wire event_hub to belief_consistency_checker
                 if belief_consistency_checker and hasattr(belief_consistency_checker, 'event_hub'):
                     belief_consistency_checker.event_hub = event_hub
-                    logger.info("Event hub wired to belief_consistency_checker")
-                else:
-                    logger.warning("Belief consistency checker does not support event_hub yet")
 
                 # Store in app.state for API access
                 app.state.integration_layer = integration_layer
                 app.state.event_hub = event_hub
 
-                logger.info("Integration Layer Phase 1 initialization complete")
-
             except Exception as e:
                 logger.error(f"Failed to initialize Integration Layer: {e}", exc_info=True)
-                logger.warning("Integration Layer disabled due to initialization failure - app will continue without IL")
-                # Ensure globals are None so we don't have partial state
                 integration_layer = None
                 event_hub = None
                 identity_service = None
-        elif INTEGRATION_LAYER_AVAILABLE and not settings.INTEGRATION_LAYER_ENABLED:
-            logger.info("Integration Layer available but disabled via INTEGRATION_LAYER_ENABLED=false")
-        else:
-            logger.info("Integration Layer not available - skipping IL initialization")
+        elif INTEGRATION_LAYER_AVAILABLE and settings.INTEGRATION_LAYER_ENABLED:
+            logger.warning("Integration Layer skipped (not leader worker)")
+        elif not INTEGRATION_LAYER_AVAILABLE:
+            logger.info("Integration Layer not available")
 
-        # Start outcome evaluation background task
-        if outcome_evaluator:
+        # Start outcome evaluation background task (only on leader worker)
+        if outcome_evaluator and is_leader:
             async def outcome_evaluation_loop():
                 """Background task for delayed outcome evaluations."""
                 logger.info("Outcome evaluation loop started (interval=30min)")
@@ -1029,7 +1006,9 @@ async def startup_awareness():
                         logger.error(f"Outcome evaluation failed: {e}")
 
             outcome_eval_task = asyncio.create_task(outcome_evaluation_loop())
-            logger.info("Outcome evaluation background task started")
+            logger.info("Outcome evaluation background task started (leader)")
+        elif outcome_evaluator:
+            logger.info("Outcome evaluation skipped (not leader worker)")
 
         # Initialize Adaptive Decision Framework
         if settings.DECISION_FRAMEWORK_ENABLED:
@@ -1048,7 +1027,6 @@ async def startup_awareness():
                 )
 
                 # Set baselines from config or defaults
-                import os
                 success_evaluator.set_baselines(
                     coherence=float(os.getenv("BASELINE_COHERENCE", "0.70")),
                     dissonance=float(os.getenv("BASELINE_DISSONANCE", "0.20")),
@@ -1136,13 +1114,15 @@ async def startup_awareness():
             except Exception as e:
                 logger.error(f"Failed to initialize decision framework: {e}", exc_info=True)
 
-        # Start belief gardener background task
-        if belief_gardener and settings.BELIEF_GARDENER_ENABLED:
+        # Start belief gardener background task (only on leader worker)
+        if belief_gardener and settings.BELIEF_GARDENER_ENABLED and is_leader:
             gardener_task = asyncio.create_task(gardener_tick_loop())
-            logger.info("Belief gardener background task started")
+            logger.info("Belief gardener background task started (leader)")
+        elif belief_gardener and settings.BELIEF_GARDENER_ENABLED:
+            logger.info("Belief gardener skipped (not leader worker)")
 
-        # Initialize and start goal generator
-        if settings.PERSONA_MODE_ENABLED and goal_store:
+        # Initialize and start goal generator (only on leader worker)
+        if settings.PERSONA_MODE_ENABLED and goal_store and is_leader:
             global goal_generator, goal_generator_task
 
             try:
@@ -1190,10 +1170,12 @@ async def startup_awareness():
                             logger.error(f"Goal generation failed: {e}")
 
                 goal_generator_task = asyncio.create_task(goal_generator_loop())
-                logger.info("Goal generator background task started")
+                logger.info("Goal generator background task started (leader)")
 
             except Exception as e:
                 logger.error(f"Failed to initialize goal generator: {e}", exc_info=True)
+        elif settings.PERSONA_MODE_ENABLED and goal_store:
+            logger.info("Goal generator skipped (not leader worker)")
 
         # Load persisted TaskGraphs
         try:
@@ -1255,6 +1237,11 @@ async def shutdown_awareness():
     if redis_client:
         await redis_client.close()
         logger.info("Redis connection closed")
+
+    # Release leader lock (prevents stale locks on shutdown/reload)
+    leader_lock = getattr(app.state, "leader_lock", None)
+    if leader_lock:
+        leader_lock.release()
 
 
 # Request/Response models
@@ -1358,16 +1345,16 @@ def create_llm_for_model(model_spec: Optional[str] = None):
         model_config = settings.AVAILABLE_MODELS[provider][model]
         base_url = model_config["base_url"]
 
-        # Get appropriate API key
-        api_key = settings.OPENAI_API_KEY if provider == "openai" else settings.VENICEAI_API_KEY
+        # Get API key
+        api_key = settings.OPENAI_API_KEY
         if not api_key:
-            raise HTTPException(status_code=500, detail=f"No API key configured for {provider}")
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
     else:
         # Use defaults from settings
         provider = settings.LLM_PROVIDER
         model = settings.LLM_MODEL
         base_url = settings.LLM_BASE_URL
-        api_key = settings.OPENAI_API_KEY if provider == "openai" else settings.VENICEAI_API_KEY
+        api_key = settings.OPENAI_API_KEY
 
     # Create main LLM service
     llm = create_llm_service(
@@ -2919,40 +2906,43 @@ async def debug_prompt(message: str = "Do you exist?", retrieve_memories: bool =
         raise HTTPException(status_code=500, detail=f"Error building prompt: {str(e)}")
 
 
-# Belief System Endpoints
+# Belief System Endpoints (using BeliefStore - the newer versioned system)
 @app.get("/api/beliefs")
 async def get_all_beliefs():
-    """Get all beliefs (core and peripheral)."""
-    if not belief_system:
-        raise HTTPException(status_code=503, detail="Belief system not enabled")
+    """Get all beliefs from BeliefStore."""
+    if not belief_store:
+        raise HTTPException(status_code=503, detail="Belief store not enabled")
 
     try:
-        beliefs = belief_system.get_all_beliefs()
+        all_beliefs = belief_store.get_current()
+
+        core_beliefs = []
+        peripheral_beliefs = []
+
+        for belief_id, belief in all_beliefs.items():
+            belief_data = {
+                "id": belief_id,
+                "statement": belief.statement,
+                "belief_type": belief.belief_type,
+                "confidence": belief.confidence,
+                "state": belief.state.value if hasattr(belief.state, 'value') else str(belief.state),
+                "formed": belief.ts,
+            }
+
+            if belief_id.startswith("core."):
+                belief_data["rationale"] = belief.rationale
+                belief_data["immutable"] = belief.immutable
+                core_beliefs.append(belief_data)
+            else:
+                belief_data["evidence_count"] = len(belief.evidence_refs)
+                belief_data["last_reinforced"] = belief.ts
+                peripheral_beliefs.append(belief_data)
 
         return {
-            "core_beliefs": [
-                {
-                    "statement": b.statement,
-                    "belief_type": b.belief_type,
-                    "confidence": b.confidence,
-                    "rationale": b.rationale,
-                    "formed": b.formed,
-                }
-                for b in beliefs["core_beliefs"]
-            ],
-            "peripheral_beliefs": [
-                {
-                    "statement": b.statement,
-                    "belief_type": b.belief_type,
-                    "confidence": b.confidence,
-                    "evidence_count": len(b.evidence_ids),
-                    "formed": b.formed,
-                    "last_reinforced": b.last_reinforced,
-                }
-                for b in beliefs["peripheral_beliefs"]
-            ],
-            "total_core": len(beliefs["core_beliefs"]),
-            "total_peripheral": len(beliefs["peripheral_beliefs"]),
+            "core_beliefs": core_beliefs,
+            "peripheral_beliefs": peripheral_beliefs,
+            "total_core": len(core_beliefs),
+            "total_peripheral": len(peripheral_beliefs),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving beliefs: {str(e)}")
@@ -2960,24 +2950,27 @@ async def get_all_beliefs():
 
 @app.get("/api/beliefs/core")
 async def get_core_beliefs():
-    """Get only core beliefs."""
-    if not belief_system:
-        raise HTTPException(status_code=503, detail="Belief system not enabled")
+    """Get only core beliefs from BeliefStore."""
+    if not belief_store:
+        raise HTTPException(status_code=503, detail="Belief store not enabled")
 
     try:
-        core_beliefs = belief_system.get_core_beliefs()
+        all_beliefs = belief_store.get_current()
+        core_beliefs = [
+            {
+                "id": bid,
+                "statement": b.statement,
+                "belief_type": b.belief_type,
+                "confidence": b.confidence,
+                "rationale": b.rationale,
+                "immutable": b.immutable,
+            }
+            for bid, b in all_beliefs.items()
+            if bid.startswith("core.")
+        ]
 
         return {
-            "beliefs": [
-                {
-                    "statement": b.statement,
-                    "belief_type": b.belief_type,
-                    "confidence": b.confidence,
-                    "rationale": b.rationale,
-                    "immutable": b.immutable,
-                }
-                for b in core_beliefs
-            ],
+            "beliefs": core_beliefs,
             "count": len(core_beliefs)
         }
     except Exception as e:
@@ -2986,26 +2979,29 @@ async def get_core_beliefs():
 
 @app.get("/api/beliefs/peripheral")
 async def get_peripheral_beliefs():
-    """Get only peripheral beliefs."""
-    if not belief_system:
-        raise HTTPException(status_code=503, detail="Belief system not enabled")
+    """Get only peripheral/auto beliefs from BeliefStore."""
+    if not belief_store:
+        raise HTTPException(status_code=503, detail="Belief store not enabled")
 
     try:
-        peripheral_beliefs = belief_system.get_peripheral_beliefs()
+        all_beliefs = belief_store.get_current()
+        peripheral_beliefs = [
+            {
+                "id": bid,
+                "statement": b.statement,
+                "belief_type": b.belief_type,
+                "confidence": b.confidence,
+                "evidence_count": len(b.evidence_refs),
+                "state": b.state.value if hasattr(b.state, 'value') else str(b.state),
+                "formed": b.ts,
+                "last_reinforced": b.ts,
+            }
+            for bid, b in all_beliefs.items()
+            if not bid.startswith("core.")
+        ]
 
         return {
-            "beliefs": [
-                {
-                    "statement": b.statement,
-                    "belief_type": b.belief_type,
-                    "confidence": b.confidence,
-                    "evidence_count": len(b.evidence_ids),
-                    "formed": b.formed,
-                    "last_reinforced": b.last_reinforced,
-                    "rationale": b.rationale,
-                }
-                for b in peripheral_beliefs
-            ],
+            "beliefs": peripheral_beliefs,
             "count": len(peripheral_beliefs)
         }
     except Exception as e:
@@ -3014,23 +3010,21 @@ async def get_peripheral_beliefs():
 
 @app.post("/api/beliefs/consolidate")
 async def consolidate_beliefs():
-    """Trigger belief extraction from recent experiences."""
-    if not belief_system:
-        raise HTTPException(status_code=503, detail="Belief system not enabled")
+    """Trigger belief scan via BeliefGardener (pattern-based consolidation)."""
+    if not belief_gardener:
+        raise HTTPException(status_code=503, detail="Belief gardener not enabled")
 
     try:
-        result = belief_system.consolidate_beliefs()
+        result = await belief_gardener.scan_and_form_beliefs()
 
         return {
-            "success": result["success"],
-            "message": result.get("message", "Belief consolidation completed"),
-            "narratives_analyzed": result.get("narratives_analyzed", 0),
-            "beliefs_extracted": result.get("beliefs_extracted", 0),
-            "beliefs_added": result.get("beliefs_added", 0),
-            "beliefs_reinforced": result.get("beliefs_reinforced", 0),
+            "success": True,
+            "message": "Belief scan completed via gardener",
+            "formed_beliefs": len(result.get("formed_beliefs", [])),
+            "skipped": len(result.get("skipped", [])),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error consolidating beliefs: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error running belief scan: {str(e)}")
 
 
 @app.post("/api/beliefs/consolidate-llm")

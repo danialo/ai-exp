@@ -51,7 +51,7 @@ class IntegrationEventHub:
             self._subscribers[topic].remove(callback)
             logger.debug(f"Unsubscribed from topic '{topic}': {callback.__name__}")
 
-    def publish(self, topic: str, signal: Signal):
+    def publish(self, topic: str, signal):
         """
         Publish a signal to all subscribers of topic (synchronous).
 
@@ -60,9 +60,16 @@ class IntegrationEventHub:
 
         Args:
             topic: Topic name
-            signal: Signal instance to publish
+            signal: Signal instance or dict to publish
         """
-        logger.debug(f"Publishing to topic '{topic}': {signal.__class__.__name__} (id={signal.signal_id[:8]}...)")
+        # Handle both Signal objects and plain dicts
+        if hasattr(signal, 'signal_id'):
+            signal_id = signal.signal_id[:8]
+        elif isinstance(signal, dict) and 'signal_id' in signal:
+            signal_id = signal['signal_id'][:8]
+        else:
+            signal_id = "n/a"
+        logger.debug(f"Publishing to topic '{topic}': {signal.__class__.__name__} (id={signal_id}...)")
 
         for callback in self._subscribers[topic]:
             try:
@@ -70,7 +77,7 @@ class IntegrationEventHub:
             except Exception as e:
                 logger.error(f"Event handler error for topic '{topic}' (handler={callback.__name__}): {e}", exc_info=True)
 
-    def publish_async(self, topic: str, signal: Signal):
+    def publish_async(self, topic: str, signal):
         """
         Publish signal asynchronously (non-blocking).
 
@@ -79,11 +86,11 @@ class IntegrationEventHub:
 
         Args:
             topic: Topic name
-            signal: Signal instance to publish
+            signal: Signal instance or dict to publish
         """
         asyncio.create_task(self._async_publish(topic, signal))
 
-    async def _async_publish(self, topic: str, signal: Signal):
+    async def _async_publish(self, topic: str, signal):
         """
         Async publish helper.
 

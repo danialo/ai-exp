@@ -101,7 +101,12 @@ class LogitBiasBuilder:
         if self._tokenizer is None:
             try:
                 import tiktoken
-                self._tokenizer = tiktoken.encoding_for_model(self.tokenizer_model)
+                try:
+                    self._tokenizer = tiktoken.encoding_for_model(self.tokenizer_model)
+                except KeyError:
+                    # Model not recognized, fall back to cl100k_base (GPT-4 compatible)
+                    self._tokenizer = tiktoken.get_encoding("cl100k_base")
+                    logger.debug(f"Using cl100k_base encoding for unknown model: {self.tokenizer_model}")
             except ImportError:
                 logger.warning("tiktoken not installed, logit_bias will be disabled")
                 return None
