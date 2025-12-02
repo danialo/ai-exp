@@ -621,11 +621,11 @@ class AwarenessLoop:
         t0 = time.perf_counter()
 
         try:
-            # Build context (1000 tokens max for full conversation context)
+            # Build context (16k tokens for rich self-reflection)
             ctx_source, ctx_block = await self.build_introspection_context(
-                max_context_tokens=1000,
-                buf_win=32,
-                mem_k=5
+                max_context_tokens=16000,
+                buf_win=64,
+                mem_k=30
             )
 
             # Track telemetry
@@ -928,7 +928,7 @@ class AwarenessLoop:
                 messages=messages,
                 tools=[],  # No tools needed
                 temperature=0.7,
-                max_tokens=300,  # Allow fuller introspection with context
+                max_tokens=4000,  # Allow rich, detailed self-reflection
             )
 
             response = result["message"].content
