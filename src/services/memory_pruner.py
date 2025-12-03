@@ -44,6 +44,10 @@ class PrunerConfig:
     # Access requirements
     min_days_since_access: int = 30  # Must not be accessed recently
 
+    # Self-definition pruning settings
+    self_def_prune_after_days: int = 30  # Days without reinforcement before pruning
+    self_def_protect_core: bool = True  # Never prune core stability traits
+
     # Archive settings
     archive_dir: str = "data/memory_archive"
     archive_consolidated: bool = True  # Archive instead of delete consolidated
@@ -174,6 +178,99 @@ class MemoryPruner:
         logger.info(f"Identified {len(candidates)} prune candidates")
         return candidates
 
+    def identify_self_definition_prune_candidates(self) -> List[PruneCandidate]:
+        """
+        Identify self-definition experiences that should be pruned.
+
+        Pruning strategy based on "reinforcement by repetition":
+        - Count how many times each statement text appears
+        - Statements appearing multiple times are "reinforced" - keep the oldest, prune duplicates
+        - Single-occurrence statements older than threshold are pruned (never reinforced)
+        - Core stability traits are protected (if self_def_protect_core=True)
+        """
+        candidates = []
+        now = datetime.now(timezone.utc)
+        cutoff_date = now - timedelta(days=self.config.self_def_prune_after_days)
+
+        with DBSession(self.raw_store.engine) as db:
+            # Get all SELF_DEFINITION experiences
+            stmt = select(Experience).where(
+                Experience.type == ExperienceType.SELF_DEFINITION.value
+            )
+            self_defs = db.exec(stmt).all()
+
+            # Build statement -> list of (exp_id, created_at, exp) mapping
+            from collections import defaultdict
+            statement_groups: dict[str, list] = defaultdict(list)
+
+            for exp in self_defs:
+                content = exp.content or {}
+                text = content.get("text", "").strip()
+                if text:
+                    statement_groups[text].append(exp)
+
+            # Process each statement group
+            for statement_text, exps in statement_groups.items():
+                # Sort by created_at (oldest first)
+                exps_sorted = sorted(exps, key=lambda e: e.created_at)
+
+                # Check stability on first occurrence
+                first_exp = exps_sorted[0]
+                content = first_exp.content or {}
+                structured = content.get("structured", {})
+                stability = structured.get("stability", "surface")
+
+                # Rule 1: Protect core traits
+                if self.config.self_def_protect_core and stability == "core":
+                    logger.debug(f"Protected core trait: {statement_text[:50]}")
+                    continue
+
+                if len(exps_sorted) >= 2:
+                    # Statement has been "reinforced" (appears multiple times)
+                    # Keep the OLDEST one (canonical), prune all duplicates
+                    for exp in exps_sorted[1:]:  # Skip the oldest, prune the rest
+                        exp_created = exp.created_at
+                        if exp_created.tzinfo is None:
+                            exp_created = exp_created.replace(tzinfo=timezone.utc)
+                        age_days = (now - exp_created).days
+
+                        candidates.append(PruneCandidate(
+                            experience_id=exp.id,
+                            experience_type=exp.type,
+                            decay_factor=0.5,
+                            emotional_salience=0.0,
+                            access_count=0,
+                            last_accessed=None,
+                            age_days=age_days,
+                            consolidated=exp.consolidated,
+                            decision="delete",
+                            reason=f"duplicate_of_reinforced_statement_{len(exps_sorted)}_occurrences",
+                        ))
+                else:
+                    # Single occurrence - check if old enough to prune
+                    exp = exps_sorted[0]
+                    exp_created = exp.created_at
+                    if exp_created.tzinfo is None:
+                        exp_created = exp_created.replace(tzinfo=timezone.utc)
+                    age_days = (now - exp_created).days
+
+                    if exp_created < cutoff_date:
+                        candidates.append(PruneCandidate(
+                            experience_id=exp.id,
+                            experience_type=exp.type,
+                            decay_factor=0.5,
+                            emotional_salience=0.0,
+                            access_count=0,
+                            last_accessed=None,
+                            age_days=age_days,
+                            consolidated=exp.consolidated,
+                            decision="delete",
+                            reason=f"single_occurrence_older_than_{self.config.self_def_prune_after_days}_days",
+                        ))
+
+        logger.info(f"Identified {len(candidates)} self-definition prune candidates")
+        return candidates
+
     def _evaluate_candidate(
         self,
         exp: Experience,
@@ -220,30 +317,39 @@ class MemoryPruner:
         Returns:
             Summary of pruning actions
         """
+        # Get general memory candidates
         candidates = self.identify_prune_candidates()
+
+        # Get self-definition candidates (based on last_reinforced, not decay metrics)
+        self_def_candidates = self.identify_self_definition_prune_candidates()
 
         results = {
             "candidates_found": len(candidates),
+            "self_def_candidates_found": len(self_def_candidates),
             "kept": 0,
             "archived": 0,
             "deleted": 0,
+            "self_defs_deleted": 0,
             "dry_run": dry_run,
             "details": [],
         }
 
-        # Group by decision
+        # Group general candidates by decision
         to_archive = [c for c in candidates if c.decision == "archive"]
         to_delete = [c for c in candidates if c.decision == "delete"]
         to_keep = [c for c in candidates if c.decision == "keep"]
 
         results["kept"] = len(to_keep)
 
-        # Apply safety limit
+        # Apply safety limit to general candidates
         to_archive = to_archive[:self.config.max_prune_per_run]
         to_delete = to_delete[:self.config.max_prune_per_run - len(to_archive)]
 
+        # Apply safety limit to self-definition candidates (separate budget)
+        self_def_to_delete = self_def_candidates[:self.config.max_prune_per_run]
+
         if not dry_run:
-            # Archive candidates
+            # Archive general candidates
             for candidate in to_archive:
                 if self._archive_experience(candidate.experience_id):
                     results["archived"] += 1
@@ -253,7 +359,7 @@ class MemoryPruner:
                         "reason": candidate.reason,
                     })
 
-            # Delete candidates
+            # Delete general candidates
             for candidate in to_delete:
                 if self._delete_experience(candidate.experience_id):
                     results["deleted"] += 1
@@ -262,14 +368,30 @@ class MemoryPruner:
                         "action": "deleted",
                         "reason": candidate.reason,
                     })
+
+            # Delete self-definition candidates
+            for candidate in self_def_to_delete:
+                if self._delete_experience(candidate.experience_id):
+                    results["self_defs_deleted"] += 1
+                    results["details"].append({
+                        "id": candidate.experience_id,
+                        "type": "self_definition",
+                        "action": "deleted",
+                        "reason": candidate.reason,
+                    })
         else:
             # Dry run - just report
             results["would_archive"] = len(to_archive)
             results["would_delete"] = len(to_delete)
+            results["would_delete_self_defs"] = len(self_def_to_delete)
             results["details"] = [
                 {"id": c.experience_id, "would": c.decision, "reason": c.reason}
                 for c in to_archive + to_delete
             ][:20]  # Limit details
+            results["self_def_details"] = [
+                {"id": c.experience_id, "would": "delete", "reason": c.reason}
+                for c in self_def_to_delete
+            ][:10]  # Limit self-def details
 
         logger.info(f"Pruning complete: {results}")
         return results

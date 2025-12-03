@@ -147,6 +147,89 @@ class PatternDetector:
         self.raw_store = raw_store
         self.config = config
 
+    def _stratified_sample_experiences(
+        self,
+        experience_type: ExperienceType,
+        total_limit: int = 500,
+        lookback_days: int = 30,
+    ) -> List[ExperienceModel]:
+        """
+        Sample experiences using stratified temporal buckets to avoid recency bias.
+
+        Instead of taking the most recent N experiences (which biases toward recent),
+        we divide the lookback period into buckets and sample proportionally from each.
+
+        Buckets:
+        - Last 7 days: 40% of samples (recent patterns forming)
+        - 8-14 days: 25% of samples (short-term stability)
+        - 15-30 days: 20% of samples (medium-term patterns)
+        - 31+ days: 15% of samples (long-term stable patterns)
+
+        Args:
+            experience_type: Type of experience to sample
+            total_limit: Total number of experiences to return
+            lookback_days: How far back to look (for the first 3 buckets)
+
+        Returns:
+            Stratified sample of experiences
+        """
+        now = datetime.now(timezone.utc)
+        all_experiences = []
+
+        # Define buckets with their date ranges and allocation percentages
+        buckets = [
+            # (start_days_ago, end_days_ago, percent_allocation, label)
+            (0, 7, 0.40, "week_1"),      # Last 7 days: 40%
+            (7, 14, 0.25, "week_2"),     # 8-14 days: 25%
+            (14, 30, 0.20, "month_1"),   # 15-30 days: 20%
+            (30, 90, 0.15, "quarter_1"), # 31-90 days: 15% (long-term stable patterns)
+        ]
+
+        for start_days, end_days, allocation, label in buckets:
+            bucket_limit = int(total_limit * allocation)
+            if bucket_limit == 0:
+                continue
+
+            # For bucket (start_days, end_days), we want experiences from the time window:
+            # - Created at least `start_days` ago (before = now - start_days)
+            # - Created at most `end_days` ago (since = now - end_days)
+            since = now - timedelta(days=end_days)
+            before = now - timedelta(days=start_days)
+
+            # list_recent returns newest first with a limit. For older buckets,
+            # we need to fetch enough to skip past newer experiences and reach our window.
+            # Strategy: fetch a large batch to ensure coverage of the time window.
+            # This is a trade-off between query cost and coverage accuracy.
+            fetch_limit = total_limit * 10  # Fetch 5000 for a 500 total limit to ensure good coverage
+
+            bucket_exps = self.raw_store.list_recent(
+                limit=fetch_limit,
+                experience_type=experience_type,
+                since=since,
+            )
+
+            # Filter to only include experiences within the bucket's time window
+            # created_at must be: since <= created_at < before
+            # (i.e., between end_days and start_days ago)
+            filtered_exps = [
+                exp for exp in bucket_exps
+                if exp.created_at >= since and exp.created_at < before
+            ][:bucket_limit]
+
+            logger.debug(f"Stratified sampling [{label}]: {len(filtered_exps)}/{bucket_limit} experiences (window: {end_days}-{start_days} days ago, fetched: {len(bucket_exps)})")
+            all_experiences.extend(filtered_exps)
+
+        # Deduplicate by ID (in case of overlap)
+        seen_ids = set()
+        deduped = []
+        for exp in all_experiences:
+            if exp.id not in seen_ids:
+                seen_ids.add(exp.id)
+                deduped.append(exp)
+
+        logger.info(f"Stratified sampling: {len(deduped)} unique experiences from {len(all_experiences)} total")
+        return deduped
+
     def scan_for_patterns(self, lookback_days: Optional[int] = None, scan_id: Optional[str] = None) -> tuple[List[DetectedPattern], Dict[str, Any]]:
         """
         Scan recent experiences for repeated self-statement patterns.
@@ -158,26 +241,24 @@ class PatternDetector:
         Returns:
             Tuple of (detected patterns meeting evidence threshold, validation telemetry dict)
         """
-        # TODO: Add a second belief gardener loop that goes deeper
-        # Current loop: Last 500 experiences (chronological, recency-biased)
-        # Deeper loop ideas:
-        # - Stratified temporal sampling (100 from last week, 100 from last month, etc.)
-        # - Vector similarity clustering across all experiences (find thematic patterns)
-        # - Weight by experience type (LEARNING_PATTERN > OCCURRENCE)
-        # - Look for long-term stable patterns vs recent spikes
-        # - Cross-reference with existing beliefs to find supporting/contradicting evidence
+        # Stratified temporal sampling to avoid recency bias
+        # Instead of just taking the most recent 500, we sample across time buckets:
+        # - 40% from last week (recent patterns forming)
+        # - 25% from days 8-14 (short-term stability)
+        # - 20% from days 15-30 (medium-term patterns)
+        # - 15% from days 31-90 (long-term stable patterns)
 
         lookback = lookback_days or self.config.lookback_days
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=lookback)
 
-        # Get recent experiences
+        # Get experiences using stratified sampling
         # DUAL STRATEGY: Read both regex-extracted AND structured claims
 
-        # Strategy 1: Legacy regex extraction from OCCURRENCE experiences
-        recent_exps = self.raw_store.list_recent(
-            limit=500,
+        # Strategy 1: Stratified sampling of OCCURRENCE experiences for regex extraction
+        recent_exps = self._stratified_sample_experiences(
             experience_type=ExperienceType.OCCURRENCE,
-            since=cutoff_date,
+            total_limit=500,
+            lookback_days=lookback,
         )
         self_statements_regex = self._extract_self_statements(recent_exps)
 
@@ -331,12 +412,11 @@ class PatternDetector:
         # Get current evidence count from belief
         stored_evidence = set(belief.evidence_refs) if belief.evidence_refs else set()
 
-        # Scan for patterns matching this belief's statement
-        cutoff_date = datetime.now(timezone.utc) - timedelta(days=self.config.lookback_days)
-        recent_exps = self.raw_store.list_recent(
-            limit=500,
+        # Scan for patterns matching this belief's statement using stratified sampling
+        recent_exps = self._stratified_sample_experiences(
             experience_type=ExperienceType.OCCURRENCE,
-            since=cutoff_date,
+            total_limit=500,
+            lookback_days=self.config.lookback_days,
         )
 
         # Extract statements and count matches
