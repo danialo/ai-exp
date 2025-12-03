@@ -40,6 +40,33 @@ CREATE TABLE research_session_questions (
 
 ---
 
+### Query Generation Pipeline (Updated 2025-11-17)
+
+- [x] Deterministic telemetry + scoring via `research_query_telemetry.py` and `research_query_scoring.py`
+- [x] Validation + sanitization helpers (`research_query_utils.py`) enforce forbidden words and CE flags
+- [x] Configurable fallback executor (`research_query_fallback.py`) with strip/PN-only/top-keyword strategies
+- [x] Authority-aware reranker (`research_result_reranker.py`) prioritizes .gov/.edu and tier-1 news
+
+**Execution flow:**
+1. LLM prompt generates a single-line query with explicit bad/good examples (forbidden words logged)
+2. `validate_llm_query()` enforces token limits, CE flag placement, and captures validation errors
+3. `sanitize_query()` strips forbidden tokens, deduplicates, preserves proper nouns, and returns diagnostics
+4. Search executes via `execute_with_fallback()`:
+   - Attempt 0: sanitized query
+   - Attempt 1: suspect words stripped
+   - Attempt 2: proper nouns only
+   - Attempt 3: top keywords heuristic
+5. Each attempt logged through `QueryTelemetry` (scores: token overlap, entity hits, authority domain)
+6. Winner selected by composite score threshold (default 0.35) and reranked for authority before fetching
+
+**Tuning knobs:**
+- `config/research_config.py` → `FORBIDDEN_ALWAYS`, `CONTEXT_SUSPECT`, `SCORING_WEIGHTS`, `FALLBACK_CONFIG`
+- `tests/fixtures/known_bad_queries.json` → regression suite for sanitizer/validator additions
+
+**Next data step:** Collect telemetry for 7 days, then adjust `min_acceptable_score`, fallback order, and domain weights.
+
+---
+
 ### 2. Topic Drift Guard
 
 **Goal**: Prevent followups like "what are Taylor Swift's political views" when you are on Epstein emails.

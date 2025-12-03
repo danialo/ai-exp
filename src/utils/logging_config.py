@@ -210,6 +210,22 @@ class MultiFileLogger:
                 msg += f" {k}={v}"
         logger.info(msg)
 
+    def log_query_telemetry(self, session_id: str, telemetry: dict):
+        """Log raw InvestigateTopic query telemetry payloads."""
+        logger = self.loggers['research']
+        telemetry_summary = {
+            "task_id": telemetry.get("task_id"),
+            "winner_index": telemetry.get("winner_index"),
+            "attempts": len(telemetry.get("attempts", [])),
+            "current_event": telemetry.get("current_event"),
+        }
+        logger.info(
+            "session=%s event=query_telemetry summary=%s",
+            session_id,
+            telemetry_summary,
+        )
+        logger.debug("session=%s event=query_telemetry payload=%s", session_id, telemetry)
+
 
 # Global instance
 _multi_logger = None

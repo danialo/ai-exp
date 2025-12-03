@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
 
-from serpapi import GoogleSearch
+try:
+    from serpapi import GoogleSearch  # type: ignore
+except Exception:  # pragma: no cover - handled for test environments without serpapi
+    GoogleSearch = None
 
 from config.settings import settings
 
@@ -38,6 +41,8 @@ class WebSearchService:
         self.api_key = api_key or settings.SERP_API_KEY
         if not self.api_key:
             logger.warning("No SERP_API_KEY configured - search functionality will be limited")
+        if GoogleSearch is None:
+            logger.warning("serpapi package is unavailable - WebSearchService disabled")
 
     def search(self, query: str, num_results: int = 5) -> List[SearchResult]:
         """Perform a web search.
@@ -55,6 +60,8 @@ class WebSearchService:
         """
         if not self.api_key:
             raise ValueError("SERP_API_KEY not configured. Set it in .env file.")
+        if GoogleSearch is None:
+            raise RuntimeError("serpapi.GoogleSearch is not available; install serpapi package")
 
         logger.info(f"Searching for: {query} (max results: {num_results})")
 

@@ -2,6 +2,18 @@
 
 All notable changes to the AI Experience Memory System MVP.
 
+## [Unreleased]
+
+### Added
+- Query telemetry dataclasses and scoring helpers (`src/services/research_query_telemetry.py`, `src/services/research_query_scoring.py`)
+- Search query validation/sanitization utilities with regression fixtures (`src/services/research_query_utils.py`, `tests/fixtures/known_bad_queries.json`)
+- Configurable fallback executor and authority reranker (`src/services/research_query_fallback.py`, `src/services/research_result_reranker.py`)
+- Targeted tests for scoring, sanitization, and HTN fallback integration (`tests/services/test_research_query_scoring.py`, `tests/services/test_research_query_utils.py`, `tests/services/test_research_htn_investigate.py`)
+
+### Changed
+- `InvestigateTopic` now records per-attempt telemetry, enforces stricter query prompts, runs sanitization, and retries using heuristic fallbacks before fetching sources.
+- Documentation (`docs/RESEARCH_HTN_ROADMAP.md`) updated with the new query generation pipeline and tuning knobs.
+
 ## [1.0.0] - 2025-10-19
 
 ### Completed MVP - All 10 Stages ✅

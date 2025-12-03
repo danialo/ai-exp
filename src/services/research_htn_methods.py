@@ -3,8 +3,23 @@
 import json
 import logging
 import re
+import time
 from typing import Any, Dict, List, Callable
 from src.utils.logging_config import get_multi_logger
+from src.services.research_query_telemetry import QueryTelemetry, QueryAttempt
+from src.services.research_query_scoring import (
+    token_overlap_score,
+    entity_hit_score,
+    authority_domain_score,
+    composite_score,
+)
+from src.services.research_query_utils import (
+    validate_llm_query,
+    sanitize_query,
+    append_year_if_current_event,
+)
+from src.services.research_query_fallback import execute_with_fallback
+from src.services.research_result_reranker import rerank_results
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +206,16 @@ def investigate_topic(task, ctx) -> List[Dict[str, Any]]:
         logger.warning("InvestigateTopic called with no topic")
         return []
 
+    telemetry = QueryTelemetry(
+        task_id=getattr(task, "id", ""),
+        session_id=getattr(task, "session_id", ""),
+        topic=topic,
+    )
+    entity_hints = task.args.get("entities") or []
+    if isinstance(entity_hints, str):
+        entity_hints = [entity_hints]
+    started_at = time.perf_counter()
+
     try:
         # 1. Generate search query using cold tool LLM
         query_prompt = f"""Generate a web search query for: {topic}
@@ -218,26 +243,66 @@ Query:"""
             max_tokens=100
         ).strip()
 
-        # Sanitize query: strip wrapping quotes, collapse whitespace, limit tokens
-        search_query = raw_query.strip('"').strip("'")
+        validated_query, is_current_event, validation_errors = validate_llm_query(raw_query)
+        telemetry.current_event = is_current_event
+        sanitized_query, sanitizer_diag = sanitize_query(validated_query, known_entities=entity_hints)
+        search_query = sanitized_query or validated_query or topic
+        search_query = append_year_if_current_event(search_query, is_current_event)
         search_query = " ".join(search_query.split())
-        tokens = search_query.split()
-        if len(tokens) > 10:
-            search_query = " ".join(tokens[:10])
 
-        # 2. Search web (try with more results)
-        search_results = ctx.web_search_service.search(search_query, num_results=5)
+        initial_diag = {
+            "removed_tokens": sanitizer_diag.removed_tokens,
+            "suspect_tokens": sanitizer_diag.suspect_tokens,
+            "actions_taken": sanitizer_diag.actions_taken,
+        }
 
-        # Fallback: if no results, try simpler query with first 4 tokens
-        if not search_results and len(tokens) > 4:
-            simpler_query = " ".join(tokens[:4])
-            logger.warning(f"No results for '{search_query}', trying simpler: '{simpler_query}'")
-            search_results = ctx.web_search_service.search(simpler_query, num_results=5)
+        def search_fn(query: str):
+            return ctx.web_search_service.search(query, num_results=5)
+
+        def build_attempt(query: str, stage: str, results, diag_payload: dict) -> QueryAttempt:
+            attempt = QueryAttempt(query=query, stage=stage)
+            if stage == "initial":
+                attempt.validation_errors.extend(validation_errors)
+                diag = {**initial_diag, **diag_payload}
+            else:
+                diag = diag_payload or {}
+            attempt.removed_tokens.extend(diag.get("removed_tokens", []))
+            attempt.suspect_tokens.extend(diag.get("suspect_tokens", []))
+            attempt.actions_taken.extend(diag.get("actions_taken", []))
+            attempt.actions_taken.append(stage)
+
+            titles = [result.title for result in results]
+            snippets = [result.snippet for result in results]
+            urls = [result.url for result in results]
+            tokens = query.split()
+            attempt.result_count = len(results)
+            attempt.token_overlap_score = token_overlap_score(tokens, titles, snippets)
+            attempt.entity_hit_score = entity_hit_score(entity_hints, titles, snippets)
+            attempt.authority_domain_score = authority_domain_score(urls)
+            attempt.composite_score = composite_score(
+                attempt.token_overlap_score,
+                attempt.entity_hit_score,
+                attempt.authority_domain_score,
+            )
+            telemetry.add_attempt(attempt)
+            return attempt
+
+        best_attempt, search_results = execute_with_fallback(
+            search_query,
+            search_fn,
+            build_attempt,
+            known_entities=entity_hints,
+        )
+
+        winner_index = next((idx for idx, att in enumerate(telemetry.attempts) if att is best_attempt), None)
+        if winner_index is not None:
+            telemetry.mark_winner(winner_index)
 
         if not search_results:
             logger.warning(f"No search results for: {search_query}")
             return []
 
+        search_results = rerank_results(search_results)
         first_result = search_results[0]
 
         # 3. Fetch content
@@ -360,6 +425,12 @@ If all drift off-topic, return empty array []."""
     except Exception as e:
         logger.error(f"InvestigateTopic failed for '{topic}': {e}")
         return []
+    finally:
+        telemetry.total_latency_ms = (time.perf_counter() - started_at) * 1000
+        try:
+            get_multi_logger().log_query_telemetry(telemetry.session_id, telemetry.to_dict())
+        except Exception as log_err:
+            logger.debug(f"Failed to log query telemetry: {log_err}")
 
 
 @method("InvestigateQuestion")

@@ -1,0 +1,52 @@
+{
+  "description": "Regression fixtures for query sanitization",
+  "cases": [
+    {
+      "id": "doge_connection",
+      "source": "TODO.md:24",
+      "raw_input": "DOGE government agency Elon Musk connection",
+      "expected_sanitized": "DOGE government agency Elon Musk",
+      "expected_errors": ["suspect_word:connection"],
+      "notes": "Flagship failure case"
+    },
+    {
+      "id": "question_format",
+      "source": "TODO.md:26",
+      "raw_input": "What is the relationship between FDA and drug companies?",
+      "expected_sanitized": "FDA drug companies",
+      "expected_errors": [
+        "contains_question_mark",
+        "forbidden_word:what",
+        "suspect_word:relationship",
+        "forbidden_word:between",
+        "forbidden_word:is",
+        "forbidden_word:the"
+      ],
+      "notes": "Question format with forbidden words"
+    },
+    {
+      "id": "about_phrase",
+      "source": "TODO.md:29",
+      "raw_input": "Information about Department of Government Efficiency",
+      "expected_sanitized": "Information Department Government Efficiency",
+      "expected_errors": ["forbidden_word:about"],
+      "notes": "Common 'about' pattern"
+    },
+    {
+      "id": "good_query_passthrough",
+      "source": "synthetic",
+      "raw_input": "SpaceX Starship test flight 2024",
+      "expected_sanitized": "SpaceX Starship test flight 2024",
+      "expected_errors": [],
+      "notes": "Good query should pass through unchanged"
+    },
+    {
+      "id": "acronym_preservation",
+      "source": "synthetic",
+      "raw_input": "NASA JPL Mars rover mission",
+      "expected_sanitized": "NASA JPL Mars rover mission",
+      "expected_errors": [],
+      "notes": "Acronyms must be preserved"
+    }
+  ]
+}
