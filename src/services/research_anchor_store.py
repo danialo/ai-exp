@@ -200,8 +200,18 @@ def create_anchor_from_session(session_id: str, summary_obj: dict) -> None:
     # Build one-sentence summary from key events
     key_events = summary_obj.get("key_events", [])
     if key_events:
-        # Use first key event as summary
-        one_sentence = key_events[0]
+        # Use first key event as summary (handle if it's a dict)
+        first_event = key_events[0]
+        if isinstance(first_event, dict):
+            # Try common keys: description, event, summary, then stringify
+            one_sentence = first_event.get("description",
+                           first_event.get("event",
+                           first_event.get("summary", str(first_event))))
+            # Ensure it's a string
+            if not isinstance(one_sentence, str):
+                one_sentence = str(one_sentence)
+        else:
+            one_sentence = str(first_event)
     else:
         # Fallback to narrative
         narrative = summary_obj.get("narrative_summary", "")
