@@ -26,6 +26,7 @@ from src.services.anti_metatalk import (
     create_metatalk_rewriter,
 )
 from src.services.persona_config import create_persona_config_loader
+from src.services.research_gate import ResearchGate, GateResult
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,10 @@ class PersonaService:
         # Tool tracing for benchmarking/debugging
         self.last_tool_trace = []
 
+        # Research gate - deterministic decision layer for research tool execution
+        # This decides WHETHER research is needed BEFORE the model generates prose
+        self.research_gate = ResearchGate(llm_service=llm_service, use_classifier=True)
+
         # Anti-meta-talk system
         self.enable_anti_metatalk = enable_anti_metatalk
         self.auto_rewrite = auto_rewrite
@@ -214,88 +219,24 @@ class PersonaService:
             logger.error(f"Failed to retrieve core ontological beliefs: {e}", exc_info=True)
             return []
 
-    # Phrases that indicate talking ABOUT research capabilities (not requesting research)
-    RESEARCH_META_PHRASES = [
-        "research system",
-        "research subsystem",
-        "research ability",
-        "research capabilities",
-        "research tools",
-        "research engine",
-        "research htn",
-        "research module",
-        "your research system",
-        "your research subsystem",
-        "your research ability",
-        "your research capabilities",
-        "how does your research",
-        "how does the research system",
-        "how does your htn",
-    ]
-
-    # Regex for command-style research requests
-    RESEARCH_COMMAND_RE = re.compile(
-        r"""
-        ^\s*
-        (hey\s+astra[,!:]?\s*)?            # optional address
-        (can\s+you|could\s+you|would\s+you|please)?\s*
-        (research|investigate|look\s+into)\b
-        """,
-        re.IGNORECASE | re.VERBOSE,
-    )
-
-    def _is_research_query(self, message: str) -> bool:
+    def _is_research_query(self, message: str) -> GateResult:
         """
-        Detect queries that should go through the HTN research pipeline.
+        Determine if the message requires research using the deterministic ResearchGate.
 
-        HTN research is EXPENSIVE (2-5 minutes). Only trigger when:
-        - User explicitly requests research/investigation
-        - Topic is clearly complex and requires multi-source synthesis
+        This delegates to ResearchGate which:
+        1. Uses fast heuristics (no LLM call) for clear cases
+        2. Falls back to lightweight LLM classifier for ambiguous cases
 
-        Simple factual queries should use search_web tool instead.
-
-        Triggers on:
-        - EXPLICIT: "research X", "investigate X", "deep dive into X"
-        - Does NOT trigger on casual "what's going on" or "latest on" (too broad)
-
-        Does NOT trigger on:
-        - Meta questions about research capabilities
-        - Simple factual queries that can be answered with web search
+        The decision is made BEFORE the model generates prose, eliminating
+        the possibility of "I'll proceed with research" announcements.
 
         Args:
             message: User message to analyze
 
         Returns:
-            True if message should trigger HTN research, False otherwise
+            GateResult with needs_research bool, decision enum, and reason
         """
-        text = message.lower()
-
-        # 1. If clearly talking ABOUT research capabilities (meta), bail early
-        if any(phrase in text for phrase in self.RESEARCH_META_PHRASES):
-            logger.info(f"Meta research question detected ('{text[:50]}...'); skipping research gating")
-            return False
-
-        # 2. EXPLICIT research commands only (very conservative)
-        # User must explicitly say "research" or "investigate" as a command
-        if self.RESEARCH_COMMAND_RE.search(message):
-            return True
-
-        # 3. "deep dive" and similar phrases that clearly indicate investigation
-        deep_investigation_phrases = [
-            "deep dive",
-            "dig into",
-            "look into",
-            "full investigation",
-            "comprehensive analysis",
-        ]
-        if any(phrase in text for phrase in deep_investigation_phrases):
-            return True
-
-        # That's it. Everything else should use search_web tool.
-        # "What's going on with X" is too casual - let search_web handle it.
-        # If user wants deep research, they can say "research X" explicitly.
-
-        return False
+        return self.research_gate.requires_research(message)
 
     def _get_research_context(self, question: str) -> Optional[Dict[str, Any]]:
         """
@@ -410,13 +351,26 @@ class PersonaService:
         if conversation_history is None:
             conversation_history = []
 
-        # Research gating: detect if this should go through HTN research pipeline
+        # DETERMINISTIC RESEARCH GATE
+        # This decides WHETHER research is needed BEFORE the model generates prose.
+        # The model's job is synthesis, not decision-making about when to fetch data.
+        # This eliminates the "I'll proceed with research" announcement bug.
         research_context = None
-        if self._is_research_query(user_message):
+        research_gate_result = self._is_research_query(user_message)
+
+        if research_gate_result.needs_research:
+            logger.info(f"Research gate TRIGGERED: {research_gate_result.reason}")
             logger.info(f"Research gating triggered for message: {user_message[:100]}...")
-            # Run research and get the synthesis, but don't return immediately
-            # Instead, inject research as context so Astra can answer the original question
+            print(f"\n🔬 RESEARCH GATE: {research_gate_result.decision.value}")
+            print(f"   Reason: {research_gate_result.reason}")
+            print(f"   Classifier used: {research_gate_result.classifier_used}")
+            print(f"   Confidence: {research_gate_result.confidence:.0%}\n")
+
+            # Run research BEFORE the model generates any prose
+            # By the time the model is called, research is already complete
             research_context = self._get_research_context(user_message)
+        else:
+            logger.info(f"Research gate passed (no research): {research_gate_result.reason}")
 
         # Load persona's LLM configuration
         config = self.config_loader.load_config()
@@ -665,7 +619,9 @@ class PersonaService:
         # Add current user message
         messages.append({"role": "user", "content": user_message})
 
-        tools = self._get_tool_definitions()
+        # Get tool definitions, excluding research tools if research was already done
+        # This prevents the model from trying to "announce" research when it's already complete
+        tools = self._get_tool_definitions(exclude_research_tools=(research_context is not None))
 
         # VERBOSE DIAGNOSTIC: Log what tools are available
         tool_names = [t['function']['name'] for t in tools]
@@ -1337,13 +1293,23 @@ This revision represents growth in my self-understanding. My past statements wer
         logger.info(f"Applied {results['applied_count']} resolutions, {results['failed_count']} failed")
         return results
 
-    def _get_tool_definitions(self) -> List[Dict[str, Any]]:
+    # Research tool names to exclude when research has already been done
+    RESEARCH_TOOL_NAMES = {"search_web", "browse_url", "check_recent_research", "research_and_summarize"}
+
+    def _get_tool_definitions(self, exclude_research_tools: bool = False) -> List[Dict[str, Any]]:
         """Get OpenAI tool definitions for persona file operations.
+
+        Args:
+            exclude_research_tools: If True, exclude research-related tools (search_web,
+                browse_url, check_recent_research, research_and_summarize). This is used
+                when research has already been done via the deterministic research gate,
+                preventing the model from trying to "announce" research or call tools
+                that have already been executed.
 
         Returns:
             List of tool definition dicts
         """
-        return [
+        all_tools = [
             {
                 "type": "function",
                 "function": {
@@ -1725,6 +1691,20 @@ This revision represents growth in my self-understanding. My past statements wer
             #     }
             # }
         ]
+
+        # Filter out research tools if research has already been done
+        # This prevents the model from trying to call tools that have already been executed
+        if exclude_research_tools:
+            filtered_tools = [
+                tool for tool in all_tools
+                if tool.get("function", {}).get("name") not in self.RESEARCH_TOOL_NAMES
+            ]
+            excluded_count = len(all_tools) - len(filtered_tools)
+            if excluded_count > 0:
+                logger.info(f"Excluded {excluded_count} research tools (research already done)")
+            return filtered_tools
+
+        return all_tools
 
     def _extract_meta_for_trace(self, tool_name: str, result: Any) -> dict:
         """Extract minimal metadata from tool result for tracing.
