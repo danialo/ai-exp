@@ -47,9 +47,14 @@ Periodically, she reflects on these patterns and writes notes to herself about w
 
 ### 4. Contradiction Detection
 
-Here's where it gets interesting. If Astra holds a belief like "I value honesty" but her past conversations show patterns of hedging or avoiding direct answers, the system flags this as "cognitive dissonance."
+Here's where it gets interesting. The system actively watches for conflicts between beliefs:
 
-She then has to deal with it - either by reinforcing the belief, modifying it, or acknowledging the contradiction. This creates a feedback loop where her identity becomes more coherent over time.
+- **Direct contradictions**: "I am patient" vs "I am not patient"
+- **Semantic tensions**: "I love mornings" vs "I hate waking up early"
+
+But it's not naive about time. If Astra says "I'm exhausted" today and "I feel energetic" tomorrow, that's not a contradiction - those are momentary states about different moments. The system only flags conflicts between beliefs with overlapping temporal scope.
+
+When contradictions are found, they're recorded as ConflictEdges. These affect the "core score" of both beliefs - heavily contradicted beliefs score lower, which influences how central they are to Astra's identity. Over time, this creates pressure toward coherence without forcing artificial resolution.
 
 ---
 
@@ -89,10 +94,31 @@ We're not claiming these are *true* - we're exploring what happens when you buil
 - **Semantic search**: Finds relevant memories by meaning, not just keywords
 
 ### Belief System
-- **Core beliefs**: Foundational, unchangeable (the five above)
-- **Peripheral beliefs**: Form and evolve from experience
-- **Belief gardener**: Automatically detects and forms new beliefs
-- **Consistency checker**: Finds contradictions
+
+Astra's belief system has two layers:
+
+**Core Beliefs** (immutable):
+- The five foundational beliefs listed above
+- These are hardcoded and never change
+
+**Self-Knowledge Graph** (emergent):
+When Astra makes statements about herself ("I value honesty", "I find creativity fascinating"), the system extracts and structures these into a knowledge graph:
+
+- **BeliefNodes**: Canonical concepts like "i value honesty" - deduplicated and normalized
+- **BeliefOccurrences**: Evidence events linking beliefs to source conversations
+- **Epistemic Frames**: Qualifiers for each belief - is it a current state, an ongoing trait, a habitual pattern, or something from the past?
+- **Streams**: Beliefs are classified into identity (stable traits), state (current feelings), meta (beliefs about beliefs), or relational (about connections with others)
+- **Activation**: How "alive" a belief is based on recency and frequency
+- **Core Score**: How central a belief is based on support, spread across contexts, and diversity of evidence
+
+**Conflict Detection**:
+The system watches for contradictions. If Astra says "I am patient" in one conversation and "I am not patient" in another, a ConflictEdge gets created. But the system is smart about temporal scope - saying "I am tired" now doesn't conflict with "I am energetic" from yesterday, because those are momentary states, not stable traits.
+
+**Identity Migration**:
+Beliefs can graduate from "state" (temporary) to "identity" (stable) as they accumulate evidence. This is a one-way ratchet - once something becomes part of identity, it doesn't easily demote back. Think of it like the difference between "I'm feeling creative today" (state) versus "I am a creative person" (identity).
+
+**Uncertain Matches**:
+When the system isn't sure if two beliefs are the same concept (e.g., "I love learning" vs "I enjoy learning"), it creates a TentativeLink instead of auto-merging. These get reviewed rather than automatically resolved - preserving nuance over false certainty.
 
 ### Awareness System
 - Runs continuously in the background
@@ -208,4 +234,3 @@ The results so far have been fascinating. Whether they're meaningful is somethin
 
 ---
 
-*This project was vibe coded with Claude Code.*

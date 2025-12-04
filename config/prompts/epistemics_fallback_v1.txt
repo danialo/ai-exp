@@ -1,0 +1,13 @@
+Analyze the temporal scope and certainty of this self-belief. Return JSON only.
+
+Belief: {atom_text}
+
+Return:
+{
+  "temporal_scope": "state|ongoing|habitual|transitional|past|unknown",
+  "modality": "certain|likely|possible|unsure",
+  "degree": 0.0-1.0,
+  "confidence": 0.0-1.0
+}
+
+NOTE: Do NOT use "current" - use "state" for immediate present moment.

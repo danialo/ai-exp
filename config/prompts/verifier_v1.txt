@@ -1,0 +1,11 @@
+Do these two statements express the same belief concept? Consider meaning, not exact wording.
+
+Statement A: {atom_text}
+Statement B: {candidate_text}
+
+Return JSON only:
+{
+  "same_concept": true|false,
+  "confidence": 0.0-1.0,
+  "reasoning": "brief explanation"
+}

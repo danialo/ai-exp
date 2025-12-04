@@ -1,0 +1,17 @@
+Decompose the following self-statement into atomic beliefs. Each belief must be:
+- First person ("I...")
+- Single predicate (one claim per atom)
+- Not an instruction or imperative
+
+Return JSON array with this exact schema:
+[
+  {
+    "atom_text": "I [single claim]",
+    "belief_type": "TRAIT|PREFERENCE|VALUE|CAPABILITY_LIMIT|FEELING_STATE|META_BELIEF|RELATIONAL|BELIEF_ABOUT_SELF",
+    "polarity": "affirm|deny",
+    "confidence": 0.0-1.0,
+    "spans": [start_idx, end_idx] or null
+  }
+]
+
+Self-statement: {input_text}

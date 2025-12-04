@@ -1,0 +1,4 @@
+The following was supposed to be valid JSON but has errors. Fix it and return ONLY the corrected JSON array, nothing else.
+
+Broken output:
+{broken_json}

@@ -1,0 +1,200 @@
+# HTN Self-Belief Decomposer v1 Configuration
+# All hyperparameters for the belief extraction pipeline
+
+extractor:
+  atomizer_model: "gemini-2.0-flash"
+  epistemics_model: "gemini-2.0-flash"
+  verifier_model: "gemini-2.0-flash"
+  temperature: 0
+  max_json_repair_attempts: 1
+
+source_context:
+  # Experience metadata field containing mode (set to null if not available)
+  mode_field: "interaction_mode"  # or null to use heuristics only
+  mode_weights:
+    journaling: 1.0
+    introspection: 0.95
+    normal_chat: 0.8
+    roleplay: 0.4
+    heated: 0.5
+    unknown: 0.7
+  vad:
+    enabled: false  # disabled by default until VAD telemetry integrated
+    arousal_field: "affect.arousal"  # dot-path to arousal in Experience metadata
+    arousal_weight: 0.35
+  heuristic_fallback:
+    enabled: true
+    profanity_penalty: 0.15
+    caps_ratio_threshold: 0.3
+    caps_penalty: 0.10
+    exclaim_density_threshold: 0.1
+    exclaim_penalty: 0.05
+
+context:
+  strategy: "conversation_mode"  # context_id = conversation_id + ":" + mode
+  fallback: "experience_id"      # if conversation_id missing
+
+prompts:
+  atomizer_system: "config/prompts/atomizer_system_v1.txt"
+  atomizer_user: "config/prompts/atomizer_user_v1.txt"
+  repair_json: "config/prompts/repair_json_v1.txt"
+  epistemics_fallback: "config/prompts/epistemics_fallback_v1.txt"
+  verifier: "config/prompts/verifier_v1.txt"
+
+atomizer:
+  json_schema_version: "v1"
+
+epistemics:
+  llm_fallback_threshold: 0.6
+  cue_conflict_resolution: "specificity_then_rightmost"
+  default_temporal_scope: "ongoing"
+  default_modality: "certain"
+  # Valid temporal_scope values: state | ongoing | habitual | transitional | past | unknown
+  # NOTE: "current" is NOT a valid value - use "state" for immediate present
+  modality_confidence_caps:
+    possible: 0.4
+    likely: 0.6
+    unsure: 0.2
+    certain: 1.0
+  temporal_specificity:  # higher = wins conflicts
+    past: 6
+    transitional: 5
+    habitual: 4
+    ongoing: 3
+    state: 2
+    unknown: 1
+  cues:
+    # NOTE: "never" appears in both negation and habitual_strong intentionally
+    # Rules engine must handle it as BOTH (sets polarity=deny AND temporal_scope=habitual)
+    negation: ["not", "don't", "doesn't", "never", "no longer", "cannot", "can't", "won't", "wouldn't", "isn't", "aren't", "wasn't", "weren't"]
+    modality:
+      possible: ["might", "maybe", "perhaps", "possibly", "could be"]
+      likely: ["i think", "i suspect", "i guess", "i assume", "probably"]
+      unsure: ["unsure", "not sure", "uncertain", "don't know if"]
+    past: ["used to", "formerly", "previously", "back then", "in the past", "once was", "no longer"]
+    transitional: ["lately", "recently", "these days", "of late", "increasingly", "more and more", "getting", "becoming", "starting to"]
+    habitual_strong: ["always", "never", "every time", "whenever", "without fail"]
+    habitual_soft: ["usually", "generally", "typically", "normally", "often", "frequently", "tend to", "inclined to", "prone to"]
+    ongoing: ["still", "continue to", "keep", "remain", "stay"]
+    state: ["right now", "at the moment", "currently", "today", "tonight", "at present"]
+  degree:
+    strong: ["extremely", "very", "really", "deeply", "strongly", "incredibly"]
+    moderate: ["quite", "fairly", "rather", "pretty"]
+    weak: ["somewhat", "slightly", "a bit", "a little", "mildly"]
+  degree_values:
+    strong: 0.9
+    moderate: 0.6
+    weak: 0.3
+    default: 0.5
+
+streams:
+  types: ["identity", "state", "meta", "relational"]
+  mapping:
+    FEELING_STATE:
+      state: {primary: "state", secondary: "identity", confidence: 0.65}
+      habitual: {primary: "identity", secondary: "state", confidence: 0.80}
+      ongoing: {primary: "identity", secondary: "state", confidence: 0.75}
+      transitional: {primary: "state", secondary: "identity", confidence: 0.70}
+      past: {primary: "state", secondary: null, confidence: 0.60}
+      default: {primary: "state", secondary: "identity", confidence: 0.60}
+    TRAIT:
+      default: {primary: "identity", secondary: null, confidence: 0.85}
+    PREFERENCE:
+      default: {primary: "identity", secondary: null, confidence: 0.80}
+    VALUE:
+      default: {primary: "identity", secondary: null, confidence: 0.90}
+    CAPABILITY_LIMIT:
+      default: {primary: "identity", secondary: null, confidence: 0.80}
+    META_BELIEF:
+      default: {primary: "meta", secondary: "identity", confidence: 0.80}
+    RELATIONAL:
+      default: {primary: "relational", secondary: "identity", confidence: 0.75}
+    BELIEF_ABOUT_SELF:
+      default: {primary: "identity", secondary: "meta", confidence: 0.75}
+    default:
+      default: {primary: "identity", secondary: null, confidence: 0.50}
+
+embeddings:
+  enabled: true
+  model: "text-embedding-3-small"  # or your local model
+  dimension: 1536
+  batch_size: 32
+  # v1 retrieval strategy: linear scan if nodes < threshold, else require vector index
+  linear_scan_max_nodes: 50000
+  fallback_to_text_similarity: true
+  text_similarity_method: "levenshtein_ratio"
+
+resolution:
+  top_k: 10
+  match_threshold: 0.90
+  no_match_threshold: 0.75
+  verifier:
+    enabled: true
+    trigger_band: [0.75, 0.90]  # only verify when sim in this range
+  tentative_link:
+    auto_accept_threshold: 0.85
+    auto_reject_threshold: 0.15
+    # NOTE: auto_accept sets status="accepted" and emits merge_required event
+    # It does NOT auto-merge nodes. Merge is a separate future operation.
+    confidence_params:
+      a: 1.2   # support_both weight
+      b: 0.9   # support_one weight
+      c: 0.06  # age decay per day
+    age_definition: "days_since_last_support_else_created"
+  tension:
+    enabled: true
+    embedding_threshold: 0.88
+    top_k_conflict_check: 20
+
+concurrency:
+  strategy: "unique_canonical_hash_retry"
+  max_retries: 3
+  retry_delay_ms: 100
+
+scoring:
+  half_life_days:
+    identity: 60
+    state: 7
+    meta: 30
+    relational: 30
+  support:
+    k_n: 10.0
+  spread:
+    midpoint_days: 14.0
+    temperature: 4.0
+  diversity:
+    midpoint_contexts: 5.0
+    temperature: 1.5
+  conflict_penalty:
+    enabled: true
+    recent_window_days: 30
+    weight: 0.35
+  status_thresholds:
+    developing: 0.3
+    core: 0.6
+
+migration:
+  promote_state_to_identity:
+    enabled: true
+    strategy: "absolute"
+    min_spread: 0.70      # sigmoid output
+    min_diversity: 0.60   # sigmoid output
+    min_activation: 0.35
+  ratchet:
+    enabled: true
+    allow_demotion: false
+    demotion_triggers: ["explicit_obsolescence", "sustained_conflict_low_activation"]
+
+backfill:
+  batch_size: 50
+  checkpoint_every: 10
+  checkpoint_file: "data/backfill_checkpoint.json"
+  resume_strategy: "skip_if_occurrence_exists_for_extractor_version"
+  continue_on_error: true
+
+logging:
+  eval_events:
+    enabled: true
+    path: "data/eval_events"
+    format: "jsonl"
+  level: "INFO"
