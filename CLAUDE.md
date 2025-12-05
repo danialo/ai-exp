@@ -1,7 +1,6 @@
 - think twice before modifying files in Astra's personal_space. this is an absolute lsat resort.
 - If you are creating something new that is not adding to the current logic, ask yourself if it should be in a new branch.
-- we're building on https
-- TCP port 8443
+- HTTP port 8000
 - /api/persona/chat THIS IS YOUR ENDPOINT FOR THIS PROJECT. IF YOU USE CHAT YOU API/CHAT YOU HAVE FAILED.
 - Are you programming the right endpoint? /api/persona/chat THIS IS YOUR ENDPOINT. IF YOU ARE NOT USING THIS ENDPOINT YOU ARE BUILDING IT WRONG.
 - /api/chat ? STOP! THIS IS NOT YOUR FUCKING ENDPOINT AND IF YOU CODE IT YOU WILL BE RECODING THE CORRECT ENDPOINT. STOP!
