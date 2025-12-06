@@ -126,11 +126,11 @@ embeddings:
 
 resolution:
   top_k: 10
-  match_threshold: 0.90
+  match_threshold: 0.91  # bumped from 0.90 to prevent learn/teach false positive
   no_match_threshold: 0.75
   verifier:
     enabled: true
-    trigger_band: [0.75, 0.90]  # only verify when sim in this range
+    trigger_band: [0.75, 0.91]  # only verify when sim in this range
   tentative_link:
     auto_accept_threshold: 0.85
     auto_reject_threshold: 0.15

@@ -224,9 +224,9 @@ def test_config(tmp_path):
         },
         "resolution": {
             "top_k": 10,
-            "match_threshold": 0.90,
+            "match_threshold": 0.91,
             "no_match_threshold": 0.75,
-            "verifier": {"enabled": True, "trigger_band": [0.75, 0.90]},
+            "verifier": {"enabled": True, "trigger_band": [0.75, 0.91]},
             "tentative_link": {
                 "auto_accept_threshold": 0.85,
                 "auto_reject_threshold": 0.15,

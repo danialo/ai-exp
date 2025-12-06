@@ -77,7 +77,6 @@ class TestDeduplicationPrecision:
             assert similarity < belief_config.resolution.match_threshold, \
                 f"Opposite emotions merged: {similarity}"
 
-    @pytest.mark.xfail(reason="KNOWN ISSUE: Embedding model can't distinguish learn vs teach (0.902 similarity)")
     def test_different_actions_not_merged(self, belief_config):
         """'I want to learn' and 'I want to teach' should NOT merge."""
         from src.services.htn_belief_embedder import HTNBeliefEmbedder
