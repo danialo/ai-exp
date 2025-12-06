@@ -417,8 +417,10 @@ class PersonaService:
                             pass
 
                     # Check for consistency/dissonance if we have beliefs AND memories
+                    # DISABLED: This was blocking chat requests - dissonance should run in background
+                    # TODO: Move to awareness_loop or separate background service
                     dissonance_report = None
-                    if belief_results and memories and self.belief_consistency_checker:
+                    if False and belief_results and memories and self.belief_consistency_checker:
                         try:
                             consistency_report = self.belief_consistency_checker.check_consistency(
                                 query=user_message,
