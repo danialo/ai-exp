@@ -11,6 +11,20 @@ from datetime import datetime, timezone
 from typing import Optional
 import uuid as uuid_module
 
+
+def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """
+    Ensure a datetime is timezone-aware UTC.
+
+    SQLite strips timezone info, so naive datetimes from the DB
+    are assumed to be UTC and get the timezone attached.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
 from sqlmodel import Session, select
 
 from src.utils.belief_config import BeliefSystemConfig, get_belief_config
@@ -95,8 +109,9 @@ class ActivationService:
         total_activation = 0.0
 
         for occ in occurrences:
-            # Calculate age in days
-            age_days = (now - occ.created_at).total_seconds() / 86400
+            # Calculate age in days (ensure UTC for SQLite naive datetimes)
+            created_at = ensure_utc(occ.created_at)
+            age_days = (now - created_at).total_seconds() / 86400
 
             # Exponential decay
             weight = occ.source_weight * math.exp(-age_days / half_life)

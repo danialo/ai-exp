@@ -65,6 +65,9 @@ from src.memory.models.belief_occurrence import BeliefOccurrence
 from src.memory.models.tentative_link import TentativeLink
 from src.memory.models.stream_assignment import StreamAssignment
 
+# SelfKnowledgeIndex integration (TASK 10.2)
+from src.services.self_knowledge_index import SelfKnowledgeIndex
+
 logger = logging.getLogger(__name__)
 
 
@@ -200,6 +203,11 @@ class HTNBeliefExtractor:
         self.core_score_service = CoreScoreService(self.config, self.db)
         self.stream_service = StreamService(self.config, self.db)
 
+        # SelfKnowledgeIndex integration (TASK 10.2)
+        # Note: SelfKnowledgeIndex requires raw_store which may not be available
+        # in all contexts (e.g., testing). Skip if not available.
+        self.self_knowledge_index = None
+
     def extract_and_update_self_knowledge(
         self,
         experience: Any
@@ -289,6 +297,18 @@ class HTNBeliefExtractor:
         stats['nodes_matched'] = sum(1 for r in atom_results if not r.is_new_node)
         stats['tentative_links_created'] = sum(1 for r in atom_results if r.tentative_link)
         stats['conflicts_detected'] = sum(len(r.conflicts) for r in atom_results)
+
+        # Step 4: Update SelfKnowledgeIndex (TASK 10.2)
+        # Add claim for each atom by its belief type/topic
+        if self.self_knowledge_index:
+            for result in atom_results:
+                try:
+                    # Map belief_type to category and use canonical_text as topic
+                    category = result.atom.belief_type.lower()
+                    topic = result.atom.canonical_text[:50]  # Truncate for topic
+                    self.self_knowledge_index.add_claim(category, topic, experience_id)
+                except Exception as e:
+                    logger.warning(f"Failed to add claim to SelfKnowledgeIndex: {e}")
 
         logger.info(
             f"Belief extraction complete for {experience_id}: "
@@ -406,7 +426,7 @@ class HTNBeliefExtractor:
         epistemics_result = self.epistemics_rules.extract(atom.original_text)
 
         if epistemics_result.needs_llm_fallback and self.epistemics_llm:
-            llm_result = self.epistemics_llm.extract_epistemics(atom.original_text)
+            llm_result = self.epistemics_llm.extract(atom.original_text)
             if llm_result and llm_result.confidence > epistemics_result.confidence:
                 epistemics_result = llm_result
 

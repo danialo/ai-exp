@@ -303,14 +303,12 @@ Respond with ONLY one word: YES or NO"""
 
         try:
             result = self.llm_service.generate(
-                messages=[
-                    {"role": "user", "content": classifier_prompt.format(message=message)}
-                ],
+                prompt=classifier_prompt.format(message=message),
                 temperature=0.0,  # Deterministic
                 max_tokens=5,     # Just need YES/NO
             )
 
-            response = result.get("content", "").strip().upper()
+            response = result.strip().upper()
             needs_research = response.startswith("YES")
 
             return GateResult(

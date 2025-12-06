@@ -40,6 +40,7 @@ from src.utils.extractor_version import get_extractor_version
 from src.memory.models.belief_occurrence import BeliefOccurrence
 from src.memory.models.belief_node import BeliefNode
 from src.memory.models.tentative_link import TentativeLink
+from src.services.self_knowledge_index import SelfKnowledgeIndex
 
 # Setup logging
 logging.basicConfig(
@@ -96,7 +97,11 @@ class RollbackProcessor:
             'occurrences_affected': 0,
             'nodes_orphaned': 0,
             'tentative_links_affected': 0,
+            'self_knowledge_claims_removed': 0,
         }
+
+        # SelfKnowledgeIndex for remove_claim (TASK 10.4)
+        self.self_knowledge_index = SelfKnowledgeIndex()
 
     def run(self):
         """Run the rollback process."""
@@ -131,6 +136,15 @@ class RollbackProcessor:
                 self._soft_delete_occurrences(session, occurrences)
 
             self.stats['occurrences_affected'] = len(occurrences)
+
+            # Remove claims from SelfKnowledgeIndex (TASK 10.4)
+            experience_ids = set(occ.source_experience_id for occ in occurrences)
+            for experience_id in experience_ids:
+                if not self.dry_run:
+                    removed = self.self_knowledge_index.remove_claim(experience_id)
+                    self.stats['self_knowledge_claims_removed'] += removed
+                    if self.verbose and removed > 0:
+                        logger.debug(f"Removed {removed} claims for experience {experience_id}")
 
             # Find orphaned nodes (nodes with no remaining occurrences)
             orphaned_nodes = self._find_orphaned_nodes(session)
@@ -282,6 +296,7 @@ class RollbackProcessor:
         logger.info(f"Occurrences affected: {self.stats['occurrences_affected']}")
         logger.info(f"Nodes orphaned: {self.stats['nodes_orphaned']}")
         logger.info(f"Tentative links affected: {self.stats['tentative_links_affected']}")
+        logger.info(f"SelfKnowledgeIndex claims removed: {self.stats['self_knowledge_claims_removed']}")
 
         if self.hard_delete:
             logger.info("\nHARD DELETE was used - data is permanently removed")

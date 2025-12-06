@@ -1376,7 +1376,8 @@ class BeliefLifecycleManager:
             neg_feedback = 0.0
 
         # Deprecate on strong negative feedback or evidence decay
-        if neg_feedback >= 0.4 or decay_evidence <= 0:
+        # Note: decay_evidence < 0 means explicit negative signals, = 0 is neutral
+        if neg_feedback >= 0.4 or decay_evidence < 0:
             logger.info(f"Deprecating {belief_id}: neg_feedback={neg_feedback:.2f}, decay={decay_evidence}")
             return self._deprecate(belief)
 

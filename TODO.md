@@ -1,37 +1,10 @@
 # TODO List - Astra AI Experience
 
-**Last Updated**: 2025-11-17
+**Last Updated**: 2025-12-03
 
 ## In Progress
 
 ## Ready to Start
-
-- [ ] **Fix Research Tool Announcement Instead of Execution** 🔥 **CRITICAL**
-  - **Problem**: Astra says "I'll proceed with detailed research" but doesn't actually call research_and_summarize tool
-  - **Root Cause**: Base prompt tells her WHEN to research but not to CALL THE TOOL instead of announcing intent
-  - **LLM Pattern**: Generates text "I'll research X" as completion instead of making tool_call in same response
-  - **File**: `persona_space/meta/base_prompt.md` - research policy section
-  - **Fix Required**: Add explicit instruction under "When to Call research_and_summarize":
-    - "⚠️ DO NOT announce that you'll research - CALL THE TOOL IMMEDIATELY"
-    - "If research is needed, your response should BE the tool call, not a promise to research"
-    - "DO: [tool_call: research_and_summarize] → NOT: 'I'll proceed with research now'"
-  - **Impact**: User asks for research, Astra says she'll do it, then... nothing happens
-  - **Priority**: HIGH - Research system exists but isn't being used correctly
-  - **Evidence**: User transcript shows "I'll proceed with detailed research on this topic now" with no actual research execution
-
-- [ ] **Fix Verbose Search Query Generation in Research HTN** 🔥 **URGENT**
-  - **Problem**: LLM generating verbose, sentence-like search queries that return no results
-  - **Example**: `'DOGE government agency Elon Musk connection'` - word "connection" makes it a sentence fragment
-  - **Error**: "Google hasn't returned any results for this query"
-  - **File**: `src/services/research_htn_methods.py:196-227` (investigate_topic)
-  - **Root Cause**: Query generation prompt not strict enough - LLM still being too "natural language"
-  - **Fix Required**:
-    1. Strengthen query generation prompt with more explicit anti-patterns
-    2. Add blacklist of "sentence words": connection, relationship, between, about, regarding, concerning
-    3. Add post-processing to detect and simplify verbose queries (e.g., remove trailing nouns after entities)
-    4. Example fix: "DOGE Elon Musk government 2024" instead of "DOGE government agency Elon Musk connection"
-  - **Priority**: URGENT - Research system failing on basic queries
-  - **Impact**: Research sessions fail because search returns 0 results due to over-specific queries
 
 - [ ] **Fix Immutable Belief Dissonance Resolution Enforcement** 🔥 **CRITICAL**
   - **Problem**: Immutable belief severity boost (0.00 → 0.70) detects contradictions but doesn't enforce behavior change
@@ -85,6 +58,37 @@
 
 ## Backlog
 
+- [ ] **Fix Astra's Ability to See and Add to Her Own Code** 🔧 **ARCHITECTURE**
+  - **Problem**: Astra cannot view or modify her own codebase effectively
+  - **Current State**: Has `read_source_code` and `list_source_files` tools but limited capability
+  - **Needed**:
+    1. Better code navigation - understand file relationships and dependencies
+    2. Ability to propose code changes (not just read)
+    3. Safe sandbox for testing self-modifications before applying
+    4. Version control awareness - see what changed, create branches
+  - **Safety Considerations**:
+    - Changes should be reviewed before applying
+    - Rollback capability required
+    - Core identity files (beliefs, pledges) should have extra protection
+  - **Priority**: MEDIUM - Key for self-improvement and debugging capabilities
+
+- [ ] **Wire Up Memory Pruning System** 🔧 **MAINTENANCE**
+  - **Problem**: Memory grows indefinitely - nothing is pruned or decayed
+  - **Current State**:
+    - 6,357 experiences (19.9 MB), growing ~130-180/day
+    - `MemoryDecayCalculator` exists but `recalculate_all_decay()` never called
+    - `MemoryPruner` exists but not wired into `IntegrationLayer`
+    - 96.5% of experiences have no decay metrics
+    - All `decay_factor` values stuck at 1.0 (no decay applied)
+    - All `access_count` values at 0 (never tracked)
+  - **Fix Required**:
+    1. Wire `MemoryPruner` into `IntegrationLayer` in app.py
+    2. Schedule periodic `recalculate_all_decay()` runs (e.g., daily)
+    3. Call `record_access()` when experiences are retrieved
+    4. Initialize decay metrics for existing experiences
+  - **Projected Growth (no fix)**: ~73,000 experiences in 1 year
+  - **Priority**: MEDIUM - Not urgent but will become problem at scale
+
 - [ ] **Token usage tracking & budget controls**
   - Add usage tracking to LLMService.generate_with_tools()
   - Create api_usage database table
@@ -105,6 +109,26 @@
   - Automatic path selection
 
 ## Completed ✅
+
+- [x] **ResearchGate: Deterministic Research Decision Layer (COMPLETE)** - 2025-12-03
+  - Fixed "announces research instead of executing" by moving decision out of model prose generation
+  - ResearchGate class with fast heuristics + fallback LLM classifier
+  - Integrated into PersonaService._is_research_query()
+  - Tests for research orchestration
+  - Files: research_gate.py (393 lines), test_research_orchestration.py (262 lines)
+
+- [x] **Research Query Optimization (COMPLETE)** - 2025-12-03
+  - Fixed verbose search query generation
+  - Query scoring, fallback, and telemetry
+  - research_query_utils.py, research_query_scoring.py, research_query_fallback.py
+  - 16 unit tests passing
+  - Fixed research anchor dict binding error
+
+- [x] **Awareness Loop Context Budget Increase (COMPLETE)** - 2025-12-03
+  - max_context_tokens: 1000 → 16000 (50% of 32k input limit)
+  - max_tokens reply: 300 → 4000
+  - buf_win: 32 → 64, mem_k: 5 → 30
+  - Enables richer self-reflection with meaningful context
 
 - [x] **Research System - Production Ready + Policy + Observability + Call Budgeting (COMPLETE)** - Astra-integrated autonomous research with context overflow protection (2025-11-15)
   - **P0: Task Queue & Execution**: HTN task decomposition with budget controls (max_tasks, max_children_per_task, max_depth)

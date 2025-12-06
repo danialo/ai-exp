@@ -157,10 +157,10 @@ class BeliefResolver:
             if lower <= best_similarity <= upper:
                 verifier_result = self._call_verifier(atom, best_node)
 
-                if verifier_result and verifier_result.get('same_concept'):
+                if verifier_result and verifier_result.same_concept:
                     return ResolutionResult(
                         outcome='match',
-                        match_confidence=verifier_result.get('confidence', best_similarity),
+                        match_confidence=getattr(verifier_result, 'confidence', best_similarity),
                         matched_node_id=best_node.belief_id,
                         candidate_ids=all_candidate_ids,
                         candidate_similarities=all_similarities,

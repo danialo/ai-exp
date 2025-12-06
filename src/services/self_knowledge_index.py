@@ -174,6 +174,51 @@ class SelfKnowledgeIndex:
             self.index[category][topic].append(experience_id)
             self._save_index()
 
+    def remove_claim(self, experience_id: str) -> int:
+        """Remove an experience from the index.
+
+        Removes the experience_id from all categories and topics where it appears.
+        Prunes empty topic lists after removal.
+
+        Args:
+            experience_id: Experience ID to remove
+
+        Returns:
+            Number of entries removed
+        """
+        removed_count = 0
+        categories_to_clean = []
+
+        for category, topics in self.index.items():
+            topics_to_remove = []
+
+            for topic, exp_ids in topics.items():
+                if experience_id in exp_ids:
+                    exp_ids.remove(experience_id)
+                    removed_count += 1
+
+                    # Mark empty topic lists for removal
+                    if not exp_ids:
+                        topics_to_remove.append(topic)
+
+            # Remove empty topics
+            for topic in topics_to_remove:
+                del topics[topic]
+
+            # Mark empty categories for removal
+            if not topics:
+                categories_to_clean.append(category)
+
+        # Remove empty categories
+        for category in categories_to_clean:
+            del self.index[category]
+
+        if removed_count > 0:
+            self._save_index()
+            logger.debug(f"Removed {removed_count} entries for experience {experience_id}")
+
+        return removed_count
+
     def get_claims(self, category: Optional[str] = None, topic: Optional[str] = None) -> List[str]:
         """Retrieve experience IDs for self-claims.
 

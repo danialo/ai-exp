@@ -21,6 +21,7 @@ Idempotent: Can be safely re-run (uses extractor_version in unique constraint).
 """
 
 import argparse
+import json
 import logging
 import sys
 from datetime import datetime, timezone
@@ -29,6 +30,9 @@ from pathlib import Path
 # Add project root to path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
+
+# Checkpoint file path per spec
+CHECKPOINT_FILE = project_root / 'data' / 'backfill_checkpoint.json'
 
 from sqlmodel import Session, create_engine, select, text
 
@@ -103,6 +107,38 @@ class BackfillProcessor:
             'errors': [],
         }
 
+        # Checkpoint support
+        self.checkpoint = self._load_checkpoint()
+        self.last_processed_id = self.checkpoint.get('last_processed_id')
+
+    def _load_checkpoint(self) -> dict:
+        """Load checkpoint from file if exists."""
+        if CHECKPOINT_FILE.exists():
+            try:
+                with open(CHECKPOINT_FILE) as f:
+                    checkpoint = json.load(f)
+                    logger.info(f"Loaded checkpoint: last_processed_id={checkpoint.get('last_processed_id')}")
+                    return checkpoint
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Failed to load checkpoint: {e}")
+        return {}
+
+    def _save_checkpoint(self, experience_id: str):
+        """Save checkpoint after processing an experience."""
+        self.checkpoint['last_processed_id'] = experience_id
+        self.checkpoint['timestamp'] = datetime.now(timezone.utc).isoformat()
+        self.checkpoint['extractor_version'] = self.extractor_version
+
+        CHECKPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(CHECKPOINT_FILE, 'w') as f:
+            json.dump(self.checkpoint, f, indent=2)
+
+    def _clear_checkpoint(self):
+        """Clear checkpoint file on successful completion."""
+        if CHECKPOINT_FILE.exists():
+            CHECKPOINT_FILE.unlink()
+            logger.info("Checkpoint cleared")
+
     def run(self, experience_id: str = None):
         """
         Run the backfill process.
@@ -115,6 +151,9 @@ class BackfillProcessor:
         if self.dry_run:
             logger.info("DRY RUN MODE - no changes will be persisted")
 
+        if self.last_processed_id and not experience_id:
+            logger.info(f"Resuming from checkpoint: {self.last_processed_id}")
+
         engine = create_engine(self.db_url)
 
         with Session(engine) as session:
@@ -123,6 +162,28 @@ class BackfillProcessor:
 
             if not experiences:
                 logger.info("No experiences to process")
+                return
+
+            # Filter to resume from checkpoint if applicable
+            if self.last_processed_id and not experience_id:
+                # Skip experiences until we're past the checkpoint
+                original_count = len(experiences)
+                skip_until_found = True
+                filtered_experiences = []
+                for exp in experiences:
+                    if skip_until_found:
+                        if exp['id'] == self.last_processed_id:
+                            skip_until_found = False
+                            # Don't include the checkpoint itself - it was already processed
+                            continue
+                    else:
+                        filtered_experiences.append(exp)
+                experiences = filtered_experiences
+                logger.info(f"Resuming: skipped {original_count - len(experiences)} already-processed experiences")
+
+            if not experiences:
+                logger.info("All experiences already processed (checkpoint reached end)")
+                self._clear_checkpoint()
                 return
 
             logger.info(f"Found {len(experiences)} experiences to process")
@@ -140,6 +201,11 @@ class BackfillProcessor:
                 try:
                     self._process_experience(extractor, exp, session)
                     self.stats['successful'] += 1
+
+                    # Save checkpoint after each successful processing
+                    if not self.dry_run:
+                        self._save_checkpoint(exp['id'])
+
                 except Exception as e:
                     logger.error(f"Error processing experience {exp['id']}: {e}")
                     self.stats['failed'] += 1
@@ -160,6 +226,8 @@ class BackfillProcessor:
             # Final commit
             if not self.dry_run:
                 session.commit()
+                # Clear checkpoint on successful completion
+                self._clear_checkpoint()
 
         self._report_stats()
 
@@ -173,7 +241,7 @@ class BackfillProcessor:
         # Assuming experiences table exists with these columns
         query_parts = [
             "SELECT id, content, affect, session_id",
-            "FROM experiences",
+            "FROM experience",
             "WHERE type = 'self_definition'",
         ]
 
@@ -226,7 +294,7 @@ class BackfillProcessor:
 
         query = """
             SELECT id, content, affect, session_id
-            FROM experiences
+            FROM experience
             WHERE type = 'self_definition'
         """
 
@@ -388,7 +456,7 @@ def main():
         db_url = os.environ.get('DATABASE_URL')
         if not db_url:
             # Default SQLite path
-            db_path = project_root / 'data' / 'astra.db'
+            db_path = project_root / 'data' / 'raw_store.db'
             db_url = f'sqlite:///{db_path}'
 
     logger.info(f"Using database: {db_url}")
