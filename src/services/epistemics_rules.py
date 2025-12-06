@@ -379,10 +379,17 @@ class EpistemicsRulesEngine:
     def _detect_conditional(self, text: str) -> Optional[str]:
         """
         Detect conditional clause (simple heuristic).
+
+        Detects:
+        - Explicit conditionals: "if X then Y", "when X, Y", "unless X"
+        - Modal conditionals: "would", "could", "might" (hypothetical mood)
         """
-        # Look for common conditional patterns
+        text_lower = text.lower()
+
+        # Look for common conditional patterns with conditions
         conditional_patterns = [
             r'\bif\s+(.+?)\bthen\b',
+            r'\bif\s+(.+?),',
             r'\bwhen\s+(.+?),',
             r'\bunless\s+(.+)',
         ]
@@ -391,6 +398,19 @@ class EpistemicsRulesEngine:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 return match.group(1).strip()
+
+        # Detect modal verbs that indicate hypothetical/conditional mood
+        # "I would feel happy" = conditional on some unstated condition
+        modal_conditionals = [
+            (r"\bi would\b", "hypothetical"),
+            (r"\bi could\b", "hypothetical"),
+            (r"\bi might\b", "hypothetical"),
+            (r"\bi'd\b", "hypothetical"),  # contraction of "I would"
+        ]
+
+        for pattern, condition_type in modal_conditionals:
+            if re.search(pattern, text_lower):
+                return condition_type
 
         return None
 

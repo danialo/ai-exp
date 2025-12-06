@@ -36,12 +36,20 @@ class BeliefSegmenter:
        (and, but, however, although, though, yet)
 
     Subordinate clauses stay attached to their main clause.
+    Only returns self-referential claims (containing I/my/me references).
     """
 
     # Conjunctions that typically connect independent clauses
     SPLITTING_CONJUNCTIONS = {
         'and', 'but', 'however', 'although', 'though', 'yet',
         'so', 'while', 'whereas'
+    }
+
+    # Self-reference markers for belief filtering
+    SELF_REFERENCE_MARKERS = {
+        'i ', "i'm", "i've", "i'd", "i'll",
+        'my ', 'me ', 'myself',
+        'mine '
     }
 
     # Subordinating conjunctions - these typically introduce dependent clauses
@@ -78,10 +86,27 @@ class BeliefSegmenter:
             )
             candidates.extend(clause_splits)
 
-        # Filter out empty candidates
+        # Filter out empty candidates and non-self-referential text
         candidates = [c for c in candidates if c.text.strip()]
+        candidates = [c for c in candidates if self.is_self_referential(c.text)]
 
         return candidates
+
+    def is_self_referential(self, text: str) -> bool:
+        """
+        Check if text contains self-reference (I/my/me).
+
+        Filters out general observations like "The weather is nice"
+        that aren't about the speaker.
+
+        Args:
+            text: Text to check
+
+        Returns:
+            True if text contains self-reference markers
+        """
+        text_lower = text.lower()
+        return any(marker in text_lower for marker in self.SELF_REFERENCE_MARKERS)
 
     def _split_on_sentences(
         self,

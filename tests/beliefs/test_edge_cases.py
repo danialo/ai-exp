@@ -317,7 +317,6 @@ class TestInvalidInputRejection:
         result = segmenter.segment("   \n\t  ")
         assert len(result) == 0, "Whitespace should produce no segments"
 
-    @pytest.mark.xfail(reason="KNOWN ISSUE: Segmenter doesn't filter non-self-referential text")
     def test_non_self_referential_rejected(self, belief_config):
         """Statements not about self should not create self-beliefs."""
         from src.services.belief_segmenter import BeliefSegmenter
@@ -480,7 +479,6 @@ class TestEndToEndEdgeCases:
         # (exact handling depends on segmenter implementation)
         assert len(result) >= 1, "Compound statement should produce at least one segment"
 
-    @pytest.mark.xfail(reason="KNOWN ISSUE: Epistemics rules don't detect 'would' as conditional")
     def test_conditional_belief_handling(self, belief_config):
         """Conditional beliefs should be handled appropriately."""
         from src.services.epistemics_rules import EpistemicsRulesEngine
@@ -492,9 +490,9 @@ class TestEndToEndEdgeCases:
 
         # Should recognize conditional/hypothetical nature
         # EpistemicFrame has: modality, temporal_scope, degree, conditional
-        # Modality should not be 'certain' for conditionals
-        assert result.frame.modality != "certain" or result.frame.conditional is True, \
-            f"Conditional should be flagged: modality={result.frame.modality}, conditional={result.frame.conditional}"
+        # Conditional field should be set (string, not boolean)
+        assert result.frame.conditional is not None, \
+            f"Conditional should be detected: modality={result.frame.modality}, conditional={result.frame.conditional}"
 
     def test_quoted_belief_not_self(self, belief_config):
         """'You said I feel X' should not create a self-belief."""
