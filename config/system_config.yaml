@@ -182,7 +182,7 @@ migration:
     min_activation: 0.35
   ratchet:
     enabled: true
-    allow_demotion: false
+    allow_demotion: true
     demotion_triggers: ["explicit_obsolescence", "sustained_conflict_low_activation"]
 
 backfill:
