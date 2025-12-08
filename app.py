@@ -70,6 +70,8 @@ from src.services.contrarian_sampler import (
     DossierStatus,
 )
 from src.services.belief_gardener import create_belief_gardener, GardenerConfig
+from src.services.htn_belief_methods import HTNBeliefExtractor
+from src.utils.belief_config import get_belief_config
 from src.services.belief_consolidator import create_belief_consolidator, ConsolidatorConfig
 from src.services.tag_injector import create_tag_injector
 from src.services.self_knowledge_index import create_self_knowledge_index
@@ -238,6 +240,23 @@ if api_key:
         self_aware_prompt_builder=None,  # Not needed for introspection
     )
 
+    # Initialize HTNBeliefExtractor for belief extraction (TASK 10.3.1)
+    from sqlmodel import create_engine, Session as SQLModelSession
+    htn_extractor = None
+    try:
+        belief_config = get_belief_config()
+        # Create a session factory for the raw_store database (where belief tables live)
+        belief_engine = create_engine(f"sqlite:///{settings.RAW_STORE_DB_PATH}")
+        htn_db_session = SQLModelSession(belief_engine)
+        htn_extractor = HTNBeliefExtractor(
+            config=belief_config,
+            llm_client=mini_llm_service,  # Use 4o-mini for cost efficiency
+            db_session=htn_db_session,
+        )
+        logger.info(f"HTNBeliefExtractor initialized with extractor version: {htn_extractor.version_hash}")
+    except Exception as e:
+        logger.error(f"Failed to initialize HTNBeliefExtractor: {e}", exc_info=True)
+
     # Re-initialize ingestion pipeline with LLM service for self-claim detection
     from src.pipeline.ingest import IngestionPipeline
     ingestion_pipeline = IngestionPipeline(
@@ -246,11 +265,13 @@ if api_key:
         embedding_provider=embedding_provider,
         llm_service=llm_service,
         self_knowledge_index=self_knowledge_index,
+        htn_extractor=htn_extractor,  # TASK 10.3.2: Wire HTN into pipeline
     )
     logger.info(
         f"Ingestion pipeline initialized with self-claim detection: "
         f"id={id(ingestion_pipeline)} llm_service={llm_service is not None} "
-        f"self_knowledge_index={self_knowledge_index is not None}"
+        f"self_knowledge_index={self_knowledge_index is not None} "
+        f"htn_extractor={htn_extractor is not None}"
     )
 
     # Initialize experience lens for affect-aware response styling
@@ -910,6 +931,8 @@ async def startup_awareness():
             config=awareness_config,
             llm_service=mini_llm_service,  # Use mini model for cost-effective introspection
             memory_store=retrieval_service,  # Enable introspection on prior conversations
+            belief_consistency_checker=belief_consistency_checker,  # Enable background dissonance checking
+            belief_store=belief_store,  # For getting active beliefs
         )
 
         # Start awareness loop (only on leader worker to avoid lock conflicts)
@@ -1114,12 +1137,15 @@ async def startup_awareness():
             except Exception as e:
                 logger.error(f"Failed to initialize decision framework: {e}", exc_info=True)
 
-        # Start belief gardener background task (only on leader worker)
-        if belief_gardener and settings.BELIEF_GARDENER_ENABLED and is_leader:
-            gardener_task = asyncio.create_task(gardener_tick_loop())
-            logger.info("Belief gardener background task started (leader)")
-        elif belief_gardener and settings.BELIEF_GARDENER_ENABLED:
-            logger.info("Belief gardener skipped (not leader worker)")
+        # DISABLED: Old BeliefGardener loop - replaced by HTN pipeline (TASK 10.3.4)
+        # The old gardener did pattern-based belief extraction from SELF_DEFINITION experiences.
+        # HTN now handles belief extraction inline during ingest via HTNBeliefExtractor.
+        # if belief_gardener and settings.BELIEF_GARDENER_ENABLED and is_leader:
+        #     gardener_task = asyncio.create_task(gardener_tick_loop())
+        #     logger.info("Belief gardener background task started (leader)")
+        # elif belief_gardener and settings.BELIEF_GARDENER_ENABLED:
+        #     logger.info("Belief gardener skipped (not leader worker)")
+        logger.info("Old BeliefGardener DISABLED - HTN pipeline now handles belief extraction inline")
 
         # Initialize and start goal generator (only on leader worker)
         if settings.PERSONA_MODE_ENABLED and goal_store and is_leader:
@@ -1680,7 +1706,7 @@ async def get_stats():
 
 @app.get("/api/mood")
 async def get_mood():
-    """Get agent's current mood state (emergent personality) with dual-track breakdown."""
+    """Get agent's current mood state (emergent personality) with full VAD tracking."""
     return {
         "current_mood": agent_mood.current_mood,
         "mood_description": agent_mood.get_mood_description(),
@@ -1688,9 +1714,16 @@ async def get_mood():
         "internal_mood": agent_mood.internal_mood,
         "external_description": agent_mood.get_external_description(),
         "internal_description": agent_mood.get_internal_description(),
+        # Full VAD
+        "current_arousal": agent_mood.current_arousal,
+        "arousal_description": agent_mood.get_arousal_description(),
+        "current_dominance": agent_mood.current_dominance,
+        "dominance_description": agent_mood.get_dominance_description(),
+        # State flags
         "is_pissed": agent_mood.is_pissed,
         "is_frustrated": agent_mood.is_frustrated,
         "is_content": agent_mood.is_content,
+        # Interaction counts
         "recent_interactions": len(agent_mood.recent_experiences),
         "external_interactions": len(agent_mood.external_experiences),
         "internal_interactions": len(agent_mood.internal_experiences),
@@ -2618,6 +2651,13 @@ async def persona_chat(request: ChatRequest):
             "user_arousal": user_arousal,
             "user_dominance": user_dominance
         })
+
+        # Update agent mood with full VAD
+        agent_mood.record_external_vad(user_valence, user_arousal, user_dominance)
+        logger.debug(
+            f"Agent mood updated: v={agent_mood.external_mood:.2f}, "
+            f"a={agent_mood.current_arousal:.2f}, d={agent_mood.current_dominance:.2f}"
+        )
 
         # Return response with reconciliation data and detected user emotion
         elapsed_time = time.time() - start_time

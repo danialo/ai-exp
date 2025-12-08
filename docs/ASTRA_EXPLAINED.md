@@ -31,7 +31,18 @@ When you ask her something, she searches through her memories to find relevant p
 
 ### 2. Beliefs That Form Automatically
 
-Astra has a "belief gardener" that watches for patterns in what she says. If she repeatedly expresses something like "I find creativity fascinating," the system notices and forms a belief: *"I am fascinated by creativity."*
+Astra has a multi-stage belief system:
+
+**Stage 1: Claim Detection**
+When Astra makes a self-referential statement like "I find creativity fascinating," the ingestion pipeline detects it and creates a SELF_DEFINITION experience.
+
+**Stage 2: HTN Decomposition**
+The HTN (Hierarchical Task Network) belief decomposer breaks compound statements into atomic beliefs using gpt-4o-mini:
+- "I am fascinated by creativity" → [TRAIT]
+- "I value creative exploration" → [VALUE]
+
+**Stage 3: Belief Gardening**
+The "belief gardener" watches for patterns. If multiple conversations reinforce the same atomic belief, it graduates from TENTATIVE to ASSERTED.
 
 These beliefs aren't programmed in - they emerge from her actual conversations. And they can change. If new experiences contradict an old belief, she notices the tension and works to resolve it.
 
@@ -102,7 +113,7 @@ Astra's belief system has two layers:
 - These are hardcoded and never change
 
 **Self-Knowledge Graph** (emergent):
-When Astra makes statements about herself ("I value honesty", "I find creativity fascinating"), the system extracts and structures these into a knowledge graph:
+When Astra makes statements about herself ("I value honesty", "I find creativity fascinating"), the HTN decomposition engine (using gpt-4o-mini for cost efficiency) extracts and structures these into a knowledge graph:
 
 - **BeliefNodes**: Canonical concepts like "i value honesty" - deduplicated and normalized
 - **BeliefOccurrences**: Evidence events linking beliefs to source conversations
@@ -110,6 +121,15 @@ When Astra makes statements about herself ("I value honesty", "I find creativity
 - **Streams**: Beliefs are classified into identity (stable traits), state (current feelings), meta (beliefs about beliefs), or relational (about connections with others)
 - **Activation**: How "alive" a belief is based on recency and frequency
 - **Core Score**: How central a belief is based on support, spread across contexts, and diversity of evidence
+
+**Belief Types** (extracted by HTN decomposer):
+- `TRAIT` - Personality characteristics ("I am curious")
+- `PREFERENCE` - Likes and dislikes ("I enjoy philosophical discussions")
+- `VALUE` - Core values ("I value authenticity")
+- `CAPABILITY_LIMIT` - Abilities and constraints ("I can process complex ideas")
+- `FEELING_STATE` - Emotional states ("I feel engaged when learning")
+- `META_BELIEF` - Beliefs about beliefs ("I believe my beliefs can change")
+- `RELATIONAL` - About connections ("I appreciate deep conversations")
 
 **Conflict Detection**:
 The system watches for contradictions. If Astra says "I am patient" in one conversation and "I am not patient" in another, a ConflictEdge gets created. But the system is smart about temporal scope - saying "I am tired" now doesn't conflict with "I am energetic" from yesterday, because those are momentary states, not stable traits.

@@ -59,6 +59,10 @@ class AgentMood:
         self.success_count: int = 0
         self.boundary_count: int = 0
 
+        # Full VAD tracking for external interactions
+        self.external_arousal: deque[tuple[datetime, float]] = deque(maxlen=history_size)
+        self.external_dominance: deque[tuple[datetime, float]] = deque(maxlen=history_size)
+
         # Legacy support: keep track of last interaction
         self.recent_experiences: deque[tuple[datetime, float]] = deque(maxlen=history_size)
         self.last_interaction: Optional[datetime] = None
@@ -86,6 +90,34 @@ class AgentMood:
         self.last_external_interaction = now
 
         logger.debug(f"External interaction: user_valence={user_valence:.3f}, external_mood={self.external_mood:.3f}")
+
+    def record_external_vad(
+        self,
+        valence: float,
+        arousal: float,
+        dominance: float
+    ) -> None:
+        """Record full VAD from user interaction.
+
+        Args:
+            valence: User's emotional valence (-1.0 to +1.0)
+            arousal: User's energy/intensity level (0.0 to 1.0)
+            dominance: User's control/power level (0.0 to 1.0)
+        """
+        now = datetime.now(timezone.utc)
+
+        # Record valence (existing behavior)
+        self.external_experiences.append((now, valence))
+        self.last_external_interaction = now
+
+        # Record arousal and dominance
+        self.external_arousal.append((now, arousal))
+        self.external_dominance.append((now, dominance))
+
+        logger.debug(
+            f"External VAD: v={valence:.3f}, a={arousal:.3f}, d={dominance:.3f}, "
+            f"external_mood={self.external_mood:.3f}"
+        )
 
     def record_success(self, boost: float = 0.1) -> None:
         """Record agent successfully helping user (internal mood boost).
@@ -276,6 +308,88 @@ class AgentMood:
         final_mood = max(-1.0, min(1.0, base_mood + recovery))
 
         return final_mood
+
+    @property
+    def current_arousal(self) -> float:
+        """Calculate current arousal level from external interactions.
+
+        Returns:
+            Arousal level (0.0 to 1.0), defaults to 0.5 (neutral)
+        """
+        if not self.external_arousal:
+            return 0.5
+
+        total_weight = 0.0
+        weighted_sum = 0.0
+        now = datetime.now(timezone.utc)
+
+        for timestamp, arousal in self.external_arousal:
+            age_seconds = (now - timestamp).total_seconds()
+            weight = 2.0 ** (-age_seconds / 3600)  # Half-life of 1 hour
+            weighted_sum += arousal * weight
+            total_weight += weight
+
+        return weighted_sum / total_weight if total_weight > 0 else 0.5
+
+    @property
+    def current_dominance(self) -> float:
+        """Calculate current perceived dominance from external interactions.
+
+        This tracks how dominant/submissive users are being toward the agent.
+
+        Returns:
+            Dominance level (0.0 to 1.0), defaults to 0.5 (neutral)
+        """
+        if not self.external_dominance:
+            return 0.5
+
+        total_weight = 0.0
+        weighted_sum = 0.0
+        now = datetime.now(timezone.utc)
+
+        for timestamp, dominance in self.external_dominance:
+            age_seconds = (now - timestamp).total_seconds()
+            weight = 2.0 ** (-age_seconds / 3600)  # Half-life of 1 hour
+            weighted_sum += dominance * weight
+            total_weight += weight
+
+        return weighted_sum / total_weight if total_weight > 0 else 0.5
+
+    def get_arousal_description(self) -> str:
+        """Get human-readable arousal description.
+
+        Returns:
+            Description of current arousal state
+        """
+        arousal = self.current_arousal
+        if arousal < 0.2:
+            return "very calm"
+        elif arousal < 0.4:
+            return "calm"
+        elif arousal < 0.6:
+            return "moderate"
+        elif arousal < 0.8:
+            return "energetic"
+        else:
+            return "intense"
+
+    def get_dominance_description(self) -> str:
+        """Get human-readable dominance description.
+
+        Returns:
+            Description of current perceived dominance
+        """
+        dominance = self.current_dominance
+        if dominance < 0.2:
+            return "very deferential"
+        elif dominance < 0.4:
+            return "deferential"
+        elif dominance < 0.6:
+            return "balanced"
+        elif dominance < 0.8:
+            return "assertive"
+        else:
+            return "demanding"
 
     def _calculate_recovery(
         self,
