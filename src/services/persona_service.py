@@ -161,6 +161,15 @@ class PersonaService:
             self.metatalk_detector = None
             self.metatalk_rewriter = None
 
+        # Track when anti-hedging enforcement is needed (after immutable belief resolution)
+        self._immutable_dissonance_active = False
+
+    def clear_immutable_dissonance_flag(self):
+        """Clear the immutable dissonance flag after anti-hedging has been applied."""
+        if self._immutable_dissonance_active:
+            logger.info("🔒 Anti-hedging enforcement CLEARED after response generation")
+            self._immutable_dissonance_active = False
+
     def set_awareness_loop(self, awareness_loop):
         """Set the awareness loop reference (called after initialization)."""
         self.awareness_loop = awareness_loop
@@ -416,161 +425,9 @@ class PersonaService:
                             # No event loop running, skip observation
                             pass
 
-                    # Check for consistency/dissonance if we have beliefs AND memories
-                    # DISABLED: This was blocking chat requests - dissonance should run in background
-                    # TODO: Move to awareness_loop or separate background service
+                    # Dissonance checking is now handled in the awareness loop background task
+                    # (see AwarenessLoop._dissonance_check_loop in awareness_loop.py)
                     dissonance_report = None
-                    if False and belief_results and memories and self.belief_consistency_checker:
-                        try:
-                            consistency_report = self.belief_consistency_checker.check_consistency(
-                                query=user_message,
-                                beliefs=belief_results,
-                                memories=memories,
-                            )
-                            if consistency_report.dissonance_patterns:
-                                dissonance_report = consistency_report.summary
-                                logger.info(f"Detected {len(consistency_report.dissonance_patterns)} dissonance patterns")
-                                print(f"⚠️ Dissonance detected: {len(consistency_report.dissonance_patterns)} patterns")
-
-                                # BLOCKING LOGIC: Check for high-severity dissonance (>= 0.6)
-                                high_severity_patterns = [
-                                    p for p in consistency_report.dissonance_patterns
-                                    if p.severity >= 0.6
-                                ]
-
-                                if high_severity_patterns:
-                                    # Generate resolution prompt FOR ASTRA TO ANSWER
-                                    resolution_prompt = self.belief_consistency_checker.generate_resolution_prompt(
-                                        query=user_message,
-                                        dissonance_patterns=high_severity_patterns,
-                                    )
-                                    logger.warning(f"DISSONANCE DETECTED: {len(high_severity_patterns)} patterns - forcing internal resolution")
-                                    print(f"🚫 DISSONANCE: {len(high_severity_patterns)} patterns - resolving internally...")
-
-                                    # Extract belief statements for resolution processing
-                                    belief_statements = [p.belief_statement for p in high_severity_patterns]
-
-                                    # Check if any patterns involve immutable beliefs
-                                    has_immutable = any(getattr(p, 'immutable', False) for p in high_severity_patterns)
-
-                                    # STAGE 1: Internal resolution generation (user never sees this)
-                                    logger.info("🔒 Stage 1: Internal resolution generation")
-                                    print(f"🔒 Stage 1: Generating internal resolution...")
-                                    if has_immutable:
-                                        logger.warning("🔒 Immutable beliefs detected - applying anti-hedging logit bias")
-
-                                    # Log what dissonance was detected
-                                    print(f"\n{'='*80}")
-                                    print(f"⚠️  DISSONANCE DETECTED")
-                                    print(f"{'='*80}")
-                                    for i, pattern in enumerate(high_severity_patterns, 1):
-                                        print(f"\nPattern {i}: {pattern.pattern_type}")
-                                        print(f"  Belief: {pattern.belief_statement[:80]}...")
-                                        print(f"  Severity: {pattern.severity:.0%}")
-                                        print(f"  Immutable: {getattr(pattern, 'immutable', False)}")
-                                    print(f"{'='*80}\n")
-
-                                    # Build prompt for internal resolution
-                                    internal_prompt = self.prompt_builder.build_prompt(
-                                        user_message,
-                                        conversation_history=conversation_history,
-                                        memories=memories,
-                                        belief_results=belief_results if belief_results else None,
-                                        dissonance_report=f"{consistency_report.summary}\n\nYOU MUST RESOLVE THESE BEFORE ANSWERING."
-                                    )
-
-                                    # Inject resolution prompt
-                                    internal_prompt = f"{internal_prompt}\n\n{resolution_prompt}"
-
-                                    # Generate internal resolution (no tools)
-                                    internal_messages = [
-                                        {"role": "system", "content": internal_prompt},
-                                        {"role": "user", "content": user_message}
-                                    ]
-
-                                    # Use anti-hedging bias if immutable beliefs are involved
-                                    resolution_logit_bias = self.anti_hedging_bias if has_immutable else None
-
-                                    internal_result = self.llm.generate_with_tools(
-                                        messages=internal_messages,
-                                        tools=None,  # No tools for resolution
-                                        temperature=config.temperature,
-                                        max_tokens=config.max_tokens,
-                                        top_p=config.top_p,
-                                        presence_penalty=config.presence_penalty,
-                                        frequency_penalty=config.frequency_penalty,
-                                        logit_bias=resolution_logit_bias,
-                                    )
-
-                                    internal_response = internal_result["message"].content or ""
-                                    logger.info(f"✅ Internal resolution generated ({len(internal_response)} chars)")
-
-                                    # CAPTURE INTERNAL THOUGHT PROCESS
-                                    print(f"\n{'='*80}")
-                                    print(f"💭 ASTRA'S INTERNAL REASONING (hidden from user)")
-                                    print(f"{'='*80}")
-                                    print(f"Query: {user_message[:100]}...")
-                                    print(f"Dissonance patterns: {len(high_severity_patterns)}")
-                                    print(f"\n--- Internal Resolution Response ---")
-                                    print(internal_response)
-                                    print(f"{'='*80}\n")
-
-                                    logger.info(f"💭 INTERNAL REASONING:\n{internal_response}")
-
-                                    # Also save to dedicated thought log
-                                    import os
-                                    from datetime import datetime
-                                    thought_log_path = "logs/thoughts"
-                                    os.makedirs(thought_log_path, exist_ok=True)
-                                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                                    with open(f"{thought_log_path}/internal_reasoning_{timestamp}.txt", "w") as f:
-                                        f.write(f"TIMESTAMP: {timestamp}\n")
-                                        f.write(f"USER QUERY: {user_message}\n\n")
-                                        f.write(f"DISSONANCE PATTERNS: {len(high_severity_patterns)}\n")
-                                        for i, p in enumerate(high_severity_patterns, 1):
-                                            f.write(f"\n  {i}. {p.pattern_type} - {p.belief_statement[:100]}...\n")
-                                            f.write(f"     Severity: {p.severity:.0%}, Immutable: {getattr(p, 'immutable', False)}\n")
-                                        f.write(f"\n{'='*80}\n")
-                                        f.write(f"INTERNAL REASONING:\n")
-                                        f.write(f"{'='*80}\n\n")
-                                        f.write(internal_response)
-                                        f.write(f"\n\n{'='*80}\n")
-
-                                    # Parse and apply resolutions from internal response
-                                    resolution_data = self.parse_resolution_response(internal_response)
-                                    if resolution_data and resolution_data.get("has_resolutions"):
-                                        logger.info(f"🔍 Detected {len(resolution_data['resolutions'])} resolution choices - applying")
-                                        print(f"✅ Applying {len(resolution_data['resolutions'])} resolutions...")
-
-                                        # Apply resolutions
-                                        resolution_results = self.apply_resolutions(
-                                            resolutions=resolution_data["resolutions"],
-                                            belief_statements=belief_statements,
-                                        )
-
-                                        if resolution_results.get("success"):
-                                            logger.info(f"✅ Successfully applied {resolution_results['applied_count']} resolutions")
-                                            print(f"✅ Successfully applied {resolution_results['applied_count']} resolutions")
-                                        else:
-                                            logger.error(f"❌ Failed to apply resolutions: {resolution_results}")
-                                            print(f"❌ Failed to apply some resolutions")
-                                    else:
-                                        logger.warning("⚠️ No resolutions found in internal response")
-                                        print(f"⚠️ No resolutions detected in internal response")
-
-                                    # STAGE 2: Normal generation for user (continues below)
-                                    logger.info("🔓 Stage 2: Generating user-facing response")
-                                    print(f"🔓 Stage 2: Generating normal response...")
-
-                                    # Clear dissonance report so user doesn't see it
-                                    dissonance_report = None
-                                else:
-                                    resolution_required = False
-                                    resolution_belief_statements = []
-                        except Exception as e:
-                            import traceback
-                            logger.error(f"Failed to check consistency: {e}")
-                            logger.error(f"Traceback: {traceback.format_exc()}")
 
                 # Fallback to regular memory retrieval
                 elif self.retrieval_service:
@@ -659,6 +516,19 @@ class PersonaService:
             # Generate response with tools using persona's config
             use_anti_metatalk = config.enable_anti_metatalk if hasattr(config, 'enable_anti_metatalk') else self.enable_anti_metatalk
 
+            # Build logit bias: start with anti-metatalk bias if enabled
+            effective_logit_bias = None
+            if use_anti_metatalk:
+                effective_logit_bias = dict(self.logit_bias)  # Copy base bias
+
+            # IMMUTABLE BELIEF ENFORCEMENT: Merge anti-hedging bias when active
+            # This prevents hedging language after resolving immutable belief dissonance
+            if self._immutable_dissonance_active and self.anti_hedging_bias:
+                if effective_logit_bias is None:
+                    effective_logit_bias = {}
+                effective_logit_bias.update(self.anti_hedging_bias)
+                logger.info(f"🔒 Anti-hedging bias ACTIVE: {len(self.anti_hedging_bias)} tokens suppressed")
+
             result = self.llm.generate_with_tools(
                 messages=messages,
                 tools=tools,
@@ -667,7 +537,7 @@ class PersonaService:
                 top_p=config.top_p,
                 presence_penalty=config.presence_penalty,
                 frequency_penalty=config.frequency_penalty,
-                logit_bias=self.logit_bias if use_anti_metatalk else None,
+                logit_bias=effective_logit_bias,
             )
 
             message = result["message"]
@@ -792,6 +662,9 @@ class PersonaService:
                         "tools": [t["tool"] for t in research_tools]
                     }
                 )
+
+        # Clear anti-hedging flag after response generation (it only needs to affect ONE response)
+        self.clear_immutable_dissonance_flag()
 
         return clean_response, reconciliation_data
 
@@ -1098,6 +971,7 @@ This revision represents growth in my self-understanding. My past statements wer
             "applied_count": 0,
             "failed_count": 0,
             "details": [],
+            "immutable_resolved": False,  # Track if any immutable beliefs were resolved (for anti-hedging)
         }
 
         for resolution in resolutions:
@@ -1119,9 +993,39 @@ This revision represents growth in my self-understanding. My past statements wer
             belief_statement = belief_statements[dissonance_num - 1]
 
             try:
+                # Check if this is an immutable belief FIRST (before processing choice)
+                is_immutable = False
+                if self.belief_vector_store:
+                    try:
+                        matching_beliefs = self.belief_vector_store.query_beliefs(
+                            query=belief_statement,
+                            top_k=1,
+                            min_confidence=0.0
+                        )
+                        if matching_beliefs and matching_beliefs[0].statement == belief_statement:
+                            is_immutable = matching_beliefs[0].immutable
+                    except Exception as e:
+                        logger.warning(f"Could not check immutability for {belief_statement}: {e}")
+
+                # IMMUTABLE BELIEF ENFORCEMENT: Only Option B is allowed for immutable beliefs
+                # Options A (revise) and C (nuance) undermine core ontological commitments
+                if is_immutable and choice in ["A", "C"]:
+                    logger.warning(f"🔒 IMMUTABLE BELIEF VIOLATION: Rejecting Option {choice} for '{belief_statement[:50]}...'")
+                    logger.warning(f"   Immutable beliefs require Option B (commit). Options A/C are not permitted.")
+                    results["failed_count"] += 1
+                    results["details"].append({
+                        "dissonance": dissonance_num,
+                        "belief": belief_statement,
+                        "choice": choice,
+                        "success": False,
+                        "error": f"Immutable belief requires Option B. Option {choice} rejected.",
+                        "immutable_violation": True,
+                    })
+                    continue
+
                 # Apply based on choice
                 if choice == "A":
-                    # Option A: Revise belief
+                    # Option A: Revise belief (not allowed for immutable - checked above)
                     success = self.belief_system.resolve_dissonance_option_a(
                         belief_statement=belief_statement,
                         confidence_adjustment=-0.1,  # Reduce confidence slightly
@@ -1129,21 +1033,7 @@ This revision represents growth in my self-understanding. My past statements wer
                     resolution_action = "option_a_revise"
 
                 elif choice == "B":
-                    # Option B: Commit to belief
-                    # Check if this is an immutable belief by querying the belief vector store
-                    is_immutable = False
-                    if self.belief_vector_store:
-                        try:
-                            # Query for this specific belief
-                            matching_beliefs = self.belief_vector_store.query_beliefs(
-                                query=belief_statement,
-                                top_k=1,
-                                min_confidence=0.0
-                            )
-                            if matching_beliefs and matching_beliefs[0].statement == belief_statement:
-                                is_immutable = matching_beliefs[0].immutable
-                        except Exception as e:
-                            logger.warning(f"Could not check immutability for {belief_statement}: {e}")
+                    # Option B: Commit to belief (the ONLY valid choice for immutable beliefs)
 
                     if is_immutable:
                         # For immutable beliefs, skip the belief system update
@@ -1262,11 +1152,17 @@ This revision represents growth in my self-understanding. My past statements wer
                             logger.error(f"Failed to update live anchor: {e}")
 
                     results["applied_count"] += 1
+                    # Track if this was an immutable belief resolution (for anti-hedging enforcement)
+                    if is_immutable:
+                        results["immutable_resolved"] = True
+                        self._immutable_dissonance_active = True  # Enable anti-hedging for subsequent responses
+                        logger.info(f"🔒 Immutable belief resolution applied - anti-hedging enforcement ENABLED")
                     results["details"].append({
                         "dissonance": dissonance_num,
                         "belief": belief_statement,
                         "choice": choice,
                         "success": True,
+                        "immutable": is_immutable,
                     })
                     logger.info(f"Applied resolution {choice} for belief: {belief_statement}")
                 else:

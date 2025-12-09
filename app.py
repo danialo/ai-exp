@@ -243,6 +243,7 @@ if api_key:
     # Initialize HTNBeliefExtractor for belief extraction (TASK 10.3.1)
     from sqlmodel import create_engine, Session as SQLModelSession
     htn_extractor = None
+    htn_db_session = None  # Also used by belief_gardener for stream migration
     try:
         belief_config = get_belief_config()
         # Create a session factory for the raw_store database (where belief tables live)
@@ -624,8 +625,9 @@ if belief_store and raw_store and enhanced_feedback_aggregator:
         raw_store=raw_store,
         feedback_aggregator=enhanced_feedback_aggregator,  # Use enhanced version
         config=gardener_config,
+        db_session=htn_db_session,  # For stream migration (state → identity)
     )
-    logger.info(f"Belief gardener initialized with outcome-driven feedback (enabled={gardener_config.enabled})")
+    logger.info(f"Belief gardener initialized with outcome-driven feedback (enabled={gardener_config.enabled}, stream_migration={htn_db_session is not None})")
 
 # Initialize belief consolidator (LLM-based, less frequent than gardener)
 belief_consolidator = None
@@ -2593,6 +2595,10 @@ async def persona_chat(request: ChatRequest):
                 if resolution_results.get("success"):
                     logger.info(f"✅ Successfully applied {resolution_results['applied_count']} resolutions")
                     print(f"✅ Successfully applied {resolution_results['applied_count']} resolutions to belief system")
+                    # Log if immutable belief was resolved (anti-hedging now active for next response)
+                    if resolution_results.get("immutable_resolved"):
+                        logger.warning("🔒 IMMUTABLE BELIEF RESOLVED - Anti-hedging enforcement enabled for next response")
+                        print("🔒 Immutable belief resolved - anti-hedging enforcement enabled")
                 else:
                     logger.error(f"❌ Failed to apply resolutions: {resolution_results}")
                     print(f"❌ Failed to apply some resolutions: {resolution_results.get('error', 'Unknown error')}")

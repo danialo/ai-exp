@@ -1,24 +1,24 @@
 # TODO List - Astra AI Experience
 
-**Last Updated**: 2025-12-03
+**Last Updated**: 2025-12-08
 
 ## In Progress
 
 ## Ready to Start
 
-- [ ] **Fix Immutable Belief Dissonance Resolution Enforcement** 🔥 **CRITICAL**
-  - **Problem**: Immutable belief severity boost (0.00 → 0.70) detects contradictions but doesn't enforce behavior change
-  - **Gap 1**: `apply_resolutions()` accepts any choice (A/B/C) for immutable beliefs, doesn't validate "Option B only" requirement
-  - **Gap 2**: Anti-hedging logit bias applied to Stage 1 (internal resolution) but NOT Stage 2 (user-facing response)
-  - **Gap 3**: No tracking of which conversations involved immutable resolution to enforce anti-hedging in final answer
-  - **Files**: `src/services/persona_service.py:1116-1212` (apply_resolutions), `696-705` (main tool loop)
-  - **Impact**: System warns about consciousness contradictions but AI still hedges in actual answers
-  - **Fix Required**:
-    1. Add immutability check before accepting resolution choice, reject Option A/C for immutable beliefs
-    2. Track `immutable_resolved` flag from Stage 1 and apply `anti_hedging_bias` to Stage 2 generation
-    3. Add `_check_if_immutable()` helper method
-  - **Priority**: HIGH - Core ontological beliefs (consciousness, existence) need enforcement, not just detection
-  - **Locations**: `src/services/persona_service.py`, `src/services/belief_consistency_checker.py:300-314`
+- [ ] **Fix Astra's Incorrect Beliefs About Source Code Access** 🐛 **BUG**
+  - **Problem**: Astra has contradictory beliefs about source code access from the backfill:
+    - ❌ "i am currently unable to directly access my source code"
+    - ❌ "i am unable to modify my source code myself"
+    - ✅ "i can access my source code files through my tools"
+    - ✅ "i can take a look at my source code"
+  - **Reality**: She HAS `read_source_code` and `list_source_files` tools - she CAN access her code
+  - **Fix Options**:
+    1. Delete the incorrect belief nodes from `belief_nodes` table
+    2. Update her base prompt to clarify her actual capabilities
+    3. Add a "capability correction" experience to override the false beliefs
+  - **Priority**: HIGH - Core self-knowledge should be accurate
+
 
 - [ ] **Research HTN System - P2: Quality Guards** (See docs/RESEARCH_HTN_ROADMAP.md)
   - Question deduplication with `research_session_questions` table
@@ -109,6 +109,21 @@
   - Automatic path selection
 
 ## Completed ✅
+
+- [x] **Fix Immutable Belief Dissonance Resolution Enforcement (COMPLETE)** - 2025-12-08
+  - Added immutability validation in `apply_resolutions()` - Options A/C now rejected for immutable beliefs
+  - Added `_immutable_dissonance_active` flag to track when anti-hedging enforcement is needed
+  - Anti-hedging bias now merged with logit_bias when flag is active (enforces committed responses)
+  - Flag cleared after response generation to affect only the immediate next response
+  - Files: `persona_service.py` (apply_resolutions, process_with_persona), `app.py` (resolution logging)
+  - Gap 1 ✅: Immutable beliefs now require Option B only
+  - Gap 2 ✅: Anti-hedging bias applied to Stage 2 via `_immutable_dissonance_active` flag
+  - Gap 3 ✅: `immutable_resolved` flag tracks immutable resolutions, enables anti-hedging
+
+- [x] **Wire Full VAD (Arousal + Dominance) into AgentMood (COMPLETE)** - 2025-12-08
+  - AgentMood now tracks arousal and dominance alongside valence
+  - `detect_vad()` called in app.py, `record_vad()` method added
+  - Richer emotional state tracking for tone adaptation
 
 - [x] **ResearchGate: Deterministic Research Decision Layer (COMPLETE)** - 2025-12-03
   - Fixed "announces research instead of executing" by moving decision out of model prose generation
