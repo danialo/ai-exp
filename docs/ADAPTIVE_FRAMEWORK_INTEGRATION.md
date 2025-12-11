@@ -261,28 +261,28 @@ After integration, verify with:
 
 ### 1. Check Registry Status
 ```bash
-curl https://172.239.66.45:8000/api/persona/decisions/registry
+curl https://localhost:8000/api/persona/decisions/registry
 ```
 
 Expected: Decision types registered (belief_formation, belief_promotion, belief_deprecation)
 
 ### 2. Check Success Signals
 ```bash
-curl https://172.239.66.45:8000/api/persona/decisions/success_signals
+curl https://localhost:8000/api/persona/decisions/success_signals
 ```
 
 Expected: Baselines and targets from config
 
 ### 3. Check Abort Status
 ```bash
-curl https://172.239.66.45:8000/api/persona/decisions/abort_status
+curl https://localhost:8000/api/persona/decisions/abort_status
 ```
 
 Expected: Not aborted, thresholds shown
 
 ### 4. Monitor Decision History
 ```bash
-curl https://172.239.66.45:8000/api/persona/decisions/history?decision_id=belief_formation&limit=10
+curl https://localhost:8000/api/persona/decisions/history?decision_id=belief_formation&limit=10
 ```
 
 Expected: Decisions being recorded as beliefs form
@@ -311,7 +311,7 @@ Have conversations with repeated self-statements:
 ### 2. Check Decision Recording
 
 ```bash
-curl https://172.239.66.45:8000/api/persona/decisions/history?decision_id=belief_formation
+curl https://localhost:8000/api/persona/decisions/history?decision_id=belief_formation
 ```
 
 Should show recorded decisions with context.
@@ -323,7 +323,7 @@ After 24 hours (or adjust `older_than_hours`), the outcome task will evaluate de
 ### 4. Check Adaptations
 
 ```bash
-curl https://172.239.66.45:8000/api/persona/decisions/history?decision_id=belief_formation&evaluated_only=true
+curl https://localhost:8000/api/persona/decisions/history?decision_id=belief_formation&evaluated_only=true
 ```
 
 Should show evaluated decisions with success scores.

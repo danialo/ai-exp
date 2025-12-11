@@ -11,7 +11,7 @@ sys.path.insert(0, '/home/d/git/ai-exp')
 import requests
 import time
 
-API_BASE = "http://172.239.66.45:8000"
+API_BASE = "http://localhost:8000"
 
 print("🎭 Mood-Driven Response Test")
 print("=" * 70)

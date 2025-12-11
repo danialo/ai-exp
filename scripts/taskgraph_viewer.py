@@ -19,7 +19,7 @@ Endpoints:
   GET /v1/taskgraphs/{graph_id}/dot
 
 Run: python3 scripts/taskgraph_viewer.py
-View: http://172.239.66.45:8001/v1/taskgraphs/demo/ascii
+View: http://localhost:8001/v1/taskgraphs/demo/ascii
 """
 
 from fastapi import FastAPI, HTTPException
@@ -525,8 +525,8 @@ def get_dot(graph_id: str):
     return "\n".join(out)
 
 if __name__ == "__main__":
-    print("Starting TaskGraph viewer on http://172.239.66.45:8001")
-    print("  http://172.239.66.45:8001/v1/taskgraphs")
-    print("  http://172.239.66.45:8001/v1/taskgraphs/demo/ascii")
-    print("  http://172.239.66.45:8001/v1/taskgraphs/demo/dot")
+    print("Starting TaskGraph viewer on http://localhost:8001")
+    print("  http://localhost:8001/v1/taskgraphs")
+    print("  http://localhost:8001/v1/taskgraphs/demo/ascii")
+    print("  http://localhost:8001/v1/taskgraphs/demo/dot")
     uvicorn.run(app, host="0.0.0.0", port=8001)

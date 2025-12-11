@@ -9,7 +9,7 @@ Self-signed HTTPS is now configured for Astra.
 ./start_https.sh
 
 # Custom host/port
-./start_https.sh 172.239.66.45 8443
+./start_https.sh localhost 8443
 ```
 
 ## Test Connection
@@ -19,7 +19,7 @@ Self-signed HTTPS is now configured for Astra.
 curl -k https://localhost:8000/api/health
 
 # Remote (your server IP)
-curl -k https://172.239.66.45:8000/api/health
+curl -k https://localhost:8000/api/health
 ```
 
 **Note**: `-k` flag skips certificate verification (expected for self-signed certs)
@@ -29,7 +29,7 @@ curl -k https://172.239.66.45:8000/api/health
 Update adapter to use HTTPS:
 
 ```bash
-export ASTRA_API=https://172.239.66.45:8000
+export ASTRA_API=https://localhost:8000
 ```
 
 ## Full Documentation
@@ -44,4 +44,4 @@ See [docs/HTTPS_SETUP.md](docs/HTTPS_SETUP.md) for:
 
 - **Valid**: 1 year (Nov 5, 2025 - Nov 5, 2026)
 - **Location**: `certs/cert.pem` (public), `certs/key.pem` (private)
-- **CN**: 172.239.66.45
+- **CN**: localhost

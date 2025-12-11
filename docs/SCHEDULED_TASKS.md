@@ -65,7 +65,7 @@ Manually trigger a task execution (regardless of schedule).
 
 Example:
 ```bash
-curl -X POST http://172.239.66.45:8000/api/tasks/daily_reflection/execute
+curl -X POST http://localhost:8000/api/tasks/daily_reflection/execute
 ```
 
 ### Get Due Tasks
@@ -169,7 +169,7 @@ To automate task execution, you can:
 1. **Use cron to call the API**:
 ```bash
 # Run due tasks every hour
-0 * * * * curl -X POST http://172.239.66.45:8000/api/tasks/execute-due
+0 * * * * curl -X POST http://localhost:8000/api/tasks/execute-due
 ```
 
 2. **Background worker** (future enhancement):
@@ -184,7 +184,7 @@ To automate task execution, you can:
 
 ### Create a custom weekly planning task:
 ```bash
-curl -X POST http://172.239.66.45:8000/api/tasks \
+curl -X POST http://localhost:8000/api/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "id": "weekly_planning",
@@ -198,12 +198,12 @@ curl -X POST http://172.239.66.45:8000/api/tasks \
 
 ### Manually trigger a reflection:
 ```bash
-curl -X POST http://172.239.66.45:8000/api/tasks/daily_reflection/execute
+curl -X POST http://localhost:8000/api/tasks/daily_reflection/execute
 ```
 
 ### Check execution history:
 ```bash
-curl http://172.239.66.45:8000/api/tasks/daily_reflection/results?limit=5
+curl http://localhost:8000/api/tasks/daily_reflection/results?limit=5
 ```
 
 ## Future Enhancements

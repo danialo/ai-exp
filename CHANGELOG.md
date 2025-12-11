@@ -91,7 +91,7 @@ All notable changes to the AI Experience Memory System MVP.
 - 11 experiences stored
 - 22 vectors indexed
 - LLM enabled (gpt-3.5-turbo)
-- Server running at http://172.239.66.45:8000
+- Server running at http://localhost:8000
 
 ### Next Steps (Future Roadmap)
 

@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./start_https.sh                    # Default: 0.0.0.0:8000
-#   ./start_https.sh 172.239.66.45 8443 # Custom host and port
+#   ./start_https.sh 0.0.0.0 8443       # Custom host and port
 
 HOST=${1:-0.0.0.0}
 PORT=${2:-8000}

@@ -19,6 +19,10 @@ class Settings:
     # Project root directory
     PROJECT_ROOT = Path(__file__).parent.parent
 
+    # Server configuration
+    ASTRA_HOST: str = os.getenv("ASTRA_HOST", "0.0.0.0")
+    ASTRA_PORT: int = int(os.getenv("ASTRA_PORT", "8000"))
+
     # Database paths
     RAW_STORE_DB_PATH: str = os.getenv(
         "RAW_STORE_DB_PATH",

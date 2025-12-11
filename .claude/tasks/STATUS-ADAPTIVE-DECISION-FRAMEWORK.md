@@ -253,19 +253,19 @@ promoted = manager.consider_promotion(belief_id, evidence_count=7)
 
 ```bash
 # View decision registry
-curl https://172.239.66.45:8000/api/persona/decisions/registry
+curl https://localhost:8000/api/persona/decisions/registry
 
 # Get decision history for belief promotion
-curl https://172.239.66.45:8000/api/persona/decisions/history?decision_id=belief_promotion&limit=10
+curl https://localhost:8000/api/persona/decisions/history?decision_id=belief_promotion&limit=10
 
 # Get current parameters
-curl https://172.239.66.45:8000/api/persona/decisions/parameters?decision_id=belief_promotion
+curl https://localhost:8000/api/persona/decisions/parameters?decision_id=belief_promotion
 
 # Check abort status
-curl https://172.239.66.45:8000/api/persona/decisions/abort_status
+curl https://localhost:8000/api/persona/decisions/abort_status
 
 # View success signals
-curl https://172.239.66.45:8000/api/persona/decisions/success_signals
+curl https://localhost:8000/api/persona/decisions/success_signals
 ```
 
 ## Files Created

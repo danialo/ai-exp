@@ -347,7 +347,7 @@ Tool calls count: 1
   - tests/generated/feature_a163f1fa.py (placeholder fallback)
   - tests/generated/test_a163f1fa.py (LLM-generated test code)
 
-INFO: 172.239.66.45:56850 - "POST /api/persona/chat HTTP/1.1" 200 OK
+INFO: localhost:56850 - "POST /api/persona/chat HTTP/1.1" 200 OK
 ```
 
 **Verified Working:**

@@ -10,7 +10,7 @@ The Adaptive Decision Framework has been successfully deployed and tested end-to
 
 ## Test Environment
 
-- **Server**: 172.239.66.45:8000
+- **Server**: localhost:8000
 - **Branch**: feature/adaptive-decision-framework
 - **Configuration**: DECISION_FRAMEWORK_ENABLED=true
 - **Baselines**: coherence=0.70, dissonance=0.20, satisfaction=0.60

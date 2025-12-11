@@ -921,7 +921,7 @@ cp .env.example .env
 python app.py
 
 # Production (HTTPS)
-./start_https.sh 172.239.66.45 8443
+./start_https.sh localhost 8443
 
 # Default (0.0.0.0:8000)
 ./start_https.sh
@@ -931,13 +931,13 @@ python app.py
 
 ```bash
 # Basic health
-curl https://172.239.66.45:8443/api/health
+curl https://localhost:8443/api/health
 
 # Persona info
-curl https://172.239.66.45:8443/api/persona/info
+curl https://localhost:8443/api/persona/info
 
 # Beliefs status
-curl https://172.239.66.45:8443/api/persona/beliefs | jq
+curl https://localhost:8443/api/persona/beliefs | jq
 ```
 
 ### 11.5 Maintenance

@@ -20,7 +20,7 @@ certs/
 ./start_https.sh
 
 # Custom host and port
-./start_https.sh 172.239.66.45 8443
+./start_https.sh localhost 8443
 
 # Or manually with uvicorn
 uvicorn app:app --host 0.0.0.0 --port 8000 \
@@ -34,12 +34,12 @@ uvicorn app:app --host 0.0.0.0 --port 8000 \
 # From the server itself
 curl -k https://localhost:8000/api/health
 
-# From remote (your IP: 172.239.66.45)
-curl -k https://172.239.66.45:8000/api/health
+# From remote (your IP: localhost)
+curl -k https://localhost:8000/api/health
 
 # In Python (requests)
 import requests
-requests.get('https://172.239.66.45:8000/api/health', verify=False)
+requests.get('https://localhost:8000/api/health', verify=False)
 ```
 
 **Note**: `-k` flag (curl) or `verify=False` (requests) skips certificate verification since it's self-signed.
@@ -63,7 +63,7 @@ Update MCP adapter to use HTTPS:
 ```python
 # mcp_sidecar/adapters/astra_ro.py
 class AstraRO:
-    def __init__(self, base="https://172.239.66.45:8000", timeout=2.0):
+    def __init__(self, base="https://localhost:8000", timeout=2.0):
         self.client = httpx.Client(
             base_url=base,
             timeout=timeout,
@@ -73,7 +73,7 @@ class AstraRO:
 
 Or set environment variable:
 ```bash
-export ASTRA_API=https://172.239.66.45:8000
+export ASTRA_API=https://localhost:8000
 ```
 
 ## Upgrading to Production (Let's Encrypt)
@@ -81,7 +81,7 @@ export ASTRA_API=https://172.239.66.45:8000
 When ready for production with your domain:
 
 ### Prerequisites
-- Domain name pointing to 172.239.66.45
+- Domain name pointing to localhost
 - Port 80 open (for Let's Encrypt validation)
 - Port 443 open (for HTTPS)
 
@@ -189,7 +189,7 @@ sudo systemctl restart nginx
 # Regenerate (self-signed)
 openssl req -x509 -newkey rsa:4096 -nodes \
     -out certs/cert.pem -keyout certs/key.pem -days 365 \
-    -subj "/C=US/ST=State/L=City/O=Astra/OU=Dev/CN=172.239.66.45"
+    -subj "/C=US/ST=State/L=City/O=Astra/OU=Dev/CN=localhost"
 
 # Renew (Let's Encrypt)
 sudo certbot renew
@@ -220,13 +220,13 @@ sudo certbot renew
 
 ```bash
 # Test HTTPS endpoint
-curl -k https://172.239.66.45:8000/api/health
+curl -k https://localhost:8000/api/health
 
 # Test SSL/TLS handshake
-openssl s_client -connect 172.239.66.45:8000 -showcerts
+openssl s_client -connect localhost:8000 -showcerts
 
 # Test from Python
-python -c "import requests; print(requests.get('https://172.239.66.45:8000/api/health', verify=False).json())"
+python -c "import requests; print(requests.get('https://localhost:8000/api/health', verify=False).json())"
 ```
 
 ## Environment Variables
@@ -235,8 +235,8 @@ Update `.env` for HTTPS:
 
 ```bash
 # Use HTTPS URLs
-ASTRA_API=https://172.239.66.45:8000
+ASTRA_API=https://localhost:8000
 
 # For MCP sidecar
-export ASTRA_API=https://172.239.66.45:8000
+export ASTRA_API=https://localhost:8000
 ```

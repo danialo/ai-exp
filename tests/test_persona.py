@@ -6,7 +6,7 @@ import json
 import sys
 
 
-def test_persona(base_url="http://172.239.66.45:8000"):
+def test_persona(base_url="http://localhost:8000"):
     """Test the persona chat endpoint."""
 
     print("🧪 Testing Persona System\n")

@@ -39,7 +39,7 @@ created_goal = goal_store.create_goal(goal)
 
 ```bash
 # Create a goal
-curl -X POST https://172.239.66.45:8443/v1/goals \
+curl -X POST https://localhost:8443/v1/goals \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: unique-key-123" \
   -d '{
@@ -56,17 +56,17 @@ curl -X POST https://172.239.66.45:8443/v1/goals \
   }'
 
 # List goals
-curl https://172.239.66.45:8443/v1/goals
+curl https://localhost:8443/v1/goals
 
 # Get prioritized goals
-curl https://172.239.66.45:8443/v1/goals/prioritized?state=proposed&limit=10
+curl https://localhost:8443/v1/goals/prioritized?state=proposed&limit=10
 
 # Adopt a goal (safety checked against beliefs)
-curl -X POST https://172.239.66.45:8443/v1/goals/{goal_id}/adopt \
+curl -X POST https://localhost:8443/v1/goals/{goal_id}/adopt \
   -H "Idempotency-Key: adopt-key-456"
 
 # Abandon a goal
-curl -X POST https://172.239.66.45:8443/v1/goals/{goal_id}/abandon \
+curl -X POST https://localhost:8443/v1/goals/{goal_id}/abandon \
   -H "Idempotency-Key: abandon-key-789"
 ```
 

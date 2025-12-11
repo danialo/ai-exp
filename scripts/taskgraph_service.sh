@@ -32,7 +32,7 @@ start() {
     if ps -p "$PID" > /dev/null 2>&1; then
         echo "✓ Started (PID: $PID)"
         echo "  Logs: $LOG_FILE"
-        echo "  API: http://172.239.66.45:8001"
+        echo "  API: http://localhost:8001"
         return 0
     else
         echo "✗ Failed to start. Check logs: $LOG_FILE"
@@ -84,7 +84,7 @@ status() {
     PID=$(cat "$PID_FILE")
     if ps -p "$PID" > /dev/null 2>&1; then
         echo "Status: RUNNING (PID: $PID)"
-        echo "  API: http://172.239.66.45:8001"
+        echo "  API: http://localhost:8001"
         echo "  Logs: $LOG_FILE"
 
         # Show recent log lines

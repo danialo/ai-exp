@@ -87,7 +87,7 @@ uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 
 ### 2. Check Trust Status Endpoint
 ```bash
-curl http://172.239.66.45:8000/api/persona/trust/status | python3 -m json.tool
+curl http://localhost:8000/api/persona/trust/status | python3 -m json.tool
 ```
 
 Expected response:
@@ -129,7 +129,7 @@ Expected response:
 
 ### 3. Check Belief Gardener Status
 ```bash
-curl http://172.239.66.45:8000/api/persona/gardener/status | python3 -m json.tool
+curl http://localhost:8000/api/persona/gardener/status | python3 -m json.tool
 ```
 
 Should include `"feedback"` section with enhanced aggregator telemetry.

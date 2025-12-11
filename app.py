@@ -4247,7 +4247,7 @@ if __name__ == "__main__":
     print("🚀 Starting AI Experience Memory web interface...")
     print(f"📊 Stats: {raw_store.count_experiences()} experiences, {vector_store.count()} vectors")
     print(f"🤖 LLM: {settings.LLM_MODEL if llm_service else 'Not configured'}")
-    print(f"🌐 Server: http://172.239.66.45:8000")
+    print(f"🌐 Server: http://{settings.ASTRA_HOST}:{settings.ASTRA_PORT}")
     print()
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=settings.ASTRA_HOST, port=settings.ASTRA_PORT)

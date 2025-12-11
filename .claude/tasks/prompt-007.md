@@ -402,7 +402,7 @@ After implementation, verify with these commands:
 
 **1. Run one scheduled task:**
 ```bash
-curl -s -X POST http://172.239.66.45:8000/api/tasks/run \
+curl -s -X POST http://localhost:8000/api/tasks/run \
   -H 'Content-Type: application/json' \
   -d '{"task_id":"daily_reflection","mode":"scheduled"}' >/dev/null
 ```

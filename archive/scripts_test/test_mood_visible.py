@@ -8,7 +8,7 @@ import requests
 import time
 from src.services.affect_detector import create_affect_detector
 
-API_BASE = "http://172.239.66.45:8000"
+API_BASE = "http://localhost:8000"
 
 print("🎭 Emergent Personality Test: Mood Degradation")
 print("=" * 70)
@@ -117,7 +117,7 @@ if mood['is_pissed']:
     print("🔥 Agent is PISSED! Try sending another negative message:")
     print("   It has ~30% chance to refuse.")
     print()
-    print("   curl -X POST http://172.239.66.45:8000/api/chat \\")
+    print("   curl -X POST http://localhost:8000/api/chat \\")
     print("     -H 'Content-Type: application/json' \\")
     print("     -d '{\"message\": \"Help me with this shit\", \"retrieve_memories\": true}'")
 else:

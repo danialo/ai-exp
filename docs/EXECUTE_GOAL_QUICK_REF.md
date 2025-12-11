@@ -6,7 +6,7 @@
 
 ### ✅ CORRECT: `/api/persona/chat`
 ```bash
-curl -k -X POST https://172.239.66.45:8443/api/persona/chat \
+curl -k -X POST https://localhost:8443/api/persona/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"Use execute_goal to create a calculator","retrieve_memories":false}'
 ```
@@ -21,7 +21,7 @@ curl -k -X POST https://172.239.66.45:8443/api/persona/chat \
 ### ❌ WRONG: `/api/chat`
 ```bash
 # DO NOT USE THIS ENDPOINT FOR TOOLS
-curl -k -X POST https://172.239.66.45:8443/api/chat ...
+curl -k -X POST https://localhost:8443/api/chat ...
 ```
 
 **Limitations:**
@@ -33,7 +33,7 @@ curl -k -X POST https://172.239.66.45:8443/api/chat ...
 
 ### 1. Simple Request
 ```bash
-curl -k -X POST https://172.239.66.45:8443/api/persona/chat \
+curl -k -X POST https://localhost:8443/api/persona/chat \
   -H "Content-Type: application/json" \
   -d '{
     "message": "Use execute_goal to create a simple calculator function",
@@ -69,7 +69,7 @@ Tool calls count: 1
 🤖 AGENT ACTION: execute_goal(goal_text=implement_feature, timeout_ms=120000)
    ✓ Result: 🎯 Goal Execution Complete
 
-INFO: 172.239.66.45:XXXXX - "POST /api/persona/chat HTTP/1.1" 200 OK
+INFO: localhost:XXXXX - "POST /api/persona/chat HTTP/1.1" 200 OK
 ```
 
 ### ❌ Wrong Endpoint Pattern

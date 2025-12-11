@@ -127,7 +127,7 @@ goal = GoalDefinition(
 **Step 3: User Approves Goal**
 ```bash
 # User reviews and approves
-curl -X POST http://172.239.66.45/api/v1/goals/goal_8f2e4a9c/approve
+curl -X POST http://localhost/api/v1/goals/goal_8f2e4a9c/approve
 ```
 
 **Step 4: HTN Planner Decomposes Goal**
@@ -233,7 +233,7 @@ git checkout astra/goal-8f2e4a9c-a3b7f2
 git diff main
 
 # Approve (future API endpoint)
-curl -X POST http://172.239.66.45/api/v1/modifications/mod_a3b7f2/approve
+curl -X POST http://localhost/api/v1/modifications/mod_a3b7f2/approve
 ```
 
 **Step 7: Merge to Main**

@@ -4,7 +4,7 @@ TaskGraph Query SDK - Python client for TaskGraph API.
 Usage:
     from taskgraph_client import TaskGraphClient
 
-    client = TaskGraphClient("http://172.239.66.45:8001")
+    client = TaskGraphClient("http://localhost:8001")
 
     # List graphs
     graphs = client.list_graphs()
@@ -142,7 +142,7 @@ class TaskGraphClient:
 
 if __name__ == "__main__":
     # Example usage
-    client = TaskGraphClient("http://172.239.66.45:8001")
+    client = TaskGraphClient("http://localhost:8001")
 
     print("=== Health Check ===")
     print(client.healthz())

@@ -73,7 +73,7 @@ Python SDK for consuming the API.
 ```python
 from taskgraph_client import TaskGraphClient
 
-client = TaskGraphClient("http://172.239.66.45:8001")
+client = TaskGraphClient("http://localhost:8001")
 
 # Query graphs
 graphs = client.list_graphs()
@@ -131,22 +131,22 @@ python app.py
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-**Endpoints available at:** `http://172.239.66.45:8000/api/v1/taskgraphs/`
+**Endpoints available at:** `http://localhost:8000/api/v1/taskgraphs/`
 
 ## Querying Graphs
 
 ```bash
 # List all graphs
-curl http://172.239.66.45:8000/api/v1/taskgraphs
+curl http://localhost:8000/api/v1/taskgraphs
 
 # View ASCII graph
-curl http://172.239.66.45:8000/api/v1/taskgraphs/{graph_id}/ascii
+curl http://localhost:8000/api/v1/taskgraphs/{graph_id}/ascii
 
 # Get stats
-curl http://172.239.66.45:8000/api/v1/taskgraphs/{graph_id}/stats | jq
+curl http://localhost:8000/api/v1/taskgraphs/{graph_id}/stats | jq
 
 # View ready queue
-curl http://172.239.66.45:8000/api/v1/taskgraphs/{graph_id}/ready | jq
+curl http://localhost:8000/api/v1/taskgraphs/{graph_id}/ready | jq
 ```
 
 ## Example Responses
@@ -334,8 +334,8 @@ python3 -m pytest tests/test_taskgraph_query_api.py -v
 python app.py
 
 # Query API
-curl http://172.239.66.45:8000/api/v1/taskgraphs
-curl http://172.239.66.45:8000/api/v1/taskgraphs/{graph_id}/ascii
+curl http://localhost:8000/api/v1/taskgraphs
+curl http://localhost:8000/api/v1/taskgraphs/{graph_id}/ascii
 ```
 
 ## Summary

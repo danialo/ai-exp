@@ -347,7 +347,7 @@ tail -1 data/identity_ledger.ndjson | jq
 
 ```bash
 # List proposed system goals
-curl https://172.239.66.45/api/v1/goals?state=proposed&source=system
+curl https://localhost/api/v1/goals?state=proposed&source=system
 
 # Response:
 [
@@ -367,7 +367,7 @@ curl https://172.239.66.45/api/v1/goals?state=proposed&source=system
 ]
 
 # Approve the goal
-curl -X POST https://172.239.66.45/api/v1/goals/goal_8f2e4a9c/approve
+curl -X POST https://localhost/api/v1/goals/goal_8f2e4a9c/approve
 
 # Goal state changes: proposed → active
 ```
