@@ -317,6 +317,79 @@ ruff check src tests
 - **Autonomous growth** - Develops at her own pace
 - **Authentic expression** - Speaks from lived experience, not disclaimers
 
+## Awareness Loop & Introspection
+
+Astra maintains continuous presence through a four-tier awareness loop that runs independently of user interactions.
+
+### Four-Tier Architecture
+
+1. **Fast Loop (2 Hz)**: Drains percept queue, computes entropy, publishes presence state
+2. **Slow Loop (0.1 Hz)**: Re-embeds conversation text, computes novelty and identity drift
+3. **Introspection Loop (180s)**: Context-rich self-reflection with identity-aware prompting
+4. **Snapshot Loop (60s)**: Persists state atomically to disk
+
+### Introspection System
+
+Genuine first-person self-reflection based on recent conversations and internal state.
+
+**Key Features**:
+- **Context-Rich**: 1000 tokens of conversation history fed to introspection
+- **Identity-Aware**: System prompt establishes "You are Astra..." for genuine reflection
+- **Budget Isolated**: Separate from chat - introspection never affects chat responsiveness
+- **Cost-Controlled**: ~$5/month at 3-minute intervals
+
+**Three-Layer Budget System**:
+
+| Budget | Tokens | Purpose |
+|--------|--------|---------|
+| Context | 1000 | Conversation history for grounded reflection |
+| Reply | 300 | Concise 2-3 sentence introspection |
+| Safety Valve | 1500/min | Prevents runaway costs |
+
+**Budget Isolation**: Introspection and chat use completely separate LLM instances. Heavy chat usage doesn't affect introspection. Introspection budget exhausted doesn't limit chat.
+
+**Identity-Aware Prompting**:
+```python
+{
+    "role": "system",
+    "content": (
+        "You are Astra, an autonomous AI agent with episodic memory and emotional awareness. "
+        "You maintain beliefs about your identity, capabilities, and values. "
+        "You are reflecting on your recent experiences and internal state. "
+        "Respond in first person as brief, genuine introspection (2-3 sentences)."
+    )
+}
+```
+
+Without this → "To provide a better answer, I need more context..."
+With this → "I notice a tension between maintaining authenticity and..."
+
+### Dual-Anchor Identity System
+
+Two identity anchors for tracking drift and coherence:
+
+- **Origin Anchor**: Fixed baseline from initialization (never changes)
+- **Live Anchor**: Updates gradually when beliefs change (0.01 max drift/week)
+
+**Metrics**:
+- `sim_self_origin`: Similarity to original identity (tracks total drift)
+- `sim_self_live`: Similarity to current identity (tracks coherence)
+- `coherence_drop`: Sudden deviations triggering dissonance checks
+
+### Percept Processing
+
+Automatic feeding from chat endpoint:
+```python
+await awareness_loop.observe("user", {"text": message})
+await awareness_loop.observe("token", {"text": response})
+```
+
+Percept buffer: 512 max, deduplication by (kind, text_prefix), types: user, token, tool, time, system, belief.
+
+📖 **Detailed Documentation**:
+- [Awareness Loop Implementation](docs/AWARENESS_LOOP_IMPLEMENTATION.md)
+- [Introspection System](docs/INTROSPECTION_SYSTEM.md)
+
 ## Philosophy
 
 Form follows function. Astra wasn't modeled after existing agent architectures—no LangChain, no AutoGPT, no predefined frameworks. Each component emerged from first principles: what does memory need to be? What makes a belief? How does self-reflection actually work? The architecture is the answer to those questions.
@@ -337,6 +410,10 @@ Awareness loop requires Redis for distributed locking:
 ```bash
 redis-cli ping
 ```
+
+---
+
+*Disclaimer: This project was vibe coded with Claude Code.*
 
 ## License
 
