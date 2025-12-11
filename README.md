@@ -595,7 +595,7 @@ Only one process should write to the database at a time. Stop the web server bef
 
 ## Development Methodology
 
-This project is purely vibe coded using [Claude Code](https://claude.ai/claude-code). The architecture emerged through iterative conversation-driven development, prioritizing working systems over formal specifications.
+Built from first principles using a bottom-up approach. The architecture prioritizes working systems that emerge from foundational concepts—memory, belief formation, self-reflection—rather than top-down specifications.
 
 ## Contributing
 
