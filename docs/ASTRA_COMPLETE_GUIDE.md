@@ -130,7 +130,7 @@ The anti-metatalk system uses logit bias to suppress hedging tokens and can auto
 │  │                            └────────────────────────────────┘   │  │
 │  │  ┌────────────────────┐    ┌────────────────────────────────┐   │  │
 │  │  │ AWARENESS LOOP     │    │ EMOTIONAL RECONCILER           │   │  │
-│  │  │ • Fast Tick (10Hz) │    │ • VAD Detection                │   │  │
+│  │  │ • Fast Tick (2Hz)  │    │ • VAD Detection                │   │  │
 │  │  │ • Slow Tick (0.1Hz)│    │ • Internal Assessment          │   │  │
 │  │  │ • Introspection    │    │ • External Assessment          │   │  │
 │  │  │ • Identity Anchors │    │ • Reconciled State             │   │  │
@@ -435,11 +435,11 @@ challenge = contrarian_sampler.generate_challenge(belief_id="belief_123")
 
 ### 5.1 The Awareness Loop
 
-A continuous monitoring system tracking Astra's state:
+A continuous Redis-backed monitoring system tracking Astra's state:
 
 **Tick Rates:**
-- Fast loop: 10 Hz (every 100ms) - percept processing
-- Slow loop: 0.1 Hz (every 10s) - metric computation
+- Fast loop: 2 Hz (every 500ms) - signal collection, focus stack updates, state publishing
+- Slow loop: 0.1 Hz (every 10s) - re-embedding, novelty/similarity computation, introspection triggers
 
 **Tracked Metrics:**
 - `sim_self_live` - Similarity to current self-concept (-1 to 1)
@@ -862,7 +862,7 @@ BELIEF_GARDENER_DAILY_BUDGET_PROMOTIONS=100
 
 ```bash
 AWARENESS_ENABLED=true
-AWARENESS_TICK_RATE_FAST=10.0
+AWARENESS_TICK_RATE_FAST=2.0
 AWARENESS_TICK_RATE_SLOW=0.1
 AWARENESS_INTROSPECTION_INTERVAL=180
 AWARENESS_SNAPSHOT_INTERVAL=60

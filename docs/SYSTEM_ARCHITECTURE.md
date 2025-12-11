@@ -109,8 +109,8 @@ MAX_CONFIDENCE_STEP = 0.15
 #### A. `awareness_loop.py` - Real-time Self-Concept Tracking
 **Purpose:** Continuous monitoring of conversation and self-concept alignment
 **Tick Rates:**
-- Fast loop: 10 Hz (every 100ms)
-- Slow loop: 0.1 Hz (every 10s)
+- Fast loop: 2 Hz (every 500ms) - signal collection, focus stack, state publishing
+- Slow loop: 0.1 Hz (every 10s) - re-embedding, novelty/similarity, introspection
 
 **Key Metrics:**
 - `sim_self_live`: Similarity to current self-concept (-1 to 1)
@@ -395,7 +395,7 @@ python scripts/backfill_task_executions.py            # Execute
 ### Awareness Loop Tick Cycle
 
 ```
-FAST LOOP (10 Hz):
+FAST LOOP (2 Hz):
 ┌─────────────┐
 │Drain Queue  │ ◄── user/token/time percepts
 └──────┬──────┘
@@ -457,7 +457,7 @@ SLOW LOOP (0.1 Hz):
 ```python
 # Awareness Loop
 AWARENESS_ENABLED = True
-AWARENESS_TICK_RATE_FAST = 10.0  # Hz
+AWARENESS_TICK_RATE_FAST = 2.0   # Hz
 AWARENESS_TICK_RATE_SLOW = 0.1   # Hz
 AWARENESS_BUFFER_SIZE = 512
 AWARENESS_INTROSPECTION_BUDGET_PER_MIN = 2

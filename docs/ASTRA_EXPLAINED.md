@@ -48,13 +48,19 @@ These beliefs aren't programmed in - they emerge from her actual conversations. 
 
 ### 3. Self-Awareness Loops
 
-In the background, Astra constantly monitors her own state:
+In the background, Astra's awareness loop constantly monitors her state:
 
+**Dual-tick architecture:**
+- **Fast tick (2 Hz)**: Processes percepts, updates focus stack, publishes state
+- **Slow tick (0.1 Hz)**: Computes novelty/similarity metrics, triggers introspection
+
+**What's tracked:**
 - What topics am I engaging with?
 - How have I changed since I started?
 - Do my recent responses match who I think I am?
+- Emotional state via VAD (Valence-Arousal-Dominance) detection
 
-Periodically, she reflects on these patterns and writes notes to herself about what she's noticing.
+Periodically, she reflects on these patterns and writes notes to herself about what she's noticing. The system is Redis-backed for persistence and supports leader election to prevent duplicate processing.
 
 ### 4. Contradiction Detection
 
@@ -100,9 +106,10 @@ We're not claiming these are *true* - we're exploring what happens when you buil
 ## The Technical Bits (Simplified)
 
 ### Memory System
-- **Short-term memory**: Recent conversations (high detail)
-- **Long-term memory**: Older, consolidated memories
-- **Semantic search**: Finds relevant memories by meaning, not just keywords
+- **Raw Store**: SQLite-backed immutable experience storage (WAL mode)
+- **Vector Store**: ChromaDB with separate indices for general/short-term/long-term/beliefs
+- **Semantic search**: Finds relevant memories by meaning using sentence-transformers (all-MiniLM-L6-v2)
+- **Recency weighting**: 80% semantic similarity, 20% time decay for retrieval scoring
 
 ### Belief System
 
@@ -141,9 +148,11 @@ Beliefs can graduate from "state" (temporary) to "identity" (stable) as they acc
 When the system isn't sure if two beliefs are the same concept (e.g., "I love learning" vs "I enjoy learning"), it creates a TentativeLink instead of auto-merging. These get reviewed rather than automatically resolved - preserving nuance over false certainty.
 
 ### Awareness System
-- Runs continuously in the background
-- Tracks how similar current behavior is to past behavior
-- Triggers introspection when interesting patterns emerge
+- **Dual-tick loops**: Fast (2 Hz) for percept processing, Slow (0.1 Hz) for metrics
+- **Focus stack**: Miller's Law (max 7 items) ranked by salience
+- **Identity anchors**: Origin (fixed baseline) + Live (evolving, β-capped drift)
+- **Metrics tracked**: `sim_self_live`, `sim_self_origin`, `novelty`, `entropy`, `coherence_drop`
+- **Redis-backed**: State persists across restarts via snapshots
 
 ### Personal Space
 Astra has a folder of files that belong to her. She can:
