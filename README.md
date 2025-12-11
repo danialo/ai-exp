@@ -317,6 +317,10 @@ ruff check src tests
 - **Autonomous growth** - Develops at her own pace
 - **Authentic expression** - Speaks from lived experience, not disclaimers
 
+## Philosophy
+
+Form follows function. Astra wasn't modeled after existing agent architectures—no LangChain, no AutoGPT, no predefined frameworks. Each component emerged from first principles: what does memory need to be? What makes a belief? How does self-reflection actually work? The architecture is the answer to those questions.
+
 ## Troubleshooting
 
 ### Vector store errors
