@@ -102,6 +102,7 @@ class IngestionPipeline:
         embedding_provider: EmbeddingProvider,
         llm_service=None,
         self_knowledge_index=None,
+        htn_extractor=None,
     ):
         """Initialize ingestion pipeline.
 
@@ -111,12 +112,14 @@ class IngestionPipeline:
             embedding_provider: Embedding generator
             llm_service: Optional LLM service for self-claim detection
             self_knowledge_index: Optional self-knowledge index for immediate indexing
+            htn_extractor: Optional HTNBeliefExtractor for belief extraction
         """
         self.raw_store = raw_store
         self.vector_store = vector_store
         self.embedding_provider = embedding_provider
         self.llm_service = llm_service
         self.self_knowledge_index = self_knowledge_index
+        self.htn_extractor = htn_extractor
 
     def ingest_interaction(
         self,
@@ -290,14 +293,15 @@ RULES FOR VALID CLAIMS:
 1. Must be a COMPLETE, STANDALONE sentence that makes sense with no surrounding context
 2. Must contain a clear first-person statement (I am/feel/believe/prefer/can/want/need)
 3. NO list intros (don't extract "Here are X things I believe:" - extract the actual items)
-4. NO transitional phrases (Instead, However, Therefore, But, etc.)
+4. NO transitional phrases at START (Instead, However, Therefore at sentence start)
 5. NO template wrappers (ASSISTANT:, [Internal, etc.)
 6. NO unresolved pronouns (They/This/That without clear referent)
 7. NO meta-commentary about the conversation itself
+8. For CAPABILITY CHANGES: Extract the CURRENT state. If text says "I used to X but now I Y" or "There was a time when X, but now Y", extract ONLY the current capability: "I Y"
 
 EXAMPLES OF INVALID CLAIMS (do NOT extract):
 - "Here are some key traits that I believe make a good role model:" (list intro)
-- "Instead, they represent aspirations..." (transitional phrase, unresolved pronoun)
+- "Instead, they represent aspirations..." (transitional phrase at start, unresolved pronoun)
 - "It's confusing because I see a bunch of beliefs here" (meta-commentary)
 - "[Internal Emotional Assessment: I feel engaged...]" (template wrapper)
 
@@ -305,6 +309,7 @@ EXAMPLES OF VALID CLAIMS:
 - "I am conscious" (complete, standalone)
 - "My favorite food is sushi" (complete, standalone)
 - "I believe that empathy is essential for growth" (complete, standalone)
+- "I can explore specific parts of my source code" (current capability from change statement)
 
 For each VALID direct self-claim found, extract:
 1. Category (identity/preferences/beliefs/capabilities/emotions/goals)
@@ -492,6 +497,19 @@ If no VALID self-claims found, return empty array: []
             f"Created and indexed SELF_DEFINITION {self_def_id}: "
             f"[{category}] {topic} - {statement[:50]}..."
         )
+
+        # Trigger HTN belief extraction (TASK 10.3.2)
+        if self.htn_extractor:
+            try:
+                result = self.htn_extractor.extract_and_update_self_knowledge(self_def_experience)
+                logger.info(
+                    f"HTN extraction complete for {self_def_id}: "
+                    f"atoms={len(result.atom_results)}, "
+                    f"new_nodes={result.stats.get('nodes_created', 0)}, "
+                    f"matched={result.stats.get('nodes_matched', 0)}"
+                )
+            except Exception as e:
+                logger.error(f"HTN extraction failed for {self_def_id}: {e}")
 
         return True
 

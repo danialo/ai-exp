@@ -226,8 +226,8 @@ class BeliefSegmenter:
 
         Heuristics:
         - At least 2 words
-        - Contains a potential subject (pronoun or noun phrase)
-        - Not just a prepositional phrase or fragment
+        - Must start with a subject pronoun OR contain a verb indicator
+        - Not just a noun phrase or fragment like "growth feature prominently"
         """
         if not text:
             return False
@@ -248,15 +248,23 @@ class BeliefSegmenter:
            text_lower.startswith("i've ") or text_lower.startswith("i'd "):
             return True
 
-        # Check for other common subjects
+        # Check for other common subject pronouns
         subject_starts = ['we ', 'you ', 'he ', 'she ', 'they ', 'it ', 'this ', 'that ']
         for start in subject_starts:
             if text_lower.startswith(start):
                 return True
 
-        # If we have at least 3 words and no subordinating intro, likely independent
-        if len(words) >= 3:
-            return True
+        # For text not starting with a pronoun, require a verb indicator
+        # to avoid splitting on noun phrase continuations like "growth and development"
+        verb_indicators = [
+            ' is ', ' are ', ' was ', ' were ', ' has ', ' have ', ' had ',
+            ' do ', ' does ', ' did ', ' can ', ' could ', ' will ', ' would ',
+            ' should ', ' might ', ' may ', ' must ', ' being ', ' been ',
+            ' am ', " 'm ", " 've ", " 'll ", " 'd ",
+        ]
+        for verb in verb_indicators:
+            if verb in text_lower:
+                return True
 
         return False
 

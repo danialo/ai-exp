@@ -20,7 +20,11 @@ from src.utils.belief_config import BeliefSystemConfig, load_belief_config
 
 
 # Increment this when making breaking changes to extraction logic
-EXTRACTOR_CODE_VERSION = "1.0.0"
+# 1.0.0 - Initial version
+# 1.1.0 - Fixed atomizer: stronger prompts, balanced bracket parsing, garbage validation
+# 1.2.0 - Fixed segmenter noun-phrase splits, added non-belief pattern filters
+# 1.3.0 - Fixed atomizer first-person check: startswith -> contains (matches segmenter)
+EXTRACTOR_CODE_VERSION = "1.3.0"
 
 
 def _compute_file_hash(file_path: Path) -> str:

@@ -31,7 +31,8 @@ class TestResolverThresholds:
 
     @pytest.mark.parametrize("similarity,expected", [
         (0.95, "match"),
-        (0.90, "match"),
+        (0.91, "match"),  # At match_threshold boundary (0.91)
+        (0.90, "uncertain"),  # Just below match_threshold
         (0.89, "uncertain"),
         (0.80, "uncertain"),
         (0.76, "uncertain"),
@@ -43,7 +44,7 @@ class TestResolverThresholds:
         """Test that thresholds are applied correctly.
 
         Real code logic:
-        - similarity >= match_threshold (0.90) → match
+        - similarity >= match_threshold (0.91) → match
         - similarity <= no_match_threshold (0.75) → no_match
         - otherwise → uncertain
         """

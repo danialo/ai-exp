@@ -94,7 +94,9 @@ class AwarenessLoop:
         config: AwarenessConfig,
         llm_service: Optional[Any] = None,
         memory_store: Optional[Any] = None,
-        event_hub: Optional[Any] = None  # IntegrationEventHub for Phase 1
+        event_hub: Optional[Any] = None,  # IntegrationEventHub for Phase 1
+        belief_consistency_checker: Optional[Any] = None,  # For background dissonance checking
+        belief_store: Optional[Any] = None,  # For getting active beliefs
     ):
         """
         Initialize awareness loop.
@@ -111,6 +113,8 @@ class AwarenessLoop:
         self.llm_service = llm_service
         self.memory_store = memory_store
         self.event_hub = event_hub  # Optional IntegrationEventHub
+        self.belief_consistency_checker = belief_consistency_checker  # For background dissonance
+        self.belief_store = belief_store  # For getting active beliefs
 
         # Components
         self.lock = AwarenessLock(redis_client)
@@ -159,6 +163,10 @@ class AwarenessLoop:
         # Introspection budget
         self.introspection_tokens_used = 0
         self.last_budget_reset = time.time()
+
+        # Dissonance check timing
+        self.last_dissonance_check = 0.0
+        self.dissonance_check_interval = 120  # 2 minutes
 
         # Cumulative metrics
         self.total_percepts_processed = 0
@@ -251,11 +259,12 @@ class AwarenessLoop:
             self._tasks.append(asyncio.create_task(self._time_pacer()))
 
             # Start tick loops
-            print("[AWARENESS] Creating awareness loop tasks (fast, slow, introspection, snapshot)")
+            print("[AWARENESS] Creating awareness loop tasks (fast, slow, introspection, snapshot, dissonance)")
             self._tasks.append(asyncio.create_task(self._fast_loop()))
             self._tasks.append(asyncio.create_task(self._slow_loop()))
             self._tasks.append(asyncio.create_task(self._introspection_loop()))
             self._tasks.append(asyncio.create_task(self._snapshot_loop()))
+            self._tasks.append(asyncio.create_task(self._dissonance_check_loop()))
             print(f"[AWARENESS] Created {len(self._tasks)} tasks")
 
             # Wait for tasks
@@ -305,6 +314,29 @@ class AwarenessLoop:
             return True
         except Exception as e:
             logger.error(f"[INTROSPECT] External trigger failed: {e}", exc_info=True)
+            return False
+
+    async def trigger_dissonance_check(self) -> bool:
+        """
+        Trigger a dissonance check cycle immediately.
+
+        Called by IntegrationLayer or externally to force a dissonance scan.
+        Returns True if check was executed, False if skipped.
+        """
+        if not self.running:
+            logger.warning("[DISSONANCE] trigger_dissonance_check called but loop not running")
+            return False
+
+        if not self.belief_consistency_checker:
+            logger.warning("[DISSONANCE] No belief_consistency_checker available")
+            return False
+
+        try:
+            logger.info("[DISSONANCE] External trigger for dissonance check")
+            await self._dissonance_check_tick()
+            return True
+        except Exception as e:
+            logger.error(f"[DISSONANCE] External trigger failed: {e}", exc_info=True)
             return False
 
     async def observe(self, kind: str, payload: Dict[str, Any]) -> None:
@@ -668,6 +700,130 @@ class AwarenessLoop:
                 await self.flush_snapshot()
             except Exception:
                 awareness_metrics.increment_snapshot_errors()
+
+    async def _dissonance_check_loop(self) -> None:
+        """Dissonance check loop (120s): background belief consistency scanning."""
+        print("[DISSONANCE LOOP] Starting dissonance check loop")
+        logger.info("[DISSONANCE] Starting dissonance check loop (interval: 120s)")
+
+        while self.running:
+            await asyncio.sleep(self.dissonance_check_interval)
+
+            if not self.running:
+                break
+
+            try:
+                await self._dissonance_check_tick()
+            except Exception as e:
+                logger.error(f"[DISSONANCE] Dissonance check failed: {e}", exc_info=True)
+
+    async def _dissonance_check_tick(self) -> None:
+        """Execute dissonance check tick using proactive_scan."""
+        print("[DISSONANCE TICK] Starting dissonance check")
+        logger.warning("[DISSONANCE TICK] Starting dissonance check")
+
+        if not self.belief_consistency_checker:
+            logger.warning("[DISSONANCE TICK] No belief_consistency_checker, skipping")
+            return
+
+        t0 = time.perf_counter()
+        self.last_dissonance_check = time.time()
+
+        # Get presence metadata from blackboard
+        presence_meta = await self.blackboard.get_meta()
+
+        if not presence_meta:
+            # Create minimal presence meta if none available
+            presence_meta = {"coherence_drop": 0.5, "novelty": 0.5}
+            logger.info("[DISSONANCE TICK] Using default presence_meta")
+
+        # Get active beliefs from HTN BeliefNode table (TASK 10.3.3)
+        active_beliefs = []
+        try:
+            from sqlmodel import select, create_engine, Session
+            from src.memory.models.belief_node import BeliefNode
+            from config.settings import settings
+
+            # Query BeliefNode table for active beliefs
+            engine = create_engine(f"sqlite:///{settings.RAW_STORE_DB_PATH}")
+            with Session(engine) as session:
+                stmt = (
+                    select(BeliefNode)
+                    .where(BeliefNode.status != 'orphaned')
+                    .order_by(BeliefNode.activation.desc())
+                    .limit(50)
+                )
+                nodes = session.exec(stmt).all()
+                active_beliefs = [n.canonical_text for n in nodes]
+                logger.debug(f"[DISSONANCE] Loaded {len(active_beliefs)} beliefs from HTN BeliefNode table")
+        except Exception as e:
+            logger.warning(f"[DISSONANCE] Failed to get beliefs from HTN table: {e}")
+            # Fallback to old belief_store if HTN table fails
+            if self.belief_store:
+                try:
+                    current_beliefs = self.belief_store.get_current()
+                    active_beliefs = [
+                        b.statement for b in list(current_beliefs.values())[:10]
+                    ]
+                    logger.info(f"[DISSONANCE] Fallback: loaded {len(active_beliefs)} beliefs from old store")
+                except Exception as e2:
+                    logger.warning(f"[DISSONANCE] Fallback also failed: {e2}")
+
+        if not active_beliefs:
+            logger.info("[DISSONANCE TICK] No active beliefs to check")
+            return
+
+        logger.info(f"[DISSONANCE TICK] Checking {len(active_beliefs)} beliefs")
+
+        # Run proactive scan
+        try:
+            patterns = self.belief_consistency_checker.proactive_scan(
+                active_beliefs=active_beliefs,
+                presence_meta=presence_meta,
+            )
+
+            if patterns:
+                logger.warning(
+                    f"[DISSONANCE] Proactive scan found {len(patterns)} tension(s)"
+                )
+
+                # Publish to event hub if available
+                if self.event_hub:
+                    from datetime import datetime
+                    try:
+                        from src.integration import DissonanceSignal, Priority
+
+                        for pattern in patterns:
+                            severity = getattr(pattern, 'severity', 0.7)
+                            if severity >= 0.8:
+                                priority = Priority.CRITICAL
+                            elif severity >= 0.6:
+                                priority = Priority.HIGH
+                            else:
+                                priority = Priority.NORMAL
+
+                            signal = DissonanceSignal(
+                                signal_id=f"dissonance_proactive_{uuid.uuid4().hex[:8]}",
+                                source="awareness_loop",
+                                timestamp=datetime.now(),
+                                priority=priority,
+                                pattern=getattr(pattern, 'pattern_type', 'unknown'),
+                                belief_id=getattr(pattern, 'belief_id', ''),
+                                conflicting_memory=getattr(pattern, 'analysis', '')[:200],
+                                severity=severity,
+                            )
+                            self.event_hub.publish("dissonance", signal)
+
+                    except ImportError:
+                        logger.debug("[DISSONANCE] Integration signals not available")
+            else:
+                logger.debug("[DISSONANCE] No tensions detected in proactive scan")
+
+        except Exception as e:
+            logger.error(f"[DISSONANCE] Error in proactive_scan: {e}", exc_info=True)
+
+        dt = time.perf_counter() - t0
+        logger.info(f"[DISSONANCE] Check completed in {dt*1000:.1f}ms")
 
     async def flush_snapshot(self) -> None:
         """Save current state to disk."""

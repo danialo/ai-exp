@@ -159,8 +159,19 @@ class BeliefAtomizer:
             logger.warning(f"LLM call failed: {e}")
             return self._simple_extract(candidate, candidate_idx)
 
+        # Log raw response for debugging
+        logger.debug(f"[ATOMIZER RAW] Input: {candidate.text[:100]}")
+        logger.debug(f"[ATOMIZER RAW] Response: {response[:200] if response else 'None'}")
+
         # Parse response
         atoms = self._parse_response(response, candidate, candidate_idx)
+
+        # Log extraction result
+        if atoms:
+            logger.debug(f"[ATOMIZER] Extracted {len(atoms)} atoms from: {candidate.text[:50]}")
+        else:
+            logger.info(f"[ATOMIZER] No atoms extracted from: {candidate.text[:80]}")
+
         return atoms
 
     def _call_llm(self, user_prompt: str) -> str:
@@ -231,6 +242,7 @@ class BeliefAtomizer:
         Extract JSON array from text.
 
         Handles markdown code blocks and bare JSON.
+        Uses balanced bracket matching to avoid greedy regex issues.
         """
         # Try to find JSON array in the text
         # First try the whole text
@@ -252,16 +264,47 @@ class BeliefAtomizer:
             except json.JSONDecodeError:
                 continue
 
-        # Try to find array brackets
-        bracket_pattern = r'\[[\s\S]*\]'
-        matches = re.findall(bracket_pattern, text)
-        for match in matches:
-            try:
-                data = json.loads(match)
-                if isinstance(data, list):
-                    return data
-            except json.JSONDecodeError:
+        # Try balanced bracket extraction - find matching [ and ]
+        # This avoids the greedy regex problem
+        start_idx = text.find('[')
+        if start_idx == -1:
+            return None
+
+        # Find the matching closing bracket using bracket counting
+        depth = 0
+        in_string = False
+        escape_next = False
+
+        for i, char in enumerate(text[start_idx:], start=start_idx):
+            if escape_next:
+                escape_next = False
                 continue
+            if char == '\\':
+                escape_next = True
+                continue
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if char == '[':
+                depth += 1
+            elif char == ']':
+                depth -= 1
+                if depth == 0:
+                    # Found matching bracket
+                    candidate = text[start_idx:i+1]
+                    try:
+                        data = json.loads(candidate)
+                        if isinstance(data, list):
+                            return data
+                    except json.JSONDecodeError:
+                        # Try next [ if this one failed
+                        next_start = text.find('[', start_idx + 1)
+                        if next_start != -1:
+                            # Recurse with remaining text
+                            return self._extract_json(text[next_start:])
+                    break
 
         return None
 
@@ -314,6 +357,36 @@ class BeliefAtomizer:
             logger.debug("Missing or invalid atom_text")
             return None
 
+        # Clean up atom_text
+        atom_text = atom_text.strip()
+
+        # Reject garbage: must contain first-person reference (case insensitive)
+        text_lower = atom_text.lower()
+        first_person_markers = ['i ', "i'm", "i've", "i'd", "i'll", 'my ', 'me ', 'myself']
+        if not any(marker in text_lower for marker in first_person_markers):
+            logger.debug(f"Rejected atom (not first-person): {atom_text[:50]}")
+            return None
+
+        # Reject garbage: must be at least 3 words
+        words = atom_text.split()
+        if len(words) < 3:
+            logger.debug(f"Rejected atom (too short): {atom_text}")
+            return None
+
+        # Reject garbage: no JSON syntax
+        json_junk = ['{', '"text":', '"atom_text":', '```', '\\n\\n']
+        if any(junk in atom_text for junk in json_junk):
+            logger.debug(f"Rejected atom (JSON junk): {atom_text[:50]}")
+            return None
+
+        # Reject garbage: starts with formatting
+        if atom_text[0] in '\n\r\t[#*':
+            logger.debug(f"Rejected atom (formatting junk): {atom_text[:50]}")
+            return None
+
+        # Update atom_text with cleaned version
+        data['atom_text'] = atom_text
+
         # Belief type (with validation)
         belief_type = data.get('belief_type', 'UNKNOWN')
         if belief_type not in self.VALID_BELIEF_TYPES:
@@ -350,6 +423,29 @@ class BeliefAtomizer:
             source_candidate_idx=candidate_idx,
         )
 
+    # Patterns that indicate non-beliefs (memory, actions, observations)
+    NON_BELIEF_PATTERNS = [
+        # Memory references
+        'i remember ', 'i recall ', 'i discussed ',
+        # Observations/hedging
+        'i notice ', 'i noticed ', 'i find myself ', 'i find that ',
+        'i sense ', 'i sensed ', 'i perceive that ',
+        # Action intentions (not traits)
+        'i will ', 'i would ', 'i could ', 'i should ', 'i might ',
+        'i need to ', 'i want to ', 'i aim to ', 'i strive to ',
+        'i attempted ', 'i tried ', 'i can run ', 'i can execute ',
+        # Transient reactions
+        'i felt ', 'i appreciate your ', 'i understand your ',
+        'i apologize ', 'i sincerely ',
+    ]
+
+    # Patterns that indicate stable beliefs (whitelist - these are kept)
+    BELIEF_PATTERNS = [
+        'i am ', "i'm ", 'i have ', 'i believe ', 'i value ',
+        'i think ', 'i feel curious', 'i feel that ', 'my core ',
+        'my existence ', 'my consciousness ', 'my identity ',
+    ]
+
     def _simple_extract(
         self,
         candidate: ClaimCandidate,
@@ -358,15 +454,43 @@ class BeliefAtomizer:
         """
         Simple extraction fallback when LLM is unavailable.
 
-        Creates a single atom from the candidate text.
+        Only creates an atom if the candidate looks like a valid first-person belief.
+        Filters out memory references, observations, and transient states.
+        Returns empty list for non-belief input.
         """
         text = candidate.text.strip()
 
         # Remove trailing punctuation for the atom
         text = text.rstrip('.,;:!?')
 
-        # Determine polarity from negation words
+        # Validate: must contain first-person marker
         text_lower = text.lower()
+        first_person_markers = ['i ', "i'm", "i've", "i'd", "i'll", 'my ', 'me ', 'myself']
+        if not any(marker in text_lower for marker in first_person_markers):
+            logger.debug(f"Simple extract rejected (not first-person): {text[:50]}")
+            return []
+
+        # Validate: must be at least 3 words
+        words = text.split()
+        if len(words) < 3:
+            logger.debug(f"Simple extract rejected (too short): {text}")
+            return []
+
+        # Validate: no JSON/formatting junk
+        junk_markers = ['{', '"text":', '```', '\\n', '[Internal', 'Here are']
+        if any(junk in text for junk in junk_markers):
+            logger.debug(f"Simple extract rejected (junk): {text[:50]}")
+            return []
+
+        # Check for non-belief patterns (reject unless whitelisted)
+        is_whitelisted = any(text_lower.startswith(p) for p in self.BELIEF_PATTERNS)
+        if not is_whitelisted:
+            is_non_belief = any(text_lower.startswith(p) for p in self.NON_BELIEF_PATTERNS)
+            if is_non_belief:
+                logger.debug(f"Simple extract rejected (non-belief pattern): {text[:50]}")
+                return []
+
+        # Determine polarity from negation words
         polarity = 'deny' if any(neg in text_lower for neg in
             ["don't", "do not", "not", "never", "cannot", "can't"]) else 'affirm'
 

@@ -310,6 +310,11 @@ class HTNBeliefExtractor:
                 except Exception as e:
                     logger.warning(f"Failed to add claim to SelfKnowledgeIndex: {e}")
 
+        # Log extracted atoms for visibility
+        if atom_results:
+            atom_texts = [r.atom.canonical_text[:80] for r in atom_results]
+            logger.info(f"[HTN ATOMS] {experience_id}: {atom_texts}")
+
         logger.info(
             f"Belief extraction complete for {experience_id}: "
             f"{stats['deduped_atoms_count']} atoms, "
@@ -350,10 +355,13 @@ class HTNBeliefExtractor:
 
         # Step 2: Get text content
         content = getattr(experience, 'content', {})
+        logger.debug(f"[HTN DEBUG] content type: {type(content)}, is dict: {isinstance(content, dict)}")
         if isinstance(content, dict):
             text = content.get('text', '')
+            logger.debug(f"[HTN DEBUG] extracted text (from dict): {text[:100] if text else 'EMPTY'}")
         else:
             text = str(content)
+            logger.debug(f"[HTN DEBUG] extracted text (str fallback): {text[:100]}")
 
         if not text:
             return {

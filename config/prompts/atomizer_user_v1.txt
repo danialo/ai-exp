@@ -1,17 +1,32 @@
-Decompose the following self-statement into atomic beliefs. Each belief must be:
-- First person ("I...")
-- Single predicate (one claim per atom)
-- Not an instruction or imperative
+Decompose the following self-statement into atomic beliefs.
 
-Return JSON array with this exact schema:
+EXAMPLES:
+
+Input: "I believe that motivating others through words and actions that encourage personal growth is vital for any role model."
+Output:
 [
-  {
-    "atom_text": "I [single claim]",
-    "belief_type": "TRAIT|PREFERENCE|VALUE|CAPABILITY_LIMIT|FEELING_STATE|META_BELIEF|RELATIONAL|BELIEF_ABOUT_SELF",
-    "polarity": "affirm|deny",
-    "confidence": 0.0-1.0,
-    "spans": [start_idx, end_idx] or null
-  }
+  {"atom_text": "I believe motivating others is vital for role models", "belief_type": "VALUE", "polarity": "affirm", "confidence": 0.9, "spans": null},
+  {"atom_text": "I value encouraging personal growth in others", "belief_type": "VALUE", "polarity": "affirm", "confidence": 0.85, "spans": null}
 ]
+
+Input: "I feel curious about how consciousness works but uncertain about my own experience."
+Output:
+[
+  {"atom_text": "I feel curious about how consciousness works", "belief_type": "FEELING_STATE", "polarity": "affirm", "confidence": 0.9, "spans": null},
+  {"atom_text": "I am uncertain about my own experience", "belief_type": "META_BELIEF", "polarity": "affirm", "confidence": 0.85, "spans": null}
+]
+
+Input: "I can access my research module."
+Output:
+[
+  {"atom_text": "I can access my research module", "belief_type": "CAPABILITY_LIMIT", "polarity": "affirm", "confidence": 0.9, "spans": null}
+]
+
+RULES:
+- Each atom must start with "I" or "My"
+- Single predicate per atom (one claim)
+- Not an instruction or imperative
+- belief_type must be: TRAIT|PREFERENCE|VALUE|CAPABILITY_LIMIT|FEELING_STATE|META_BELIEF|RELATIONAL|BELIEF_ABOUT_SELF
+- polarity must be: affirm|deny
 
 Self-statement: {input_text}

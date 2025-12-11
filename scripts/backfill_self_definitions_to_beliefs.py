@@ -15,6 +15,7 @@ Options:
     --dry-run       Don't write to database, just report what would be done
     --verbose       Enable verbose logging
     --experience-id ID  Process a specific experience ID only
+    --use-llm       Use LLM for extraction (slower but higher quality)
 
 Non-destructive: Does not modify Experience rows, only adds to belief tables.
 Idempotent: Can be safely re-run (uses extractor_version in unique constraint).
@@ -67,6 +68,7 @@ class BackfillProcessor:
         batch_size: int = 10,
         dry_run: bool = False,
         verbose: bool = False,
+        llm_client=None,
     ):
         """
         Initialize the backfill processor.
@@ -78,6 +80,7 @@ class BackfillProcessor:
             batch_size: Commit every N experiences
             dry_run: Don't persist changes
             verbose: Enable verbose logging
+            llm_client: LLM client for extraction (None = simple fallback)
         """
         self.db_url = db_url
         self.limit = limit
@@ -85,6 +88,7 @@ class BackfillProcessor:
         self.batch_size = batch_size
         self.dry_run = dry_run
         self.verbose = verbose
+        self.llm_client = llm_client
 
         if verbose:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -189,12 +193,15 @@ class BackfillProcessor:
             logger.info(f"Found {len(experiences)} experiences to process")
 
             # Create extractor
-            # Note: In production, you would inject an LLM client here
             extractor = HTNBeliefExtractor(
                 config=self.config,
-                llm_client=None,  # Will use simple fallback extraction
+                llm_client=self.llm_client,  # Use LLM if provided, else simple fallback
                 db_session=session if not self.dry_run else None,
             )
+            if self.llm_client:
+                logger.info("Using LLM for extraction (higher quality, slower)")
+            else:
+                logger.info("Using simple fallback extraction (faster, lower quality)")
 
             # Process in batches
             for i, exp in enumerate(experiences):
@@ -264,10 +271,26 @@ class BackfillProcessor:
 
             experiences = []
             for row in rows:
+                # Parse content JSON if needed
+                content = row[1]
+                if isinstance(content, str):
+                    try:
+                        content = json.loads(content)
+                    except json.JSONDecodeError:
+                        content = {'text': content}
+
+                # Parse affect JSON if needed
+                affect = row[2]
+                if isinstance(affect, str):
+                    try:
+                        affect = json.loads(affect)
+                    except json.JSONDecodeError:
+                        affect = {}
+
                 exp = {
                     'id': row[0],
-                    'content': row[1],
-                    'affect': row[2],
+                    'content': content,
+                    'affect': affect or {},
                     'session_id': row[3],
                 }
                 experiences.append(exp)
@@ -445,6 +468,10 @@ def main():
         '--db-url', type=str, default=None,
         help='Database URL (default: from config)'
     )
+    parser.add_argument(
+        '--use-llm', action='store_true',
+        help='Use LLM for extraction (slower but higher quality)'
+    )
 
     args = parser.parse_args()
 
@@ -461,6 +488,24 @@ def main():
 
     logger.info(f"Using database: {db_url}")
 
+    # Create LLM client if requested
+    llm_client = None
+    if args.use_llm:
+        import os
+        from src.services.llm import create_llm_service
+        from config.settings import settings
+
+        api_key = os.environ.get('OPENAI_API_KEY') or settings.OPENAI_API_KEY
+        if not api_key:
+            logger.error("OPENAI_API_KEY not set. Cannot use --use-llm without API key.")
+            sys.exit(1)
+
+        llm_client = create_llm_service(
+            api_key=api_key,
+            model=settings.LLM_MODEL,
+        )
+        logger.info(f"Created LLM client using model: {settings.LLM_MODEL}")
+
     processor = BackfillProcessor(
         db_url=db_url,
         limit=args.limit,
@@ -468,6 +513,7 @@ def main():
         batch_size=args.batch_size,
         dry_run=args.dry_run,
         verbose=args.verbose,
+        llm_client=llm_client,
     )
 
     processor.run(experience_id=args.experience_id)

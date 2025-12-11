@@ -51,6 +51,14 @@ from src.services.identity_ledger import append_event, LedgerEvent
 from src.memory.embedding import create_embedding_provider
 from src.services.feedback_aggregator import FeedbackAggregator, FeedbackConfig
 
+# Stream migration imports
+from sqlmodel import Session as SQLModelSession, select
+from src.memory.models.belief_node import BeliefNode
+from src.memory.models.stream_assignment import StreamAssignment
+from src.services.stream_service import StreamService
+from src.services.core_score_service import CoreScoreService
+from src.utils.belief_config import get_belief_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -1196,10 +1204,14 @@ class BeliefLifecycleManager:
                 logger.info(f"Belief exists but is deprecated: {belief.belief_id} (blocked)")
                 return None, "blocked_deprecated"
 
-            logger.info(f"Belief already exists: {belief.belief_id} - reinforcing with new evidence")
-            # Reinforce existing belief with new evidence
-            self._reinforce_belief(belief.belief_id, pattern)
-            return None, "reinforced_existing"
+            # Attempt to reinforce existing belief with new evidence
+            reinforced = self._reinforce_belief(belief.belief_id, pattern)
+            if reinforced:
+                logger.info(f"Belief already exists: {belief.belief_id} - reinforced with new evidence")
+                return None, "reinforced_existing"
+            else:
+                logger.debug(f"Belief already exists: {belief.belief_id} - no new evidence to add")
+                return None, "already_processed"
 
         # Generate safe, unique belief ID
         belief_id = _safe_belief_id(pattern.category, pattern.pattern_text)
@@ -1596,11 +1608,23 @@ class BeliefGardener:
         belief_store: BeliefStore,
         raw_store: RawStore,
         config: GardenerConfig,
-        feedback_aggregator=None  # Optional: use enhanced version if provided
+        feedback_aggregator=None,  # Optional: use enhanced version if provided
+        db_session: Optional[SQLModelSession] = None  # For stream migration
     ):
         self.config = config
         self.belief_store = belief_store  # Store reference for scan context management
         self.pattern_detector = PatternDetector(raw_store, config)
+        self.db_session = db_session
+
+        # Initialize stream migration services if db_session provided
+        if db_session:
+            belief_config = get_belief_config()
+            self.stream_service = StreamService(belief_config, db_session)
+            self.core_score_service = CoreScoreService(belief_config, db_session)
+            logger.info("Stream migration services initialized")
+        else:
+            self.stream_service = None
+            self.core_score_service = None
 
         # Initialize feedback aggregator (use provided or create default)
         if feedback_aggregator:
@@ -1635,7 +1659,69 @@ class BeliefGardener:
             "store_rejected": 0,
         }
 
-        logger.info(f"BeliefGardener initialized (enabled={config.enabled}, feedback_enabled=True)")
+        logger.info(f"BeliefGardener initialized (enabled={config.enabled}, feedback_enabled=True, stream_migration={db_session is not None})")
+
+    def check_stream_migrations(self) -> List[str]:
+        """
+        Check beliefs in 'state' stream for migration to 'identity'.
+
+        Queries BeliefNode entries with state stream, computes core scores,
+        and migrates those meeting thresholds (spread, diversity, activation).
+
+        Returns:
+            List of belief_ids that were migrated to identity
+        """
+        if not self.stream_service or not self.core_score_service or not self.db_session:
+            return []
+
+        migrated = []
+
+        try:
+            # Find all beliefs in 'state' stream
+            state_assignments = self.db_session.exec(
+                select(StreamAssignment).where(
+                    StreamAssignment.primary_stream == 'state'
+                )
+            ).all()
+
+            if not state_assignments:
+                return []
+
+            logger.debug(f"Checking {len(state_assignments)} beliefs in 'state' stream for migration")
+
+            for assignment in state_assignments:
+                # Get the belief node
+                node = self.db_session.exec(
+                    select(BeliefNode).where(
+                        BeliefNode.belief_id == assignment.belief_id
+                    )
+                ).first()
+
+                if not node:
+                    continue
+
+                # Compute core score
+                core_result = self.core_score_service.compute(node)
+
+                # Check if migration thresholds are met
+                result = self.stream_service.check_migration(node, assignment, core_result)
+
+                if result.migrated:
+                    migrated.append(str(node.belief_id))
+                    logger.info(
+                        f"🎓 Migrated belief to identity: {node.canonical_text[:50]}... "
+                        f"(spread={core_result.components.get('spread', 0):.2f}, "
+                        f"diversity={core_result.components.get('diversity', 0):.2f}, "
+                        f"activation={node.activation:.2f})"
+                    )
+
+            if migrated:
+                logger.info(f"Stream migration: {len(migrated)} beliefs promoted to identity")
+
+        except Exception as e:
+            logger.error(f"Error during stream migration check: {e}", exc_info=True)
+
+        return migrated
 
     def run_pattern_scan(self) -> Dict[str, Any]:
         """
@@ -1724,6 +1810,9 @@ class BeliefGardener:
                 if belief.state in ("asserted", "tentative") and self.lifecycle_manager.consider_deprecation(belief.belief_id, decay_evidence=0):
                     deprecated.append(belief.belief_id)
 
+            # Check stream migrations (state → identity)
+            stream_migrations = self.check_stream_migrations()
+
             # End scan context and get write telemetry
             store_telemetry = self.belief_store.end_scan()
 
@@ -1735,6 +1824,7 @@ class BeliefGardener:
                 "skipped": skipped[:20],  # Limit to 20 items
                 "promoted": promoted,
                 "deprecated": deprecated,
+                "stream_migrations": stream_migrations,  # state → identity migrations
                 **telemetry,  # Include all validation telemetry fields
                 "store_writes": store_telemetry,  # Include write telemetry from store
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1751,7 +1841,8 @@ def create_belief_gardener(
     belief_store: BeliefStore,
     raw_store: RawStore,
     config: Optional[GardenerConfig] = None,
-    feedback_aggregator=None  # Optional: use enhanced version if provided
+    feedback_aggregator=None,  # Optional: use enhanced version if provided
+    db_session: Optional[SQLModelSession] = None  # For stream migration
 ) -> BeliefGardener:
     """Factory function to create belief gardener."""
     if config is None:
@@ -1762,4 +1853,5 @@ def create_belief_gardener(
         raw_store=raw_store,
         config=config,
         feedback_aggregator=feedback_aggregator,
+        db_session=db_session,
     )

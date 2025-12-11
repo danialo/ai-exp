@@ -112,15 +112,16 @@ class BeliefAtomValidator:
         text = atom.atom_text.strip()
         text_lower = text.lower()
 
-        # Check first-person
-        if not self._is_first_person(text_lower):
-            return False, "not_first_person"
+        # REMOVED: first-person check - trust the atomizer LLM to extract
+        # first-person beliefs. The atomizer is already instructed to extract
+        # self-referential statements. Double-filtering here was too restrictive,
+        # rejecting valid beliefs like "My favorite food is sushi".
 
         # Check for imperative
         if self._is_imperative(text_lower):
             return False, "imperative"
 
-        # Check minimum length (at least 3 words after "I")
+        # Check minimum length
         if self._is_too_short(text):
             return False, "too_short"
 
@@ -135,10 +136,6 @@ class BeliefAtomValidator:
         # Check for generic statements
         if self._is_generic(text_lower):
             return False, "generic"
-
-        # Check for empty or whitespace only after "I"
-        if self._is_empty_after_i(text_lower):
-            return False, "empty_claim"
 
         return True, None
 

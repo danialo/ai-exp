@@ -633,10 +633,87 @@ Required behavior:
 
 **Acceptance:** index stays consistent with rollbacks.
 
-### TASK 10.3: Optional read-path cutover (defer if needed)
+### TASK 10.3: Runtime Integration (REQUIRED)
 
-* Keep gardener on old system until eval metrics acceptable
-* Then switch to BeliefNodes
+**This task is REQUIRED. Do not defer. Do not mark as optional.**
+
+#### 10.3.1: Initialize HTNBeliefExtractor in app.py
+
+**File:** `app.py`
+
+1. Import `HTNBeliefExtractor` from `src.services.htn_belief_methods`
+2. Create instance after database initialization:
+   ```python
+   htn_extractor = HTNBeliefExtractor(
+       db_session_factory=get_db_session,
+       llm_client=llm_service,
+       config=get_belief_config()
+   )
+   ```
+3. Store on app state: `app.state.htn_extractor = htn_extractor`
+
+#### 10.3.2: Wire HTN extraction into experience creation
+
+**File:** `src/services/persona_service.py`
+
+After `raw_store.append_experience()` for SELF_DEFINITION experiences:
+```python
+if experience.type == 'self_definition' and htn_extractor:
+    try:
+        asyncio.create_task(
+            htn_extractor.extract_and_update_self_knowledge(experience)
+        )
+    except Exception as e:
+        logger.error(f"HTN extraction failed: {e}")
+```
+
+#### 10.3.3: Update awareness loop to use HTN beliefs
+
+**File:** `src/services/awareness_loop.py`
+
+Replace the hardcoded 10-belief limit with query to `belief_nodes` table:
+```python
+# OLD (remove):
+active_beliefs = [b.statement for b in list(current_beliefs.values())[:10]]
+
+# NEW:
+from sqlmodel import select
+from src.memory.models import BeliefNode
+with get_db_session() as session:
+    stmt = select(BeliefNode).where(BeliefNode.status != 'orphaned').order_by(BeliefNode.activation.desc()).limit(50)
+    nodes = session.exec(stmt).all()
+    active_beliefs = [n.canonical_text for n in nodes]
+```
+
+#### 10.3.4: Disable old BeliefGardener loop
+
+**File:** `app.py`
+
+Comment out or remove `gardener_tick_loop` from background tasks:
+```python
+# REMOVE or comment:
+# asyncio.create_task(gardener_tick_loop())
+```
+
+Set environment variable or config:
+```
+BELIEF_GARDENER_ENABLED=false
+```
+
+#### 10.3.5: Update belief query consumers
+
+For each service that calls `belief_store.get_current()`, update to query HTN tables or create adapter:
+- `awareness_loop.py` - dissonance check (done in 10.3.3)
+- `contrarian_sampler.py` - challenge sampling
+- `tag_injector.py` - reference detection
+- `goal_generator.py` - alignment checking
+
+**Acceptance Criteria:**
+1. New experiences trigger HTN extraction automatically
+2. Dissonance check queries 50+ beliefs from HTN tables
+3. Old gardener loop is disabled
+4. Server starts without errors
+5. Chat responses are not blocked by HTN extraction (async)
 
 ### TASK 10.4: `scripts/rollback_extractor_version.py` (explicit rollback)
 
@@ -663,6 +740,9 @@ Required behavior:
 5. TentativeLinks created for uncertain matches; cluster review script shows clusters.
 6. Conflict engine emits contradictions and tension candidates (config thresholds).
 7. All hyperparameters in config, not hardcoded.
+8. **HTN is wired into runtime: extraction triggers on new experiences, dissonance uses HTN tables, old gardener disabled.**
+9. **Server starts and runs without errors after integration.**
+10. **Chat responses are not blocked by belief extraction (async execution).**
 
 ---
 
@@ -679,7 +759,10 @@ Required behavior:
 9. 8.1 activation, 8.2 core score, 8.3 stream ratchet/migration
 10. 9.1 HTN wiring
 11. 10.1 backfill, 10.2 index integration, 10.4 rollback
+12. **10.3 RUNTIME INTEGRATION - Initialize in app.py, wire into persona_service, update awareness_loop, disable gardener**
 
 ---
 
 If you paste this to an agent, they can implement without inventing anything. If they try to "improve" it, they're doing it wrong.
+
+**CRITICAL: Step 12 is NOT optional. The system is not done until HTN is running in production.**
