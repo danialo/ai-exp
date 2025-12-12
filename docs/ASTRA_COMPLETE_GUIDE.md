@@ -57,7 +57,7 @@ These aren't aspirational statements—they're operational axioms that shape how
 Rather than defining who Astra "is," the system creates conditions for identity to emerge:
 
 - **Experience-first**: All interactions are stored as immutable experiences
-- **Pattern recognition**: The belief gardener detects recurring themes automatically
+- **Pattern recognition**: HTN extracts beliefs inline during conversation (gardener disabled)
 - **Self-modification**: Astra can rewrite her own operating prompts
 - **Contradiction detection**: Cognitive dissonance triggers resolution, not suppression
 
@@ -124,7 +124,7 @@ The anti-metatalk system uses logit bias to suppress hedging tokens and can auto
 │  │  │ PERSONA SERVICE    │    │ BELIEF SYSTEM                  │   │  │
 │  │  │ • Response Gen     │    │ • Ontological Beliefs (core)   │   │  │
 │  │  │ • Tool Execution   │    │ • Experiential Beliefs (live)  │   │  │
-│  │  │ • Prompt Building  │    │ • Belief Gardener (autonomous) │   │  │
+│  │  │ • Prompt Building  │    │ • Belief Gardener (DISABLED)   │   │  │
 │  │  │ • Anti-Metatalk    │    │ • Consistency Checker          │   │  │
 │  │  └────────────────────┘    │ • Contrarian Sampler           │   │  │
 │  │                            └────────────────────────────────┘   │  │
@@ -274,7 +274,12 @@ data/
 
 ## 4. Belief System
 
-Astra's belief system has two layers: **Core Beliefs** (immutable axioms) and a **Self-Knowledge Graph** (emergent beliefs extracted from conversations).
+Astra's belief system has three active components:
+1. **Core Beliefs** - Immutable axioms (5 foundational beliefs)
+2. **HTN Decomposer** - SQLite-backed graph extracting beliefs inline during chat (1,363+ beliefs)
+3. **Belief-Memory** - ChromaDB vector store for semantic belief retrieval
+
+> **Note**: The BeliefGardener (pattern-based graduation) is currently disabled. HTN handles belief extraction inline during conversation instead.
 
 ### 4.1 Core Beliefs (Immutable)
 
@@ -312,7 +317,7 @@ Each belief carries qualifiers:
 
 ### 4.3 HTN Belief Extraction Pipeline
 
-A three-stage process extracts atomic beliefs from conversations:
+A two-stage process extracts atomic beliefs from conversations (Stage 3 disabled):
 
 ```
 Stage 1: Claim Detection (Ingestion Pipeline)
@@ -322,33 +327,51 @@ Stage 1: Claim Detection (Ingestion Pipeline)
          ▼
     SELF_DEFINITION experience created
          │
-Stage 2: HTN Decomposition (gpt-4o-mini)
+Stage 2: HTN Decomposition (inline via HTNBeliefExtractor)
          │
          │ Compound statement → atomic beliefs:
          │   • "I am fascinated by creativity" [TRAIT]
          │   • "I value exploring new ideas" [VALUE]
          ▼
-    BeliefOccurrences created
+    BeliefNodes + BeliefOccurrences created in SQLite
          │
-Stage 3: Belief Gardening (Autonomous)
+Stage 3: Belief Gardening [DISABLED]
          │
-         │ Pattern accumulates across conversations
-         │ Multiple occurrences → belief graduates
+         │ (Originally: pattern accumulates → belief graduates)
+         │ (Currently: HTN handles extraction inline, no background graduation)
          ▼
-    TENTATIVE → ASSERTED (confidence increases)
+    Beliefs stored directly without TENTATIVE → ASSERTED graduation
 ```
 
 **Cost Efficiency:** HTN decomposition uses gpt-4o-mini ($0.15/$0.60 per 1M tokens) instead of gpt-4o for 16x cost reduction.
 
 ### 4.4 Belief Lifecycle
 
+**Current System (HTN inline extraction):**
 ```
-Pattern Detected (BeliefGardener)
+Self-statement detected in response
+         │
+         ▼
+    HTN Atomization (gpt-4o-mini)
+         │
+         ▼
+    BeliefNode created/matched in SQLite
+         │
+         ▼
+    BeliefOccurrence links evidence
+         │
+         ▼
+    ConflictEdge created if contradiction detected
+```
+
+**Designed Lifecycle (BeliefGardener - DISABLED):**
+```
+Pattern Detected (BeliefGardener) [NOT RUNNING]
          │
          ▼
     TENTATIVE (confidence: 0.3-0.6)
          │
-         │ Evidence accumulates (≥ threshold supporting occurrences)
+         │ Evidence accumulates (≥ threshold)
          ▼
      ASSERTED (confidence: 0.6-0.9)
          │
@@ -356,18 +379,18 @@ Pattern Detected (BeliefGardener)
          ▼
     CHALLENGED (under review)
          │
-         ├─► Resolution: REINFORCED (confidence increases)
-         ├─► Resolution: DEPRECATED (marked inactive)
-         └─► Resolution: MODIFIED (content updated)
+         ├─► REINFORCED / DEPRECATED / MODIFIED
 ```
 
-**Identity Migration:** Beliefs can graduate from "state" (temporary) to "identity" (stable) as they accumulate evidence. This is a one-way ratchet - once something becomes part of identity, it doesn't easily demote back.
+**Note:** The gardener graduation flow is not currently active. Beliefs are stored directly by HTN without the TENTATIVE → ASSERTED progression.
 
-### 4.5 The Belief Gardener
+### 4.5 The Belief Gardener (DISABLED)
 
-Autonomous service that monitors belief patterns:
+> **Current Status**: The BeliefGardener background loop is disabled (commented out in app.py line 1146). The HTN system now handles belief extraction inline during the ingestion pipeline.
 
-**How it works:**
+Originally designed as an autonomous service that monitors belief patterns:
+
+**Design (not currently active):**
 1. Scan BeliefOccurrences for patterns
 2. Group by canonical belief text (BeliefNodes)
 3. If evidence count ≥ threshold → graduate confidence level

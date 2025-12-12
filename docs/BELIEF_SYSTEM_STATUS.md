@@ -1,8 +1,13 @@
 # Belief-Memory System: Implementation Status
 
 **Branch**: `feature/belief-memory-system`
-**Last Updated**: 2025-10-28
-**Completion**: ~60% (Core infrastructure complete, integration pending)
+**Last Updated**: 2025-12-12 (Updated)
+**Completion**: ~75% (Core infrastructure + app.py integration complete)
+
+> **NOTE**: This is ONE of THREE belief systems in Astra. See `BELIEF_SYSTEM_INTEGRATION_ISSUES.md` for the full picture:
+> 1. **OLD (BeliefVersionStore)**: File-based, 228 beliefs, gardener disabled
+> 2. **HTN Decomposer**: SQLite tables, 1,363 beliefs, wired to ingest pipeline
+> 3. **This system (Belief-Memory)**: ChromaDB vector store, semantic retrieval
 
 ---
 
@@ -179,42 +184,28 @@
 
 ---
 
-### Phase 9: System Integration & API Endpoints 🔄
-**Status**: Not Started
+### Phase 9: System Integration & API Endpoints ✅
+**Status**: COMPLETE (app.py integration done)
 **Priority**: HIGH (Required to wire everything together)
 
-**Required Changes** (in `app.py`):
+**Completed** (in `app.py` lines 472-725):
 
-1. **Initialize Belief System** (after line 293)
-   ```python
-   # Initialize belief vector store
-   belief_vector_store = create_belief_vector_store(...)
-   belief_embedder = create_belief_embedder(...)
+1. **Initialize Belief System** ✅ (lines 480-505)
+   - `belief_vector_store = create_belief_vector_store(...)`
+   - `belief_embedder = create_belief_embedder(...)`
+   - Auto-embeds core beliefs on first run
 
-   # Embed core beliefs on first run
-   if belief_vector_store.count() == 0:
-       belief_embedder.embed_all_core_beliefs()
-   ```
+2. **Initialize Belief-Memory Retrieval** ✅ (lines 513-519)
+   - `belief_memory_retrieval = create_belief_memory_retrieval(...)`
+   - Wired with belief_vector_store and retrieval_service
 
-2. **Initialize Belief-Memory Retrieval**
-   ```python
-   belief_memory_retrieval = create_belief_memory_retrieval(
-       belief_vector_store,
-       retrieval_service,
-       belief_weight=0.7,
-       memory_weight=0.3
-   )
-   ```
+3. **Initialize Belief-Grounded Reasoner** ✅ (line 508)
+   - `belief_grounded_reasoner = create_belief_grounded_reasoner(llm_service)`
 
-3. **Initialize Belief-Grounded Reasoner**
-   ```python
-   belief_grounded_reasoner = create_belief_grounded_reasoner(llm_service)
-   ```
+4. **Pass to PersonaService** ✅ (lines 722-725)
+   - All four services passed to PersonaService initialization
 
-4. **Pass to PersonaService**
-   - Add `belief_vector_store`, `belief_memory_retrieval`, `belief_grounded_reasoner` to initialization
-
-5. **New API Endpoints**
+5. **New API Endpoints** - Not yet implemented
    - `POST /api/beliefs/extract` - Trigger consolidation
    - `POST /api/beliefs/reflect` - Reflect on all beliefs
    - `GET /api/beliefs/conflicts` - View conflicts

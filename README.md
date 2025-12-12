@@ -42,7 +42,7 @@ Beliefs form automatically from conversations and evolve over time:
 - `META_BELIEF` - Beliefs about beliefs
 - `RELATIONAL` - About connections
 
-**Belief Gardener** - Watches patterns. When multiple conversations reinforce a belief, it graduates from `TENTATIVE` → `ASSERTED`. Beliefs can promote from "state" (temporary) to "identity" (stable) as evidence accumulates.
+**Belief Gardener** - (Currently disabled) Designed to watch patterns and graduate beliefs from `TENTATIVE` → `ASSERTED` as evidence accumulates. HTN now handles belief extraction inline during conversation.
 
 **Conflict Detection** - Automatically detects contradictions and flags them for resolution. Smart about temporal scope: "I'm tired" today doesn't conflict with "I'm energetic" yesterday.
 

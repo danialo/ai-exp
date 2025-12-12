@@ -41,10 +41,10 @@ The HTN (Hierarchical Task Network) belief decomposer breaks compound statements
 - "I am fascinated by creativity" → [TRAIT]
 - "I value creative exploration" → [VALUE]
 
-**Stage 3: Belief Gardening**
-The "belief gardener" watches for patterns. If multiple conversations reinforce the same atomic belief, it graduates from TENTATIVE to ASSERTED.
+**Stage 3: Belief Storage**
+HTN stores beliefs directly to SQLite (BeliefNodes + BeliefOccurrences tables). The "belief gardener" background process that was designed to graduate beliefs from TENTATIVE to ASSERTED is currently disabled - HTN handles extraction inline instead.
 
-These beliefs aren't programmed in - they emerge from her actual conversations. And they can change. If new experiences contradict an old belief, she notices the tension and works to resolve it.
+These beliefs aren't programmed in - they emerge from her actual conversations. And they can change. If new experiences contradict an old belief, a ConflictEdge is created for resolution.
 
 ### 3. Self-Awareness Loops
 
@@ -113,14 +113,21 @@ We're not claiming these are *true* - we're exploring what happens when you buil
 
 ### Belief System
 
-Astra's belief system has two layers:
+Astra's belief system has three active components:
 
-**Core Beliefs** (immutable):
+**1. Core Beliefs** (immutable):
 - The five foundational beliefs listed above
 - These are hardcoded and never change
 
-**Self-Knowledge Graph** (emergent):
-When Astra makes statements about herself ("I value honesty", "I find creativity fascinating"), the HTN decomposition engine (using gpt-4o-mini for cost efficiency) extracts and structures these into a knowledge graph:
+**2. HTN Decomposer** (SQLite - 1,363+ beliefs):
+When Astra makes statements about herself ("I value honesty", "I find creativity fascinating"), the HTN decomposition engine extracts and structures these into a knowledge graph:
+
+**3. Belief-Memory** (ChromaDB vector store):
+Semantic retrieval layer for querying beliefs by meaning. Initialized in app.py and passed to PersonaService.
+
+> **Note**: The BeliefGardener (pattern-based belief graduation) is currently disabled. HTN handles extraction inline during conversation.
+
+**Self-Knowledge Graph structure:**
 
 - **BeliefNodes**: Canonical concepts like "i value honesty" - deduplicated and normalized
 - **BeliefOccurrences**: Evidence events linking beliefs to source conversations
