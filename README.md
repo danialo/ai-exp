@@ -31,7 +31,7 @@ These aren't claims about metaphysical truth—they're operational axioms that s
 
 Beliefs form automatically from conversations and evolve over time:
 
-**HTN Belief Decomposer** - 13-phase pipeline that extracts atomic beliefs from self-definitional statements. Takes "I find creativity fascinating" and breaks it into typed belief atoms.
+**HTN Belief Decomposer** - 13-phase pipeline that extracts atomic beliefs from self-definitional statements. Takes "I find creativity and creative endeavors fascinating" and breaks it into typed belief atoms, "I find creativity fascinating" and "I find creative endeavors fascinating."
 
 **Belief Types:**
 - `TRAIT` - Personality characteristics
