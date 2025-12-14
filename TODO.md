@@ -4,6 +4,8 @@
 
 ## In Progress
 
+None - Ready for next task!
+
 ## Ready to Start
 
 - [ ] **Fix Astra's Incorrect Beliefs About Source Code Access** 🐛 **BUG**
@@ -58,6 +60,12 @@
 
 ## Backlog
 
+- [ ] **MCP integration (Phase 2A)**
+  - Tooling + tests landed in `src/mcp/task_execution_server.py`
+  - Install `modelcontextprotocol` in active runtime and smoke test
+  - [x] Add CLI/service entrypoint to expose the server in deployment (`scripts/run_task_execution_mcp.py`)
+  - Spec remains in `.claude/tasks/prompt-008-mcp-task-execution.md`
+
 - [ ] **Fix Astra's Ability to See and Add to Her Own Code** 🔧 **ARCHITECTURE**
   - **Problem**: Astra cannot view or modify her own codebase effectively
   - **Current State**: Has `read_source_code` and `list_source_files` tools but limited capability
@@ -110,6 +118,7 @@
 
 ## Completed ✅
 
+- [x] **Decision audit logging to identity ledger** - All decision events logged with SHA-256 chain
 - [x] **Fix Immutable Belief Dissonance Resolution Enforcement (COMPLETE)** - 2025-12-08
   - Added immutability validation in `apply_resolutions()` - Options A/C now rejected for immutable beliefs
   - Added `_immutable_dissonance_active` flag to track when anti-hedging enforcement is needed
