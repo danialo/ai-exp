@@ -11,6 +11,7 @@ This service coordinates:
 
 import json
 import logging
+import hashlib
 import re
 import time
 from datetime import datetime
@@ -139,6 +140,11 @@ class PersonaService:
         # Research gate - deterministic decision layer for research tool execution
         # This decides WHETHER research is needed BEFORE the model generates prose
         self.research_gate = ResearchGate(llm_service=llm_service, use_classifier=True)
+
+        # Dissonance resolution tracking (prevent infinite loops)
+        self.dissonance_attempts = {}  # Maps query hash -> attempt count
+        self.max_dissonance_attempts = 3
+        self.dissonance_attempt_window = 3600  # 1 hour window for tracking
 
         # Anti-meta-talk system
         self.enable_anti_metatalk = enable_anti_metatalk
@@ -591,9 +597,10 @@ class PersonaService:
                     "content": tool_result
                 })
 
-        # Combine all assistant responses (use first substantive one, not meta-statements)
-        # Prefer the first response as it usually has the actual content
-        raw_response = assistant_responses[0] if assistant_responses else ""
+        # Use the LAST assistant response - this is the final answer after tool execution
+        # When tools are used, the flow is: acknowledgment -> tool execution -> final answer
+        # We want the final answer, not the acknowledgment
+        raw_response = assistant_responses[-1] if assistant_responses else ""
 
         # Debug logging
         logger.info(f"Assistant responses collected: {len(assistant_responses)}")
@@ -1371,7 +1378,7 @@ This revision represents growth in my self-understanding. My past statements wer
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "Search query (e.g., 'latest AI breakthroughs 2025', 'what is quantum computing')"
+                                "description": "Search query (e.g., 'current time MDT', 'weather today San Francisco', 'latest AI news 2025')"
                             },
                             "num_results": {
                                 "type": "integer",

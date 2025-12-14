@@ -11,7 +11,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 import uvicorn
@@ -81,6 +81,12 @@ from src.services.feedback_aggregator_enhanced import EnhancedFeedbackAggregator
 from src.services.web_search_service import create_web_search_service
 from src.services.url_fetcher_service import create_url_fetcher_service
 from src.services.web_interpretation_service import create_web_interpretation_service
+from src.services.exploration import (
+    create_workspace_manager,
+    create_orchestrator,
+    create_job_manager,
+)
+from src.api import exploration_routes
 
 # Adaptive Decision Framework imports
 from src.services.decision_framework import get_decision_registry
@@ -1272,16 +1278,119 @@ async def shutdown_awareness():
         leader_lock.release()
 
 
+# Initialize exploration system
+exploration_workspace_manager = None
+exploration_orchestrator = None
+exploration_job_manager = None
+
+if settings.PERSONA_MODE_ENABLED and persona_service and llm_service:
+    try:
+        exploration_workspace_manager = create_workspace_manager()
+        exploration_orchestrator = create_orchestrator(
+            workspace_manager=exploration_workspace_manager,
+            persona_service=persona_service,
+            llm_service=llm_service,
+        )
+        exploration_job_manager = create_job_manager(
+            orchestrator=exploration_orchestrator
+        )
+        # Set job manager in routes
+        exploration_routes.set_job_manager(exploration_job_manager)
+        logger.info("Exploration system initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize exploration system: {e}")
+
+
 # Request/Response models
 class ChatRequest(BaseModel):
-    """Request model for chat endpoint."""
-    message: str
-    retrieve_memories: bool = True
-    top_k: int = 3
-    conversation_history: List[Dict[str, str]] = []  # List of {"role": "user"|"assistant", "content": "..."}
-    model: Optional[str] = None  # Optional model override (format: "provider:model" e.g., "openai:gpt-4o")
-    use_agent_router: bool = False  # Phase 1: Opt-in multi-agent routing (default: direct to Astra)
-    agent_type_override: Optional[str] = None  # Optional explicit agent selection ("coder", "astra_chat")
+    """Request model for chat endpoint with security validation."""
+    message: str = Field(
+        ...,
+        min_length=1,
+        max_length=10000,
+        description="User message (1-10000 characters)"
+    )
+    retrieve_memories: bool = Field(
+        default=True,
+        description="Whether to retrieve relevant memories"
+    )
+    top_k: int = Field(
+        default=3,
+        ge=1,
+        le=50,
+        description="Number of memories to retrieve (1-50)"
+    )
+    conversation_history: List[Dict[str, str]] = Field(
+        default=[],
+        max_length=100,
+        description="Conversation history (max 100 messages)"
+    )
+    model: Optional[str] = Field(
+        default=None,
+        pattern=r'^[a-z]+:[a-z0-9\-\.]+$',
+        description="Model override in format 'provider:model'"
+    )
+    use_agent_router: bool = Field(
+        default=False,
+        description="Phase 1: Opt-in multi-agent routing (default: direct to Astra)"
+    )
+    agent_type_override: Optional[str] = Field(
+        default=None,
+        description="Optional explicit agent selection ('coder', 'astra_chat')"
+    )
+
+    @field_validator('conversation_history')
+    @classmethod
+    def validate_conversation_history(cls, v):
+        """Validate conversation history structure and content."""
+        for idx, msg in enumerate(v):
+            # Check required fields
+            if 'role' not in msg or 'content' not in msg:
+                raise ValueError(f"Message {idx} must have 'role' and 'content' fields")
+
+            # Validate role
+            if msg['role'] not in ('user', 'assistant', 'system'):
+                raise ValueError(f"Message {idx} has invalid role: {msg['role']}")
+
+            # Validate content length
+            if not isinstance(msg['content'], str):
+                raise ValueError(f"Message {idx} content must be a string")
+
+            if len(msg['content']) > 10000:
+                raise ValueError(f"Message {idx} content exceeds 10000 characters")
+
+            if len(msg['content']) == 0:
+                raise ValueError(f"Message {idx} content cannot be empty")
+
+        return v
+
+    @field_validator('model')
+    @classmethod
+    def validate_model_format(cls, v):
+        """Validate model format if provided."""
+        if v is None:
+            return v
+
+        # Must match provider:model format
+        if ':' not in v:
+            raise ValueError("Model must be in format 'provider:model'")
+
+        parts = v.split(':')
+        if len(parts) != 2:
+            raise ValueError("Model must have exactly one colon separator")
+
+        provider, model = parts
+
+        # Validate provider
+        allowed_providers = {'openai', 'anthropic', 'ollama', 'groq'}
+        if provider not in allowed_providers:
+            raise ValueError(f"Provider must be one of: {', '.join(allowed_providers)}")
+
+        # Validate model name (alphanumeric, hyphens, dots only)
+        if not model or len(model) > 100:
+            raise ValueError("Model name must be 1-100 characters")
+
+        return v
 
 
 class Memory(BaseModel):
@@ -2485,6 +2594,8 @@ async def persona_chat(request: ChatRequest):
 
     Supports multi-agent routing via use_agent_router=True (Phase 1: opt-in).
     """
+    global previous_user_valence
+
     # Start timing
     start_time = time.time()
 
@@ -2632,6 +2743,42 @@ async def persona_chat(request: ChatRequest):
         # Use detected arousal and dominance (no reconciliation for these yet)
         arousal = user_arousal
         dominance = user_dominance
+
+        # Update agent mood based on this interaction
+        mood_before = agent_mood.current_mood
+        external_before = agent_mood.external_mood
+        internal_before = agent_mood.internal_mood
+
+        # Record external mood (how user is treating Astra)
+        agent_mood.record_external_interaction(user_valence)
+
+        # Record internal mood (Astra's competence/success)
+        # Detect success based on whether tools were used or positive feedback received
+        was_successful = success_detector.detect_success(
+            user_message=request.message,
+            user_valence=user_valence,
+            previous_valence=previous_user_valence,
+        )
+
+        if was_successful:
+            # Check for explicit positive feedback for bigger boost
+            feedback = success_detector.detect_feedback(request.message)
+            if feedback == "positive":
+                agent_mood.record_positive_feedback(boost=0.15)
+            else:
+                agent_mood.record_success(boost=0.1)
+
+        # Track mood changes
+        mood_after = agent_mood.current_mood
+        external_after = agent_mood.external_mood
+        internal_after = agent_mood.internal_mood
+
+        logger.info(f"Persona mood: {mood_before:.3f} → {mood_after:.3f} ({agent_mood.get_mood_description()})")
+        logger.info(f"External (user): {external_before:.3f} → {external_after:.3f}, Internal (self): {internal_before:.3f} → {internal_after:.3f}")
+        logger.info(f"Pissed: {agent_mood.is_pissed} | Success: {was_successful}")
+
+        # Update previous user valence for next interaction
+        previous_user_valence = user_valence
 
         interaction = InteractionPayload(
             prompt=request.message,
@@ -3403,6 +3550,8 @@ async def delete_task(task_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete task: {str(e)}")
 
+# Mount exploration routes
+app.include_router(exploration_routes.router)
 
 # =====================================================================
 # TaskGraph Query Endpoints (R1-R6 Rubric Coverage)

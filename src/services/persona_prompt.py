@@ -950,13 +950,13 @@ User: {user_message}
             return ""
 
         lines = ["## YOUR PAST MEMORIES - Review These Before Responding\n"]
-        lines.append("**IMPORTANT**: These are YOUR actual memories from past conversations. Reference them when relevant.\n")
+        lines.append("**IMPORTANT**: These are YOUR actual memories from past conversations. Reference them naturally by content, not by number.\n")
 
-        for i, mem in enumerate(memories, 1):
+        for mem in memories:
             timestamp = mem.created_at.strftime("%Y-%m-%d %H:%M") if hasattr(mem, 'created_at') else "Unknown"
             relevance = f"{mem.similarity_score:.0%}" if hasattr(mem, 'similarity_score') else "Unknown"
 
-            lines.append(f"\n### Memory {i} ({timestamp} - {relevance} relevant)")
+            lines.append(f"\n### Memory from {timestamp} ({relevance} relevant)")
             lines.append(f"**What the user said**: {mem.prompt_text}")
             lines.append(f"**How you responded**: {mem.response_text}")
 

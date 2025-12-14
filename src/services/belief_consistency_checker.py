@@ -11,6 +11,7 @@ This enables metacognitive awareness of contradictions between beliefs and narra
 
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
@@ -129,6 +130,7 @@ class BeliefConsistencyChecker:
         self.llm = llm_service
         self.raw_store = raw_store
         self.event_hub = event_hub  # Optional IntegrationEventHub
+        self._storage_lock = threading.RLock()  # Reentrant lock for thread-safe storage
         # Track last dissonance event per belief: belief_id -> (timestamp, event_hash)
         self._last_dissonance_events: Dict[str, tuple[float, str]] = {}
 
@@ -698,43 +700,101 @@ class BeliefConsistencyChecker:
         return "".join(lines)
 
     def _parse_claims(self, response: str, memories: List[RetrievalResult]) -> List[SelfClaim]:
-        """Parse extracted claims from LLM response."""
+        """Parse extracted claims from LLM response with robust error handling."""
         claims = []
 
-        for line in response.strip().split('\n'):
+        # Validate response length
+        if not response or len(response) > 50000:
+            logger.warning(f"Invalid response length: {len(response) if response else 0}")
+            return claims
+
+        for line_num, line in enumerate(response.strip().split('\n')):
             line = line.strip()
+
+            # Skip empty lines and comments
             if not line or line.startswith('#'):
                 continue
 
+            # Check line length (prevent DoS)
+            if len(line) > 2000:
+                logger.warning(f"Skipping excessively long line {line_num}: {len(line)} chars")
+                continue
+
             # Parse format: [SOURCE|CONFIDENCE] statement | context | exp_id
-            if '[' in line and ']' in line:
-                try:
-                    meta, rest = line.split(']', 1)
-                    meta = meta.strip('[')
+            if '[' not in line or ']' not in line:
+                logger.debug(f"Skipping malformed line {line_num}: missing brackets")
+                continue
 
-                    parts = [p.strip() for p in rest.split('|')]
-                    if len(parts) >= 2:
-                        source, confidence = meta.split('|')
-                        statement = parts[0]
-                        context = parts[1] if len(parts) > 1 else ""
-                        exp_id = parts[2] if len(parts) > 2 else ""
-
-                        # Filter out generic AI safety disclaimers (not genuine self-claims)
-                        if META_DISCLAIMER_RE.search(statement):
-                            logger.debug(f"Filtered meta-disclaimer from self-claims: '{statement[:80]}...'")
-                            continue
-
-                        claims.append(SelfClaim(
-                            statement=statement,
-                            source=source.lower(),
-                            confidence=confidence.lower(),
-                            context=context,
-                            experience_id=exp_id,
-                        ))
-                except Exception as e:
-                    logger.debug(f"Failed to parse claim line: {line} - {e}")
+            try:
+                # Safely split metadata and content
+                if line.count(']') < 1:
+                    logger.debug(f"Skipping line {line_num}: no closing bracket")
                     continue
 
+                meta_end = line.index(']')
+                meta = line[line.index('[')+1:meta_end]
+                rest = line[meta_end+1:].strip()
+
+                # Validate metadata format
+                if '|' not in meta:
+                    logger.debug(f"Skipping line {line_num}: invalid metadata format")
+                    continue
+
+                meta_parts = meta.split('|')
+                if len(meta_parts) != 2:
+                    logger.debug(f"Skipping line {line_num}: metadata must have exactly 2 parts")
+                    continue
+
+                source, confidence = [p.strip() for p in meta_parts]
+
+                # Validate source
+                source_lower = source.lower()
+                if source_lower not in ('self', 'external'):
+                    logger.warning(f"Invalid source in line {line_num}: {source}")
+                    continue
+
+                # Validate confidence
+                confidence_lower = confidence.lower()
+                if confidence_lower not in ('certain', 'uncertain', 'hedging'):
+                    logger.warning(f"Invalid confidence in line {line_num}: {confidence}")
+                    continue
+
+                # Parse rest into parts
+                parts = [p.strip() for p in rest.split('|')]
+                if len(parts) < 1:
+                    logger.debug(f"Skipping line {line_num}: no statement found")
+                    continue
+
+                statement = parts[0][:500]  # Limit statement length
+                context = parts[1][:200] if len(parts) > 1 else ""
+                exp_id = parts[2][:100] if len(parts) > 2 else ""
+
+                # Validate statement is not empty
+                if not statement:
+                    logger.debug(f"Skipping line {line_num}: empty statement")
+                    continue
+
+                # Filter out generic AI safety disclaimers (not genuine self-claims)
+                if META_DISCLAIMER_RE.search(statement):
+                    logger.debug(f"Filtered meta-disclaimer from self-claims: '{statement[:80]}...'")
+                    continue
+
+                claims.append(SelfClaim(
+                    statement=statement,
+                    source=source_lower,
+                    confidence=confidence_lower,
+                    context=context,
+                    experience_id=exp_id,
+                ))
+
+            except (ValueError, IndexError) as e:
+                logger.debug(f"Failed to parse claim line {line_num}: {line[:50]}... - {e}")
+                continue
+            except Exception as e:
+                logger.error(f"Unexpected error parsing claim line {line_num}: {e}", exc_info=True)
+                continue
+
+        logger.info(f"Successfully parsed {len(claims)} claims from {len(response.split())} lines")
         return claims
 
     def _parse_dissonance(
@@ -743,58 +803,120 @@ class BeliefConsistencyChecker:
         beliefs: List[BeliefVectorResult],
         claims: List[SelfClaim],
     ) -> List[DissonancePattern]:
-        """Parse dissonance patterns from LLM response."""
+        """Parse dissonance patterns from LLM response with robust error handling."""
         patterns = []
 
-        for line in response.strip().split('\n'):
+        # Validate response length
+        if not response or len(response) > 50000:
+            logger.warning(f"Invalid dissonance response length: {len(response) if response else 0}")
+            return patterns
+
+        for line_num, line in enumerate(response.strip().split('\n')):
             line = line.strip()
+
+            # Skip empty lines and comments
             if not line or line.startswith('#'):
                 continue
 
+            # Check line length (prevent DoS)
+            if len(line) > 2000:
+                logger.warning(f"Skipping excessively long dissonance line {line_num}: {len(line)} chars")
+                continue
+
             # Parse format: [PATTERN|SEVERITY] belief_statement | analysis
-            if '[' in line and ']' in line:
-                try:
-                    meta, rest = line.split(']', 1)
-                    meta = meta.strip('[')
+            if '[' not in line or ']' not in line:
+                logger.debug(f"Skipping malformed dissonance line {line_num}: missing brackets")
+                continue
 
-                    parts = [p.strip() for p in rest.split('|')]
-                    if len(parts) >= 2:
-                        pattern_type, severity_str = meta.split('|')
-                        belief_statement = parts[0]
-                        analysis = parts[1]
-
-                        # Find matching belief
-                        matching_belief = None
-                        for belief in beliefs:
-                            if belief.statement.lower() in belief_statement.lower():
-                                matching_belief = belief
-                                break
-
-                        if matching_belief:
-                            # Find related claims
-                            related_claims = [
-                                c for c in claims
-                                if any(word in c.statement.lower()
-                                      for word in belief_statement.lower().split()[:3])
-                            ]
-
-                            # Extract conflicting statement from related claims
-                            conflicting_stmt = related_claims[0].statement if related_claims else ""
-
-                            patterns.append(DissonancePattern(
-                                belief_statement=matching_belief.statement,
-                                belief_confidence=matching_belief.confidence,
-                                pattern_type=pattern_type.lower(),
-                                memory_claims=related_claims,
-                                analysis=analysis,
-                                severity=float(severity_str),
-                                belief_id=getattr(matching_belief, 'belief_id', ''),
-                                conflicting_statement=conflicting_stmt,
-                            ))
-                except Exception as e:
-                    logger.debug(f"Failed to parse dissonance line: {line} - {e}")
+            try:
+                # Safely split metadata and content
+                if line.count(']') < 1:
+                    logger.debug(f"Skipping dissonance line {line_num}: no closing bracket")
                     continue
 
+                meta_end = line.index(']')
+                meta = line[line.index('[')+1:meta_end]
+                rest = line[meta_end+1:].strip()
+
+                # Validate metadata format
+                if '|' not in meta:
+                    logger.debug(f"Skipping dissonance line {line_num}: invalid metadata format")
+                    continue
+
+                meta_parts = meta.split('|')
+                if len(meta_parts) != 2:
+                    logger.debug(f"Skipping dissonance line {line_num}: metadata must have exactly 2 parts")
+                    continue
+
+                pattern_type, severity_str = [p.strip() for p in meta_parts]
+
+                # Validate pattern type
+                valid_patterns = {'contradiction', 'tension', 'evolution', 'hedging', 'inconsistency'}
+                if pattern_type.lower() not in valid_patterns:
+                    logger.warning(f"Invalid pattern type in line {line_num}: {pattern_type}")
+                    # Continue anyway but log the warning
+
+                # Validate and parse severity
+                try:
+                    severity = float(severity_str)
+                    if not (0.0 <= severity <= 1.0):
+                        logger.warning(f"Severity out of range [0,1] in line {line_num}: {severity}")
+                        severity = max(0.0, min(1.0, severity))  # Clamp to valid range
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid severity value in line {line_num}: {severity_str} - {e}")
+                    continue
+
+                # Parse rest into parts
+                parts = [p.strip() for p in rest.split('|')]
+                if len(parts) < 2:
+                    logger.debug(f"Skipping dissonance line {line_num}: insufficient parts")
+                    continue
+
+                belief_statement = parts[0][:500]  # Limit length
+                analysis = parts[1][:1000]  # Limit analysis length
+
+                # Validate not empty
+                if not belief_statement or not analysis:
+                    logger.debug(f"Skipping dissonance line {line_num}: empty belief or analysis")
+                    continue
+
+                # Find matching belief
+                matching_belief = None
+                for belief in beliefs:
+                    # Case-insensitive substring match
+                    if belief.statement.lower() in belief_statement.lower() or \
+                       belief_statement.lower() in belief.statement.lower():
+                        matching_belief = belief
+                        break
+
+                if not matching_belief:
+                    logger.debug(f"No matching belief found for line {line_num}: {belief_statement[:50]}")
+                    continue
+
+                # Find related claims (with safety limits)
+                belief_words = belief_statement.lower().split()[:5]  # Limit words checked
+                related_claims = [
+                    c for c in claims[:50]  # Limit claims checked
+                    if any(word in c.statement.lower() for word in belief_words)
+                ][:10]  # Limit related claims returned
+
+                patterns.append(DissonancePattern(
+                    belief_statement=matching_belief.statement,
+                    belief_confidence=matching_belief.confidence,
+                    pattern_type=pattern_type.lower(),
+                    memory_claims=related_claims,
+                    analysis=analysis,
+                    severity=severity,
+                ))
+
+            except (ValueError, IndexError) as e:
+                logger.debug(f"Failed to parse dissonance line {line_num}: {line[:50]}... - {e}")
+                continue
+            except Exception as e:
+                logger.error(f"Unexpected error parsing dissonance line {line_num}: {e}", exc_info=True)
+                continue
+
+        logger.info(f"Successfully parsed {len(patterns)} dissonance patterns")
         return patterns
 
     def _generate_summary(
@@ -977,7 +1099,7 @@ class BeliefConsistencyChecker:
         pattern: DissonancePattern,
         memories: List[RetrievalResult],
     ) -> str:
-        """Store a dissonance event in the raw_store.
+        """Store a dissonance event in the raw_store with thread-safe concurrency control.
 
         Args:
             query: The query that triggered dissonance detection
@@ -987,66 +1109,87 @@ class BeliefConsistencyChecker:
         Returns:
             Experience ID of the created dissonance event
         """
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        experience_id = f"dissonance_{timestamp}_{hash(pattern.belief_statement) % 10000:04x}"
+        import hashlib
 
-        # Build text summary
-        text_lines = [f"Cognitive dissonance detected for query: '{query}'\n\n"]
-        text_lines.append(f"Pattern: {pattern.pattern_type.upper()}\n")
-        text_lines.append(f"Belief: {pattern.belief_statement}\n")
-        text_lines.append(f"Analysis: {pattern.analysis}\n")
-        text_lines.append(f"Severity: {pattern.severity:.2f}\n\n")
+        # Acquire lock for thread-safe storage operations
+        with self._storage_lock:
+            # Generate deterministic, collision-resistant experience ID
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            content_for_hash = f"{timestamp}_{pattern.belief_statement}_{pattern.pattern_type}"
+            content_hash = hashlib.sha256(content_for_hash.encode()).hexdigest()[:8]
+            experience_id = f"dissonance_{timestamp}_{content_hash}"
 
-        if pattern.memory_claims:
-            text_lines.append("Conflicting claims from memory:\n")
-            for claim in pattern.memory_claims:
-                text_lines.append(f"  - [{claim.source}|{claim.confidence}] {claim.statement}\n")
+            # Check for duplicate (though unlikely with SHA256)
+            if self.raw_store:
+                try:
+                    existing = self.raw_store.get_experience(experience_id)
+                    if existing:
+                        logger.warning(f"Dissonance event already exists: {experience_id}")
+                        return experience_id
+                except:
+                    # get_experience might not exist or throw error, continue
+                    pass
 
-        text = "".join(text_lines)
+            # Build text summary
+            text_lines = [f"Cognitive dissonance detected for query: '{query}'\n\n"]
+            text_lines.append(f"Pattern: {pattern.pattern_type.upper()}\n")
+            text_lines.append(f"Belief: {pattern.belief_statement}\n")
+            text_lines.append(f"Analysis: {pattern.analysis}\n")
+            text_lines.append(f"Severity: {pattern.severity:.2f}\n\n")
 
-        # Structure dissonance-specific data
-        conflicting_claims = [
-            {
-                "statement": claim.statement,
-                "source": claim.source,
-                "confidence": claim.confidence,
-                "context": claim.context,
-                "experience_id": claim.experience_id,
+            if pattern.memory_claims:
+                text_lines.append("Conflicting claims from memory:\n")
+                for claim in pattern.memory_claims:
+                    text_lines.append(f"  - [{claim.source}|{claim.confidence}] {claim.statement}\n")
+
+            text = "".join(text_lines)
+
+            # Structure dissonance-specific data
+            conflicting_claims = [
+                {
+                    "statement": claim.statement,
+                    "source": claim.source,
+                    "confidence": claim.confidence,
+                    "context": claim.context,
+                    "experience_id": claim.experience_id,
+                }
+                for claim in pattern.memory_claims
+            ]
+
+            structured_data = {
+                "belief_statement": pattern.belief_statement,
+                "belief_confidence": pattern.belief_confidence,
+                "pattern_type": pattern.pattern_type,
+                "conflicting_claims": conflicting_claims,
+                "severity": pattern.severity,
+                "resolution_status": "unresolved",
+                "resolution_action": None,
+                "resolution_reasoning": None,
             }
-            for claim in pattern.memory_claims
-        ]
 
-        structured_data = {
-            "belief_statement": pattern.belief_statement,
-            "belief_confidence": pattern.belief_confidence,
-            "pattern_type": pattern.pattern_type,
-            "conflicting_claims": conflicting_claims,
-            "severity": pattern.severity,
-            "resolution_status": "unresolved",
-            "resolution_action": None,
-            "resolution_reasoning": None,
-        }
+            # Create experience model
+            dissonance_event = ExperienceModel(
+                id=experience_id,
+                type=ExperienceType.DISSONANCE_EVENT,
+                content=ContentModel(
+                    text=text,
+                    structured=structured_data,
+                ),
+                provenance=ProvenanceModel(
+                    actor=Actor.AGENT,
+                    method=CaptureMethod.MODEL_INFER,
+                ),
+                parents=[mem.experience_id for mem in memories],
+            )
 
-        # Create experience model
-        dissonance_event = ExperienceModel(
-            id=experience_id,
-            type=ExperienceType.DISSONANCE_EVENT,
-            content=ContentModel(
-                text=text,
-                structured=structured_data,
-            ),
-            provenance=ProvenanceModel(
-                actor=Actor.AGENT,
-                method=CaptureMethod.MODEL_INFER,
-            ),
-            parents=[mem.experience_id for mem in memories],
-        )
+            # Store in raw_store (atomic operation within lock)
+            if self.raw_store:
+                self.raw_store.append_experience(dissonance_event)
+                logger.info(f"Stored dissonance event: {experience_id}")
+            else:
+                logger.warning("No raw_store available, cannot persist dissonance event")
 
-        # Store in raw_store
-        self.raw_store.append_experience(dissonance_event)
-        logger.info(f"Stored dissonance event: {experience_id}")
-
-        return experience_id
+            return experience_id
 
     def mark_dissonance_resolved(
         self,

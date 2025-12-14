@@ -9,11 +9,22 @@ import json
 import os
 import subprocess
 import logging
+import shlex
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Whitelist of allowed command interpreters
+ALLOWED_COMMANDS = {
+    'python', 'python3', 'python3.11', 'python3.10', 'python3.9',
+    'bash', 'sh',
+    'node', 'npm', 'npx',
+    'pip', 'pip3',
+    'git',
+    'ls', 'cat', 'echo', 'pwd', 'which',
+}
 
 
 class PersonaFileManager:
@@ -261,6 +272,43 @@ class PersonaFileManager:
         except Exception:
             return []
 
+    def _validate_path_string(self, file_path: str) -> bool:
+        """
+        Validate path string for dangerous patterns before processing.
+
+        Args:
+            file_path: Path string to validate
+
+        Returns:
+            True if safe, False if dangerous patterns detected
+        """
+        # Check for null bytes (path injection)
+        if '\0' in file_path:
+            logger.warning(f"Null byte detected in path: {repr(file_path)}")
+            return False
+
+        # Check for excessively long paths (DoS)
+        if len(file_path) > 1000:
+            logger.warning(f"Excessively long path rejected: {len(file_path)} characters")
+            return False
+
+        # Normalize path and check for parent directory references
+        normalized = os.path.normpath(file_path)
+
+        # Check if normalized path tries to escape (starts with ..)
+        if normalized.startswith('..'):
+            logger.warning(f"Path traversal attempt detected in: {file_path}")
+            return False
+
+        # Check for suspicious patterns in path components
+        path_parts = Path(file_path).parts
+        for part in path_parts:
+            if part == '..':
+                logger.warning(f"Parent directory reference found in: {file_path}")
+                return False
+
+        return True
+
     def _resolve_path(self, file_path: str, write: bool = False) -> Optional[Path]:
         """
         Resolve a file path safely.
@@ -272,6 +320,11 @@ class PersonaFileManager:
         Returns:
             Resolved Path object or None if invalid
         """
+        # Validate path string first
+        if not self._validate_path_string(file_path):
+            logger.warning(f"Path string validation failed for: {file_path}")
+            return None
+
         # Handle absolute paths by making them relative to persona_space
         path = Path(file_path)
 
@@ -309,9 +362,25 @@ class PersonaFileManager:
             True if safe, False otherwise
         """
         try:
-            path.resolve().relative_to(self.persona_space.resolve())
+            # Resolve to absolute path (follows symlinks and normalizes)
+            resolved_path = path.resolve()
+            resolved_persona = self.persona_space.resolve()
+
+            # Ensure it's within persona_space
+            resolved_path.relative_to(resolved_persona)
+
+            # Additional security: Check that resolved path actually starts with persona_space
+            # This catches edge cases with symlinks or unusual path constructions
+            if not str(resolved_path).startswith(str(resolved_persona)):
+                logger.warning(f"Path traversal attempt detected: {path} resolves outside persona_space")
+                return False
+
             return True
-        except ValueError:
+        except ValueError as e:
+            logger.warning(f"Path validation failed for {path}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error in path validation for {path}: {e}")
             return False
 
     def execute_script(
@@ -325,13 +394,13 @@ class PersonaFileManager:
         Execute a script or command within the persona_space.
 
         The command executes with cwd set to persona_space, so it's sandboxed
-        to the agent's own directory. The agent can run any interpreter available
-        on the system (python, bash, node, etc.) and can create venvs for packages.
+        to the agent's own directory. Commands are validated against a whitelist
+        and executed without shell=True to prevent injection attacks.
 
         Automatically retries common failures (python→python3, pip→python -m pip, etc.)
 
         Args:
-            command: Shell command to execute (e.g., "python script.py", "bash setup.sh")
+            command: Command to execute (e.g., "python script.py", "bash setup.sh")
             timeout: Maximum execution time in seconds (default: 600 = 10min)
             save_output: Whether to save output to logs/script_outputs/ (default: True)
             _retry_attempt: Internal retry counter (don't set manually)
@@ -349,14 +418,65 @@ class PersonaFileManager:
         try:
             logger.info(f"Executing script in persona_space: {command}")
 
-            # Execute with cwd set to persona_space for sandboxing
+            # Validate and parse command safely
+            try:
+                cmd_parts = shlex.split(command)
+            except ValueError as e:
+                error_msg = f"Invalid command syntax: {e}"
+                logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "stdout": "",
+                    "stderr": "",
+                    "return_code": -1
+                }
+
+            if not cmd_parts:
+                error_msg = "Empty command"
+                logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "stdout": "",
+                    "stderr": "",
+                    "return_code": -1
+                }
+
+            # Validate command is in whitelist
+            base_command = cmd_parts[0]
+            # Extract just the command name (handle paths like ./venv/bin/python)
+            command_name = os.path.basename(base_command)
+
+            if command_name not in ALLOWED_COMMANDS:
+                error_msg = f"Command not allowed: {command_name}. Allowed commands: {', '.join(sorted(ALLOWED_COMMANDS))}"
+                logger.warning(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "stdout": "",
+                    "stderr": "",
+                    "return_code": -1
+                }
+
+            # Create restricted environment (inherit minimal safe variables)
+            safe_env = {
+                'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+                'HOME': str(self.persona_space),
+                'PYTHONPATH': str(self.persona_space),
+                'LANG': os.environ.get('LANG', 'en_US.UTF-8'),
+                'LC_ALL': os.environ.get('LC_ALL', 'en_US.UTF-8'),
+            }
+
+            # Execute with restricted environment and no shell
             result = subprocess.run(
-                command,
-                shell=True,
+                cmd_parts,
+                shell=False,  # CRITICAL: Never use shell=True
                 cwd=str(self.persona_space),
                 capture_output=True,
                 text=True,
-                timeout=timeout
+                timeout=timeout,
+                env=safe_env
             )
 
             stdout = result.stdout
@@ -443,7 +563,7 @@ class PersonaFileManager:
             }
         except Exception as e:
             error_msg = f"Error executing script: {str(e)}"
-            logger.error(error_msg)
+            logger.error(error_msg, exc_info=True)
             return {
                 "success": False,
                 "error": error_msg,
