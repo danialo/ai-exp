@@ -1083,15 +1083,22 @@ class BeliefConsistencyChecker:
                 },
             )
 
-            # Store it
+            # Check if this exact statement already exists - if so, reinforce instead of duplicate
             try:
-                self.raw_store.append_experience(claim_experience)
-                logger.debug(f"Stored self-claim: {claim.statement[:80]}")
+                existing = self._find_existing_self_definition(claim.statement)
+                if existing:
+                    # Reinforce existing definition by updating last_reinforced
+                    self._reinforce_self_definition(existing, claim)
+                    logger.debug(f"Reinforced existing self-claim: {claim.statement[:80]}")
+                else:
+                    # No existing - create new
+                    self.raw_store.append_experience(claim_experience)
+                    logger.debug(f"Stored new self-claim: {claim.statement[:80]}")
             except Exception as e:
-                logger.error(f"Failed to persist self-claim: {e}")
+                logger.error(f"Failed to persist/reinforce self-claim: {e}")
 
         if claims:
-            logger.info(f"✅ Persisted {len(claims)} self-claims as experiences for Belief Gardener")
+            logger.info(f"✅ Processed {len(claims)} self-claims (new or reinforced) for Belief Gardener")
 
     def _store_dissonance_event(
         self,
@@ -1382,6 +1389,112 @@ class BeliefConsistencyChecker:
                 self.event_hub.publish("dissonance", signal)
             except Exception as e:
                 logger.warning(f"Failed to publish dissonance signal: {e}")
+
+    def _find_existing_self_definition(self, statement: str) -> Optional[Experience]:
+        """Find an existing self-definition with identical statement text.
+
+        Human-like reinforcement: Instead of creating duplicates, we strengthen
+        existing beliefs when the same statement is encountered again.
+
+        Args:
+            statement: The statement text to search for
+
+        Returns:
+            Existing Experience if found, None otherwise
+        """
+        if not self.raw_store:
+            return None
+
+        from sqlmodel import Session as DBSession, select
+        from src.memory.models import Experience
+
+        # Normalize for comparison (strip whitespace, collapse multiple spaces)
+        normalized_statement = " ".join(statement.strip().split())
+
+        with DBSession(self.raw_store.engine) as session:
+            stmt = (
+                select(Experience)
+                .where(Experience.type == ExperienceType.SELF_DEFINITION.value)
+            )
+
+            for exp in session.exec(stmt).all():
+                if exp.content and isinstance(exp.content, dict):
+                    text = exp.content.get("text", "")
+                    # Normalize existing text the same way
+                    normalized_existing = " ".join(text.strip().split())
+                    if normalized_existing == normalized_statement:
+                        logger.debug(f"Found existing self-definition: {exp.id}")
+                        return exp
+
+        return None
+
+    def _reinforce_self_definition(self, existing: Experience, new_claim: SelfClaim):
+        """Reinforce an existing self-definition by updating its last_reinforced timestamp.
+
+        Human-like pattern strengthening: When we encounter the same belief again,
+        it becomes stronger/more stable rather than creating a duplicate.
+
+        Args:
+            existing: The existing self-definition experience
+            new_claim: The new claim that reinforces this definition
+        """
+        if not self.raw_store:
+            return
+
+        from sqlmodel import Session as DBSession
+        from src.memory.models import Experience
+
+        with DBSession(self.raw_store.engine) as session:
+            # Re-fetch within this session to avoid detached instance issues
+            exp = session.get(Experience, existing.id)
+            if not exp:
+                logger.warning(f"Could not find experience {existing.id} for reinforcement")
+                return
+
+            # Update structured data with reinforcement info
+            if exp.content and isinstance(exp.content, dict):
+                structured = exp.content.get("structured", {})
+
+                # Update last_reinforced
+                structured["last_reinforced"] = datetime.now(timezone.utc).isoformat()
+
+                # Increment reinforcement count (pattern strengthening)
+                reinforcement_count = structured.get("reinforcement_count", 0) + 1
+                structured["reinforcement_count"] = reinforcement_count
+
+                # Track the source of this reinforcement
+                reinforcement_sources = structured.get("reinforcement_sources", [])
+                reinforcement_sources.append({
+                    "experience_id": new_claim.experience_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                # Keep only last 10 sources to avoid unbounded growth
+                structured["reinforcement_sources"] = reinforcement_sources[-10:]
+
+                # Update confidence based on reinforcement (capped at 0.95)
+                current_confidence = structured.get("confidence", 0.5)
+                # Each reinforcement adds ~5% confidence, diminishing returns
+                confidence_boost = 0.05 * (1.0 / (1.0 + reinforcement_count * 0.1))
+                structured["confidence"] = min(0.95, current_confidence + confidence_boost)
+
+                # Promote stability if enough reinforcements
+                current_stability = structured.get("stability", "surface")
+                if reinforcement_count >= 5 and current_stability == "surface":
+                    structured["stability"] = "developing"
+                    logger.info(f"Promoted self-definition to 'developing': {exp.id}")
+                elif reinforcement_count >= 15 and current_stability == "developing":
+                    structured["stability"] = "core"
+                    logger.info(f"Promoted self-definition to 'core': {exp.id}")
+
+                exp.content["structured"] = structured
+                session.add(exp)
+                session.commit()
+
+                logger.info(
+                    f"Reinforced self-definition {exp.id}: "
+                    f"count={reinforcement_count}, confidence={structured['confidence']:.2f}, "
+                    f"stability={structured.get('stability', 'surface')}"
+                )
 
 
 def create_belief_consistency_checker(
