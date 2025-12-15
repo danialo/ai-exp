@@ -243,7 +243,7 @@ class MemoryPruner:
                             last_accessed=None,
                             age_days=age_days,
                             consolidated=exp.consolidated,
-                            decision="delete",
+                            decision="archive",
                             reason=f"duplicate_of_reinforced_statement_{len(exps_sorted)}_occurrences",
                         ))
                 else:
@@ -264,7 +264,7 @@ class MemoryPruner:
                             last_accessed=None,
                             age_days=age_days,
                             consolidated=exp.consolidated,
-                            decision="delete",
+                            decision="archive",
                             reason=f"single_occurrence_older_than_{self.config.self_def_prune_after_days}_days",
                         ))
 
@@ -329,7 +329,7 @@ class MemoryPruner:
             "kept": 0,
             "archived": 0,
             "deleted": 0,
-            "self_defs_deleted": 0,
+            "self_defs_archived": 0,
             "dry_run": dry_run,
             "details": [],
         }
@@ -346,7 +346,7 @@ class MemoryPruner:
         to_delete = to_delete[:self.config.max_prune_per_run - len(to_archive)]
 
         # Apply safety limit to self-definition candidates (separate budget)
-        self_def_to_delete = self_def_candidates[:self.config.max_prune_per_run]
+        self_def_to_archive = self_def_candidates[:self.config.max_prune_per_run]
 
         if not dry_run:
             # Archive general candidates
@@ -369,28 +369,28 @@ class MemoryPruner:
                         "reason": candidate.reason,
                     })
 
-            # Delete self-definition candidates
-            for candidate in self_def_to_delete:
-                if self._delete_experience(candidate.experience_id):
-                    results["self_defs_deleted"] += 1
+            # Archive self-definition candidates (recoverable pruning)
+            for candidate in self_def_to_archive:
+                if self._archive_experience(candidate.experience_id):
+                    results["self_defs_archived"] += 1
                     results["details"].append({
                         "id": candidate.experience_id,
                         "type": "self_definition",
-                        "action": "deleted",
+                        "action": "archived",
                         "reason": candidate.reason,
                     })
         else:
             # Dry run - just report
             results["would_archive"] = len(to_archive)
             results["would_delete"] = len(to_delete)
-            results["would_delete_self_defs"] = len(self_def_to_delete)
+            results["would_archive_self_defs"] = len(self_def_to_archive)
             results["details"] = [
                 {"id": c.experience_id, "would": c.decision, "reason": c.reason}
                 for c in to_archive + to_delete
             ][:20]  # Limit details
             results["self_def_details"] = [
-                {"id": c.experience_id, "would": "delete", "reason": c.reason}
-                for c in self_def_to_delete
+                {"id": c.experience_id, "would": "archive", "reason": c.reason}
+                for c in self_def_to_archive
             ][:10]  # Limit self-def details
 
         logger.info(f"Pruning complete: {results}")
