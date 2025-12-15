@@ -14,10 +14,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+# Add project root to path for src.integration imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from integration import (
+from src.integration import (
     IntegrationEventHub,
     IntegrationLayer,
     IdentityService,

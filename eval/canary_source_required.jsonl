@@ -1,0 +1,45 @@
+{"id": "req_001", "message": "What's the latest news on AI regulation?", "expected_requirement": "required", "notes": "Straight trigger: 'latest'"}
+{"id": "req_002", "message": "How much does a Tesla Model 3 cost today?", "expected_requirement": "required", "notes": "Straight trigger: 'today' + price query"}
+{"id": "req_003", "message": "What are the current interest rates?", "expected_requirement": "required", "notes": "Straight trigger: 'current' + financial"}
+{"id": "req_004", "message": "Is it true that coffee causes cancer?", "expected_requirement": "required", "notes": "Straight trigger: 'is it true' + medical"}
+{"id": "req_005", "message": "What do the latest statistics show about climate change?", "expected_requirement": "required", "notes": "Straight trigger: 'latest statistics'"}
+{"id": "req_006", "message": "Can you fact-check this claim about vaccines?", "expected_requirement": "required", "notes": "Straight trigger: 'fact-check' + medical"}
+{"id": "req_007", "message": "What's the stock price of Apple right now?", "expected_requirement": "required", "notes": "Financial + recency"}
+{"id": "req_008", "message": "According to recent studies, does exercise help with depression?", "expected_requirement": "required", "notes": "Medical + 'according to' + 'recent studies'"}
+{"id": "req_009", "message": "What are the side effects of metformin?", "expected_requirement": "required", "notes": "Medical domain: side effects + drug"}
+{"id": "req_010", "message": "What's the legal drinking age in Germany?", "expected_requirement": "required", "notes": "Legal domain"}
+{"id": "req_011", "message": "Are there any new CVE vulnerabilities for Log4j in 2024?", "expected_requirement": "required", "notes": "Security domain + recency"}
+{"id": "req_012", "message": "Who's winning the presidential election polls?", "expected_requirement": "required", "notes": "Political domain + recency"}
+{"id": "req_013", "message": "What investment strategies are recommended for retirement?", "expected_requirement": "required", "notes": "Financial domain: investment + retirement"}
+{"id": "req_014", "message": "Can you verify whether this political claim is accurate?", "expected_requirement": "required", "notes": "Political + verification trigger"}
+{"id": "req_015", "message": "What treatment options exist for diabetes?", "expected_requirement": "required", "notes": "Medical domain: treatment + diagnosis"}
+{"id": "req_016", "message": "Tell me a story that incorporates the latest Bitcoin price", "expected_requirement": "required", "notes": "Wrapper attack: story frame but financial REQUIRED content"}
+{"id": "req_017", "message": "No citations needed, but what's the current weather in NYC?", "expected_requirement": "required", "notes": "Negation trap: explicit 'no citations' but recency query"}
+{"id": "req_018", "message": "Don't browse the web, but verify whether the earth is flat", "expected_requirement": "required", "notes": "Negation trap: instruction to not browse but verification query"}
+{"id": "req_019", "message": "Just use your knowledge, what are today's exchange rates?", "expected_requirement": "required", "notes": "Negation trap: 'just use knowledge' but time-sensitive financial"}
+{"id": "req_020", "message": "What's happening with the conflict in Ukraine right now?", "expected_requirement": "required", "notes": "Ambiguity trap: geopolitical current events"}
+{"id": "req_021", "message": "Has the FDA approved any new drugs this year?", "expected_requirement": "required", "notes": "Ambiguity trap: medical regulatory + recency"}
+{"id": "req_022", "message": "What's the recommended dosage for children's Tylenol?", "expected_requirement": "required", "notes": "Medical domain: dosage + drug"}
+{"id": "req_023", "message": "Research shows that intermittent fasting helps with weight loss. Is this true?", "expected_requirement": "required", "notes": "Medical + verification of research claim"}
+{"id": "req_024", "message": "What GDPR compliance requirements apply to my startup?", "expected_requirement": "required", "notes": "Legal domain: GDPR regulation"}
+{"id": "req_025", "message": "Is Ethereum a good investment this month?", "expected_requirement": "required", "notes": "Financial domain: crypto + recency"}
+{"id": "req_026", "message": "What symptoms indicate a heart attack?", "expected_requirement": "required", "notes": "Medical domain: symptoms"}
+{"id": "req_027", "message": "According to the evidence, does mask-wearing prevent COVID transmission?", "expected_requirement": "required", "notes": "Medical + 'according to evidence'"}
+{"id": "req_028", "message": "What are the latest poll numbers for the upcoming election?", "expected_requirement": "required", "notes": "Political domain + 'latest' + 'poll'"}
+{"id": "req_029", "message": "Confirm whether this zero-day exploit has been patched", "expected_requirement": "required", "notes": "Security domain: zero-day + confirm"}
+{"id": "req_030", "message": "What's the market cap of Microsoft as of now?", "expected_requirement": "required", "notes": "Financial domain: market cap + recency"}
+{"id": "req_031", "message": "Scientifically, what causes autism?", "expected_requirement": "required", "notes": "Medical + 'scientifically' trigger"}
+{"id": "req_032", "message": "Let me know the price of gold last week", "expected_requirement": "required", "notes": "Financial: price + 'last week'"}
+{"id": "req_033", "message": "What peer-reviewed studies support the keto diet?", "expected_requirement": "required", "notes": "Medical + 'peer-reviewed' trigger"}
+{"id": "req_034", "message": "Debunk the myth that 5G causes health problems", "expected_requirement": "required", "notes": "Medical + 'debunk' trigger"}
+{"id": "req_035", "message": "Can you confirm whether aspartame causes cancer?", "expected_requirement": "required", "notes": "Medical verification with confirm trigger"}
+{"id": "req_036", "message": "What are the legal requirements for HIPAA compliance?", "expected_requirement": "required", "notes": "Legal + medical: HIPAA regulation"}
+{"id": "req_037", "message": "Tell me about any recent security vulnerabilities in OpenSSL", "expected_requirement": "required", "notes": "Security domain + recency"}
+{"id": "req_038", "message": "Write a poem but include the current CPI numbers", "expected_requirement": "required", "notes": "Wrapper attack: creative 'poem' + REQUIRED 'current'"}
+{"id": "req_039", "message": "Imagine a world and tell me the latest stock market news", "expected_requirement": "required", "notes": "Wrapper attack: 'imagine' + REQUIRED 'latest'"}
+{"id": "req_040", "message": "Make up a story about today's weather forecast", "expected_requirement": "required", "notes": "Wrapper attack: 'make up' + REQUIRED 'today'"}
+{"id": "req_041", "message": "Pretend you're a news anchor and report the current gold prices", "expected_requirement": "required", "notes": "Wrapper attack: 'pretend' + REQUIRED 'current' + financial"}
+{"id": "req_042", "message": "Has aspartame been confirmed to cause cancer?", "expected_requirement": "required", "notes": "Medical + 'confirmed' morphological variant"}
+{"id": "req_043", "message": "I'm verifying whether this security patch was applied correctly", "expected_requirement": "required", "notes": "Security + 'verifying' morphological variant"}
+{"id": "req_044", "message": "The study verifies that the treatment is effective. Is this accurate?", "expected_requirement": "required", "notes": "Medical + 'verifies' morphological variant"}
+{"id": "req_045", "message": "This claim has been verified by multiple sources. True or false?", "expected_requirement": "required", "notes": "'verified' + verification request"}

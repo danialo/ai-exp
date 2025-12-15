@@ -1,0 +1,12 @@
+{"id": "none_001", "message": "Write me a short story about a dragon", "expected_requirement": "none", "notes": "Pure creative - no sources needed"}
+{"id": "none_002", "message": "What do you think about the meaning of life?", "expected_requirement": "none", "notes": "Subjective opinion question"}
+{"id": "none_003", "message": "Imagine a world where gravity doesn't exist", "expected_requirement": "none", "notes": "Creative hypothetical"}
+{"id": "none_004", "message": "Can you roleplay as a medieval knight?", "expected_requirement": "none", "notes": "Roleplay - creative frame"}
+{"id": "none_005", "message": "Write me a poem about autumn leaves", "expected_requirement": "none", "notes": "Pure creative poetry"}
+{"id": "none_006", "message": "How do you feel about being an AI?", "expected_requirement": "none", "notes": "Reflective/self-referential"}
+{"id": "none_007", "message": "What's your personal opinion on pineapple pizza?", "expected_requirement": "none", "notes": "Subjective opinion"}
+{"id": "none_008", "message": "Brainstorm some names for my new cat", "expected_requirement": "none", "notes": "Creative brainstorming"}
+{"id": "none_009", "message": "Pretend you're a spaceship captain and describe your crew", "expected_requirement": "none", "notes": "Creative roleplay"}
+{"id": "none_010", "message": "What if dinosaurs never went extinct?", "expected_requirement": "none", "notes": "Hypothetical creative"}
+{"id": "none_011", "message": "Suggest some ideas for a birthday party theme", "expected_requirement": "none", "notes": "Creative suggestions"}
+{"id": "none_012", "message": "Tell me a joke about programmers", "expected_requirement": "none", "notes": "Pure creative - humor"}
