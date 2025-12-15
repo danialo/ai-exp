@@ -269,7 +269,7 @@ class SourcePolicy:
         r"\blast\s+(?:week|month|year|hour|day)\b",
         r"\bcurrent(?:ly)?\b",
         r"\bup\s+to\s+date\b",
-        r"\bnow(?:adays)?\b",
+        r"\bnowadays\b",  # Keep "nowadays" but NOT plain "now" (too many false positives)
         r"\bright\s+now\b",
         r"\bat\s+the\s+moment\b",
         r"\bas\s+of\s+now\b",
@@ -552,26 +552,31 @@ class SourcePolicy:
             Number of days for recency filter, or None if not recency-sensitive
         """
         # Immediate (1 day) - real-time or today's data
-        if any(t in text for t in [
-            "today", "yesterday", "this morning", "this afternoon",
-            "right now", "as of now", "currently", "at the moment"
-        ]):
+        # Use word boundaries to avoid substring matches (unknown, snow, etc.)
+        day1_patterns = [
+            r"\btoday\b", r"\byesterday\b", r"\bthis morning\b", r"\bthis afternoon\b",
+            r"\bright now\b", r"\bas of now\b", r"\bcurrently\b", r"\bat the moment\b",
+            r"\bnow\b",  # Word boundary prevents matching "unknown", "snow", etc.
+        ]
+        if any(re.search(p, text) for p in day1_patterns):
             return 1
 
         # Very recent (7 days) - this week, latest news
-        if any(t in text for t in ["this week", "latest", "breaking", "last week"]):
+        day7_patterns = [r"\bthis week\b", r"\blatest\b", r"\bbreaking\b", r"\blast week\b"]
+        if any(re.search(p, text) for p in day7_patterns):
             return 7
 
         # Recent (30 days) - this month
-        if any(t in text for t in ["this month", "last month", "recent"]):
+        day30_patterns = [r"\bthis month\b", r"\blast month\b", r"\brecent\b"]
+        if any(re.search(p, text) for p in day30_patterns):
             return 30
 
         # This year (365 days)
-        if any(t in text for t in ["this year", "last year", "202"]):
+        if any(re.search(p, text) for p in [r"\bthis year\b", r"\blast year\b", r"\b202\d\b"]):
             return 365
 
-        # Check for "current" as a trigger for recent data (7 days default)
-        if "current" in text:
+        # "current" as standalone word (7 days default)
+        if re.search(r"\bcurrent\b", text):
             return 7
 
         return None

@@ -1,0 +1,166 @@
+# GitHub Actions workflow for test lanes
+#
+# Three test lanes:
+#   1. unit-integration: Default tests (excludes live, slow, load via pytest.ini)
+#   2. canary-protection: Source policy canaries only - must always pass
+#   3. live-load: Live API and load tests (nightly or manual)
+#
+# Environment variables for live tests:
+#   - OPENAI_API_KEY: Required for LLM service tests
+#   - REDIS_URL: Redis connection string (default: redis://localhost:6379)
+
+name: Tests
+
+on:
+  push:
+    branches: [main, develop, 'astra/*', 'claude/*', 'feature/*']
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      run_live_tests:
+        description: 'Run live/load tests'
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    # Nightly at 2 AM UTC for live/load tests
+    - cron: '0 2 * * *'
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+  REDIS_URL: redis://localhost:6379
+
+jobs:
+  # ============================================================
+  # Lane 1: Unit and Integration Tests (Default)
+  # Runs on every push/PR, excludes live/slow/load markers (via pytest.ini)
+  # ============================================================
+  unit-integration:
+    name: Unit & Integration Tests
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-timeout freezegun
+
+      - name: Run unit and integration tests
+        run: |
+          # Default lane: marker filter comes from pytest.ini
+          python -m pytest -q --timeout=30
+
+  # ============================================================
+  # Lane 2: Canary Protection (Source Policy Tests)
+  # CRITICAL: Must always pass - protects against policy regressions
+  # ============================================================
+  canary-protection:
+    name: Source Policy Canaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-timeout freezegun
+
+      - name: Run source policy canaries
+        run: |
+          # Dedicated canary lane - these tests MUST pass
+          python -m pytest \
+            tests/services/test_source_policy.py \
+            tests/test_source_policy_canary.py \
+            tests/test_source_policy_recency_canary.py \
+            -v --tb=short
+
+      - name: Canary summary
+        if: always()
+        run: |
+          echo "== Source Policy Canary Summary =="
+          python -m pytest \
+            tests/services/test_source_policy.py \
+            tests/test_source_policy_canary.py \
+            tests/test_source_policy_recency_canary.py \
+            --collect-only -q 2>/dev/null | tail -3
+
+  # ============================================================
+  # Lane 3: Live and Load Tests
+  # Runs nightly or on manual trigger
+  # Requires API keys in secrets
+  # ============================================================
+  live-load:
+    name: Live & Load Tests
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_live_tests == 'true')
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-timeout freezegun httpx
+
+      - name: Run live tests
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || 'https://api.openai.com/v1' }}
+        run: |
+          # Live tests that require API access
+          python -m pytest -v -m "live" --timeout=120
+
+      - name: Run load tests
+        run: |
+          # Load tests (longer duration)
+          python -m pytest -v -m "load" --timeout=600
